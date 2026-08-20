@@ -1,0 +1,259 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.10</version>
+        <relativePath/>
+    </parent>
+
+    <groupId>org.example</groupId>
+    <artifactId>demoAI</artifactId>
+    <version>1.0-SNAPSHOT</version>
+
+    <properties>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+
+        <!--
+          经过反复排查 Maven Central 实际可用 artifact + DashScope 1.1.2.3 pom 内部声明：
+          Spring Boot 3.5.10 + Spring AI 1.1.2 + Spring AI Alibaba 1.1.2.3
+          三者是严格配套的（autoconfigure-dashscope 1.1.2.3 的 pom 直接硬编码了这些版本号）。
+        -->
+        <spring-ai.version>1.1.2</spring-ai.version>
+        <spring-ai-alibaba.version>1.1.2.3</spring-ai-alibaba.version>
+    </properties>
+
+    <dependencyManagement>
+        <dependencies>
+            <!--
+              保险起见：同时保留 Spring AI BOM 导入。
+              注意：BOM 的 scope=import 只会在"你没写 version 时"提供版本号。
+              下面每个 Spring AI 依赖都显式写了 version，所以不受此处顺序影响。
+            -->
+            <dependency>
+                <groupId>org.springframework.ai</groupId>
+                <artifactId>spring-ai-bom</artifactId>
+                <version>${spring-ai.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>com.alibaba.cloud.ai</groupId>
+                <artifactId>spring-ai-alibaba-bom</artifactId>
+                <version>${spring-ai-alibaba.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
+        <!-- ========== Spring AI 核心：ChatClient（必须！显式 version，防止 BOM 失效） ========== -->
+        <!--
+          经过对 spring-ai-client-chat-1.1.2.jar 的实际解压验证：
+          org/springframework/ai/chat/client/ChatClient.class
+          org/springframework/ai/chat/client/ChatClient$Builder.class
+          org/springframework/ai/chat/client/ChatClient$CallResponseSpec.class  等全部存在 ✅
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-client-chat</artifactId>
+            <version>${spring-ai.version}</version>
+        </dependency>
+
+        <!-- ========== Spring AI 核心：@Tool / @ToolParam 注解所在包 ========== -->
+        <!--
+          经过对 spring-ai-model-1.1.2.jar 的实际解压验证：
+          org/springframework/ai/tool/annotation/Tool.class       ✅
+          org/springframework/ai/tool/annotation/ToolParam.class  ✅
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-model</artifactId>
+            <version>${spring-ai.version}</version>
+        </dependency>
+
+        <!-- ========== Spring AI 自动配置：让 ChatClient.Builder 被自动创建为 Bean ========== -->
+        <!--
+          DashScope autoconfigure 虽然会传递引入它，但为了防止在 IDEA 里
+          "import scope 的依赖解析深度不够" 的问题，这里再显式声明一次。
+          这个 JAR 里包含了 ChatClientAutoConfiguration，负责 new ChatClient.Builder(chatModel)。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-autoconfigure-model-chat-client</artifactId>
+            <version>${spring-ai.version}</version>
+        </dependency>
+
+        <!-- ========== Spring AI 自动配置：@Tool 方法自动注册为 ToolCallback ========== -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-autoconfigure-model-tool</artifactId>
+            <version>${spring-ai.version}</version>
+        </dependency>
+
+        <!-- ========== 阿里云百炼 DashScope Starter（提供 ChatModel 实现） ========== -->
+        <dependency>
+            <groupId>com.alibaba.cloud.ai</groupId>
+            <artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
+            <version>${spring-ai-alibaba.version}</version>
+        </dependency>
+
+        <!-- ========== JDBC + MySQL 驱动（连接本地 demoAI 数据库） ========== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.mysql</groupId>
+            <artifactId>mysql-connector-j</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <!-- ========== PGVector 向量存储 Starter（Spring AI 1.1.x 新命名规范） ========== -->
+        <!--
+          重要：Spring AI 1.0.0 GA 之后，pgvector starter 的 artifactId 改名了！
+            旧（仅 M5/M6）：spring-ai-pgvector-store-spring-boot-starter  ❌ 1.1.2 不存在
+            新（1.0.0+） ：spring-ai-starter-vector-store-pgvector       ✅ 1.1.2 存在
+          这个 starter 会传递引入：
+            - spring-ai-pgvector-store（PgVectorStore 实现）
+            - spring-ai-autoconfigure-vector-store-pgvector（自动配置）
+            - PostgreSQL JDBC 驱动
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-vector-store-pgvector</artifactId>
+            <version>${spring-ai.version}</version>
+        </dependency>
+
+        <!-- ========== VectorStore 接口（向量存储抽象 API） ========== -->
+        <!--
+          类：org.springframework.ai.vectorstore.VectorStore
+          JAR：spring-ai-vector-store-1.1.2.jar（已实际解压验证）
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-vector-store</artifactId>
+            <version>${spring-ai.version}</version>
+        </dependency>
+
+        <!-- ========== QuestionAnswerAdvisor（RAG 检索增强顾问） ========== -->
+        <!--
+          类：org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor
+          JAR：spring-ai-advisors-vector-store-1.1.2.jar（已实际解压验证）
+          Spring AI 1.1.x 里 Advisor 系列独立拆分成单独 artifact 了。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-advisors-vector-store</artifactId>
+            <version>${spring-ai.version}</version>
+        </dependency>
+
+        <!-- ========== Spring AI 通用基础模块：Document + TokenTextSplitter 所在 ========== -->
+        <!--
+          类：org.springframework.ai.document.Document
+          类：org.springframework.ai.transformer.splitter.TokenTextSplitter
+          JAR：spring-ai-commons-1.1.2.jar（已实际解压验证，78 KB）
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-commons</artifactId>
+            <version>${spring-ai.version}</version>
+        </dependency>
+
+        <!-- ========== PDF 文档读取器 ========== -->
+        <!--
+          类：org.springframework.ai.reader.pdf.PagePdfDocumentReader
+          JAR：spring-ai-pdf-document-reader-1.1.2.jar（已实际解压验证，30 KB）
+          基于 Apache PDFBox，会传递引入 pdfbox / fontbox / commons-logging 等。
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-pdf-document-reader</artifactId>
+            <version>${spring-ai.version}</version>
+        </dependency>
+    </dependencies>
+
+    <repositories>
+        <repository>
+            <id>central</id>
+            <name>Maven Central</name>
+            <url>https://repo1.maven.org/maven2</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+        <repository>
+            <id>aliyun-central</id>
+            <name>Aliyun Maven Central Mirror</name>
+            <url>https://maven.aliyun.com/repository/central</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+        <repository>
+            <id>aliyun-public</id>
+            <name>Aliyun Maven Public</name>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+        <repository>
+            <id>spring-releases</id>
+            <name>Spring Releases</name>
+            <url>https://repo.spring.io/release</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
+    <pluginRepositories>
+        <pluginRepository>
+            <id>central-plugin</id>
+            <name>Maven Central Plugin</name>
+            <url>https://repo1.maven.org/maven2</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </pluginRepository>
+        <pluginRepository>
+            <id>aliyun-plugin</id>
+            <name>Aliyun Maven Plugin</name>
+            <url>https://maven.aliyun.com/repository/public</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </pluginRepository>
+    </pluginRepositories>
+
+</project>

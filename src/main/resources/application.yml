@@ -1,0 +1,50 @@
+spring:
+  # ====== 主数据源：本地 MySQL（业务数据：耗材库存 consumables 表） ======
+  datasource:
+    url: jdbc:mysql://localhost:3306/demoAI?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: root
+    password: ${MYSQL_PASSWORD}
+
+  # ====== 阿里云百炼 DashScope AI 配置 ======
+  ai:
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY}
+      chat:
+        options:
+          model: qwen-plus
+          temperature: 0.7
+      # 百炼平台的 Embedding 模型（用于把文字变向量，dimensions=1536）
+      embedding:
+        options:
+          model: text-embedding-v3
+
+# ====== 应用级配置（RAG 知识库 + PgVector 向量存储）======
+app:
+  # ====== RAG 知识库 PDF 扫描路径（不再写死文件名！3 种用法任选）======
+  #   ① 【推荐】目录模式：自动扫描该目录下所有 *.pdf（新增 PDF 直接丢进去，重启应用即可入库）
+  #        pdf-path: D:/ai-docs
+  #   ② 单个文件模式：只处理指定 PDF（临时测单个文件用）
+  #        pdf-path: D:/ai-docs/耗材入库操作手册.pdf
+  #   ③ 不填 → 默认兜底目录 D:/ai-docs（目录不存在 / 无 PDF 时优雅跳过，不报错）
+  pdf-path: D:/ai-docs
+
+  pgvector:
+    # ✨ 关键开关 ✨
+    #   false → SimpleVectorStore（内存向量库，默认，开箱即用，重启会清空向量）
+    #   true  → PgVectorStore（PostgreSQL vector 列持久化，需要 PG 17 + pgvector dll 已装）
+    enabled: true
+
+    # --- 以下仅当 enabled=true 才生效 ---
+    jdbc-url: jdbc:postgresql://localhost:5432/postgres
+    username: postgres
+    password: postgres
+    driver-class-name: org.postgresql.Driver
+    schema-name: public
+    table-name: vector_store
+    dimensions: 1536
+    id-type: UUID
+    index-type: HNSW
+    distance-type: COSINE_DISTANCE
+    initialize-schema: false    # 手动由 PgVectorSchemaInitializer 在 try-catch 里执行
+    schema-validation: false
