@@ -44,9 +44,6 @@ public class ChatController {
         ChatClient.Builder builder = chatClientBuilder;
         if (Objects.nonNull(vectorStore) && vectorStoreReady) {
             builder = builder.defaultAdvisors(QuestionAnswerAdvisor.builder(vectorStore).build());
-            System.out.println("[ChatController] ✅ RAG 已启用：已挂载 QuestionAnswerAdvisor");
-        } else {
-            System.out.println("[ChatController] ℹ️  RAG 未挂载（@Tool 查库存仍可用）");
         }
         this.chatClient = builder.build();
     }
@@ -60,15 +57,7 @@ public class ChatController {
                 .content();
     }
 
-    /**
-     * 运行时 RAG 诊断接口：打开 http://localhost:8080/rag/diag 复制结果贴出来即可 1 秒定位。
-     *
-     *   包括：
-     *     1) 当前配置的 pdf-path 是否正确、扫到多少 PDF
-     *     2) VectorStore 是 PgVectorStore（持久化）还是 SimpleVectorStore（内存）还是 NULL
-     *     3) PgVectorSchemaInitializer 是否 ready（扩展/表是否建好）
-     *     4) 每份 PDF 的 3 层提取诊断（P1/P2/P3 非空字符数、streams 统计、首个文字流 dump、最终判断结论）
-     */
+    /** 运行时 RAG 诊断接口，返回 VectorStore 类型、PgVector 初始化状态及各 PDF 提取诊断信息。 */
     @GetMapping(value = "/rag/diag", produces = "application/json; charset=utf-8")
     public String ragDiag() throws Exception {
         Map<String, Object> out = new LinkedHashMap<>();
@@ -85,7 +74,7 @@ public class ChatController {
         if (ragInitializer != null) {
             out.put("rag_initializer", ragInitializer.diagnose());
         } else {
-            out.put("rag_initializer", "<NULL：RagInitializer Bean 没被 Spring 扫描到>");
+            out.put("rag_initializer", "<NULL：RagInitializer Bean 未注册>");
         }
         return jsonMapper.writeValueAsString(out);
     }

@@ -5,13 +5,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "app.pgvector")
 public class PgVectorConfigProperties {
 
-    /**
-     * 是否启用 PgVector（持久化向量到 PostgreSQL vector 列）。
-     *
-     * 默认 false：使用 SimpleVectorStore（纯内存，无外部依赖，开箱即用）。
-     * 什么时候设为 true：你的 PostgreSQL 安装了 pgvector 扩展（对应 PG 大版本要有预编译 dll），
-     *                 且需要向量跨重启持久化。
-     */
+    /** 是否启用 PgVector（持久化向量）。默认 false 使用 SimpleVectorStore（内存版，开箱即用）。 */
     private boolean enabled = false;
 
     private String jdbcUrl = "jdbc:postgresql://localhost:5432/postgres";
@@ -26,9 +20,12 @@ public class PgVectorConfigProperties {
     private String distanceType = "COSINE_DISTANCE";
     private String idType = "UUID";
 
-    /** PgVectorStore 内部初始化开关（只有 enable=true 时才生效） */
+    /** PgVectorStore 内部初始化开关（仅 enabled=true 时生效） */
     private boolean initializeSchema = false;
     private boolean schemaValidation = false;
+
+    /** 启动时若为 true，先清空并重建 vector_store 表（重新入库所有 PDF） */
+    private boolean resetTable = false;
 
     public boolean isEnabled() { return enabled; }
     public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -59,4 +56,7 @@ public class PgVectorConfigProperties {
     public void setInitializeSchema(boolean initializeSchema) { this.initializeSchema = initializeSchema; }
     public boolean isSchemaValidation() { return schemaValidation; }
     public void setSchemaValidation(boolean schemaValidation) { this.schemaValidation = schemaValidation; }
+
+    public boolean isResetTable() { return resetTable; }
+    public void setResetTable(boolean resetTable) { this.resetTable = resetTable; }
 }

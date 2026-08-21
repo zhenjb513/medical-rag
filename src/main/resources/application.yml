@@ -1,4 +1,14 @@
 spring:
+  # ====== 日志级别：屏蔽第三方库无实质影响的警告 / 冗余 INFO ======
+  logging:
+    level:
+      # PDFBox 对"生成不规范但解析成功"的 PDF 会大量打印 WARN（如 invalid object number / malformed substream），
+      # 这些都是 PDFBox 已经用 lenient 模式自动修复、不影响结果的警告。真正致命错误会走 ERROR 级别。
+      org.apache.pdfbox: ERROR
+      # Spring AI TextSplitter 的 "Splitting up document into X chunks" INFO 有点冗余，
+      # RagInitializer 自己会打印「chunks=N  totalChars=xxxxx」这样更详细的诊断
+      org.springframework.ai.transformer.splitter: WARN
+
   # ====== 主数据源：本地 MySQL（业务数据：耗材库存 consumables 表） ======
   datasource:
     url: jdbc:mysql://localhost:3306/demoAI?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
@@ -73,3 +83,5 @@ app:
     distance-type: COSINE_DISTANCE
     initialize-schema: false    # 手动由 PgVectorSchemaInitializer 在 try-catch 里执行
     schema-validation: false
+    # 重建 vector_store 表开关：true=启动时先清空并重建表（重新入库所有 PDF），false=保留现有数据增量入库
+    reset-table: false

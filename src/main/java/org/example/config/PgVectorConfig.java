@@ -15,13 +15,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import javax.sql.DataSource;
 
 /**
- * PgVector 持久化向量库配置。
- * 仅当配置了 app.pgvector.enabled=true 时才会激活。
+ * PgVector 持久化向量库配置，仅当 app.pgvector.enabled=true 时激活。
  *
- * 默认不启用（你的本机是 PostgreSQL 18，目前没有对应 pgvector 预编译 dll），
- * 会走 SimpleVectorStoreConfig（内存版），RAG 功能仍然可用。
- * 当未来你降级到 PostgreSQL 17（+ 安装 pgvector 扩展）时，
- * 只需在 application.yml 设置 app.pgvector.enabled=true 即可切换。
+ * 默认不启用（本机 PostgreSQL 18 暂无对应 pgvector 预编译 dll），走 SimpleVectorStoreConfig（内存版）；
+ * 当安装好 pgvector 扩展后，在 application.yml 设置 app.pgvector.enabled=true 即可切换。
  */
 @Configuration
 @EnableConfigurationProperties(PgVectorConfigProperties.class)
@@ -40,19 +37,10 @@ public class PgVectorConfig {
         cfg.setMinimumIdle(1);
         cfg.setConnectionTimeout(10_000);
         cfg.setIdleTimeout(60_000);
-        // -----------------------------------------------------------------
-        // ★ 防中文乱码 3 件套：
-        //   1) characterEncoding=utf-8：JDBC 驱动按 UTF-8 发字符串
-        //   2) connectionInitSql：每次从连接池拿到连接后 **立刻 SET client_encoding = UTF8**
-        //      （覆盖 postgresql.conf 里的 GBK/其它默认值，中文 Windows 装 PG 很容易踩这个坑）
-        //   3) 强制 UTF-8 写入：PgVector 底层通过 JDBC setString 传 content JSON，驱动层编码确定了就不会乱
-        // -----------------------------------------------------------------
+        // 防中文乱码：JDBC 驱动按 UTF-8 收发字符串，且每次取连接后强制 SET client_encoding = UTF8
         cfg.addDataSourceProperty("characterEncoding", "utf-8");
         cfg.addDataSourceProperty("useUnicode", "true");
         cfg.setConnectionInitSql("SET client_encoding = 'UTF8'");
-        System.out.println("[PgVectorConfig] ✅ 已启用 PgVector 持久化向量存储");
-        System.out.println("                JDBC URL = " + props.getJdbcUrl()
-                + "  user=" + props.getUsername() + "  characterEncoding=utf-8  initSql=SET client_encoding=UTF8");
         return new HikariDataSource(cfg);
     }
 
@@ -67,7 +55,7 @@ public class PgVectorConfig {
             @Qualifier("pgVectorJdbcTemplate") JdbcTemplate pgVectorJdbcTemplate,
             EmbeddingModel embeddingModel,
             PgVectorConfigProperties props) {
-        PgVectorStore.PgVectorStoreBuilder builder = PgVectorStore
+        return PgVectorStore
                 .builder(pgVectorJdbcTemplate, embeddingModel)
                 .schemaName(props.getSchemaName())
                 .vectorTableName(props.getTableName())
@@ -76,7 +64,7 @@ public class PgVectorConfig {
                 .distanceType(PgVectorStore.PgDistanceType.valueOf(props.getDistanceType()))
                 .idType(PgVectorStore.PgIdType.valueOf(props.getIdType()))
                 .initializeSchema(props.isInitializeSchema())
-                .vectorTableValidationsEnabled(props.isSchemaValidation());
-        return builder.build();
+                .vectorTableValidationsEnabled(props.isSchemaValidation())
+                .build();
     }
 }
