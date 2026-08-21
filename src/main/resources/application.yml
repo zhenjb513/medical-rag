@@ -14,7 +14,10 @@ spring:
         options:
           model: qwen-plus
           temperature: 0.7
-      # 百炼平台的 Embedding 模型（用于把文字变向量，dimensions=1536）
+      # 百炼平台的 Embedding 模型（用于把文字变向量）
+      # ⚠️ 注意维度必须和 app.pgvector.dimensions 严格一致：
+      #     text-embedding-v3  默认 1024 维（可选 512/1024/2048，**不支持 1536**！）
+      #     text-embedding-v2  默认 1536 维
       embedding:
         options:
           model: text-embedding-v3
@@ -29,6 +32,24 @@ app:
   #   ③ 不填 → 默认兜底目录 D:/ai-docs（目录不存在 / 无 PDF 时优雅跳过，不报错）
   pdf-path: D:/ai-docs
 
+  # ====== OCR 配置（纯图片扫描 PDF 兜底识别）======
+  #   当 P1/P2/P3 三层都提取不到文字时（纯图片扫描件），自动调用 Tesseract OCR 识别
+  #   下载安装：https://github.com/UB-Mannheim/tesseract/wiki （安装时勾选 "Chinese - Simplified" 语言包）
+  ocr:
+    # 是否启用 OCR 兜底（true=启用，false=纯图片PDF直接跳过）
+    enabled: true
+    # tesseract.exe 绝对路径（安装路径请根据实际情况修改）
+    tesseract-path: D:/Program Files/Tesseract-OCR/tesseract.exe
+    # 训练数据目录（tessdata 文件夹绝对路径，里面要有 chi_sim.traineddata）
+    #   ✅ Program Files 权限不够时，推荐放到 D:/tessdata/（无需管理员权限）
+    tessdata-dir: D:/tessdata
+    # OCR 识别语言（chi_sim=简体中文，中英文混合推荐：chi_sim+eng）
+    language: chi_sim+eng
+    # 渲染 DPI（越高越准确但越慢，推荐 250~350）
+    dpi: 300
+    # 每页 OCR 超时秒数（防止某页卡死整份 PDF）
+    page-timeout-seconds: 120
+
   pgvector:
     # ✨ 关键开关 ✨
     #   false → SimpleVectorStore（内存向量库，默认，开箱即用，重启会清空向量）
@@ -36,13 +57,17 @@ app:
     enabled: true
 
     # --- 以下仅当 enabled=true 才生效 ---
-    jdbc-url: jdbc:postgresql://localhost:5432/postgres
+    jdbc-url: jdbc:postgresql://localhost:5432/postgres?charSet=UTF8&stringtype=unspecified&prepareThreshold=0
+      # 参数说明：
+      #   charSet=UTF8             → PostgreSQL JDBC 驱动强制 UTF-8（和 MySQL 的 characterEncoding 参数名不同！）
+      #   stringtype=unspecified   → 传 String 给 setString 不声明 varchar 类型，让 PG 按目标列类型隐式转换，避免一次多余的编码转换
+      #   prepareThreshold=0       → 关闭服务器端预编译语句缓存，避免一些旧版 PG JDBC 驱动和 pgvector 扩展的缓存串话问题
     username: postgres
     password: postgres
     driver-class-name: org.postgresql.Driver
     schema-name: public
     table-name: vector_store
-    dimensions: 1536
+    dimensions: 1024       # ⚠️ 必须严格匹配模型输出维度：text-embedding-v3 默认=1024，v2 才是 1536
     id-type: UUID
     index-type: HNSW
     distance-type: COSINE_DISTANCE

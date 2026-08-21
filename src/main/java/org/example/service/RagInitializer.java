@@ -10,6 +10,8 @@ import org.apache.pdfbox.cos.COSStream;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPageTree;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotation;
+import org.apache.pdfbox.rendering.ImageType;
+import org.apache.pdfbox.rendering.PDFRenderer;
 import org.apache.pdfbox.text.PDFTextStripper;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.transformer.splitter.TokenTextSplitter;
@@ -18,9 +20,15 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
+import javax.imageio.ImageIO;
+import java.awt.image.BufferedImage;
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -31,6 +39,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -116,8 +125,155 @@ public class RagInitializer {
     @Value("${app.pdf-path:D:/ai-docs}")
     private String pdfPath;
 
+    // ========== OCR 兜底配置（纯图片扫描 PDF 用） ==========
+    @Value("${app.ocr.enabled:true}")
+    private boolean ocrEnabled;
+
+    @Value("${app.ocr.tesseract-path:D:/Program Files/Tesseract-OCR/tesseract.exe}")
+    private String ocrTesseractPath;
+
+    @Value("${app.ocr.tessdata-dir:D:/Program Files/Tesseract-OCR/tessdata}")
+    private String ocrTessdataDir;
+
+    @Value("${app.ocr.language:chi_sim+eng}")
+    private String ocrLanguage;
+
+    @Value("${app.ocr.dpi:300}")
+    private int ocrDpi;
+
+    @Value("${app.ocr.page-timeout-seconds:120}")
+    private int ocrPageTimeoutSec;
+
     public RagInitializer(@Autowired(required = false) VectorStore vectorStore) {
         this.vectorStore = vectorStore;
+    }
+
+    // -----------------------------------------------------------------------------
+    // 子进程注册表接口 + AutoCloseable 包装：
+    //   每次 ProcessBuilder.start() 后把 Process 注册进来，外层超时/Future.cancel 时
+    //   可以遍历所有已启动的 tesseract.exe 并 destroyForcibly（避免子进程泄漏、两份 PDF 同时 OCR 打架）
+    // -----------------------------------------------------------------------------
+    @FunctionalInterface
+    private interface ProcessRegistrar {
+        void register(Process p);
+    }
+    private static final ProcessRegistrar NOOP_REGISTRAR = p -> { /* 不注册，仅诊断/单测路径用 */ };
+    private static final class PdfProcessRegistry implements ProcessRegistrar, AutoCloseable {
+        private final ProcessRegistrar delegate;
+        PdfProcessRegistry(ProcessRegistrar delegate) { this.delegate = delegate == null ? NOOP_REGISTRAR : delegate; }
+        @Override public void register(Process p) { delegate.register(p); }
+        @Override public void close() { /* 资源清理占位，将来可扩展统计/超时预警 */ }
+    }
+
+    // OCR 配置有效性（运行时一次性诊断）
+    private transient Boolean ocrAvailableCache = null;
+    private transient String effectiveTessdataDir = null; // 诊断后最终生效的 tessdata 目录
+    private boolean isOcrAvailable() {
+        if (ocrAvailableCache != null) return ocrAvailableCache;
+        if (!ocrEnabled) { ocrAvailableCache = false; return false; }
+        boolean ok = false;
+        StringBuilder diag = new StringBuilder(512);
+        diag.append("[RagInitializer:OCR 诊断] ");
+        String finalTessDir = ocrTessdataDir;
+        try {
+            File exe = new File(ocrTesseractPath);
+            if (!exe.exists() || !exe.isFile()) {
+                diag.append("❌ tesseract.exe 不存在: ").append(ocrTesseractPath);
+                diag.append(" → 请修改 application.yml 的 app.ocr.tesseract-path");
+                diag.append("，或在 ").append("D:\\Program Files\\Tesseract-OCR\\").append(" 安装 Tesseract");
+            } else {
+                // ★★★ 智能 tessdata 目录降级策略 ★★★
+                // 顺序：① 配置文件指定的目录  ② 项目自带的 .diag-tmp/dl/ 目录（chi_sim.traineddata 已在里面！）
+                //       ③ 用户主目录下的 tessdata  ④ 尝试自动创建 D:/tessdata 并复制 traineddata
+                List<File> candidateDirs = new ArrayList<>();
+                candidateDirs.add(new File(ocrTessdataDir));
+                candidateDirs.add(new File("D:/AI/demoAI/.diag-tmp/dl"));  // 项目自带语言包（优先！无需复制）
+                candidateDirs.add(new File(System.getProperty("user.home"), "tessdata"));
+
+                File bestDir = null;
+                String missingLangs = null;
+                for (File candDir : candidateDirs) {
+                    if (!candDir.exists() || !candDir.isDirectory()) continue;
+                    boolean allOk = true;
+                    StringBuilder missSb = new StringBuilder();
+                    for (String langPart : ocrLanguage.replaceAll("\\+", ",").split(",")) {
+                        String l = langPart.trim();
+                        if (l.isEmpty()) continue;
+                        File td = new File(candDir, l + ".traineddata");
+                        if (!td.exists()) {
+                            allOk = false;
+                            missSb.append(l).append(" ");
+                        }
+                    }
+                    if (allOk) { bestDir = candDir; break; }
+                    if (missingLangs == null) missingLangs = missSb.toString().trim();
+                }
+
+                // ★ 最后兜底：尝试把项目里的 chi_sim.traineddata 复制到 D:/tessdata（Program Files 权限不足的替代方案）
+                if (bestDir == null) {
+                    File srcTd = new File("D:/AI/demoAI/.diag-tmp/dl/chi_sim.traineddata");
+                    if (srcTd.exists()) {
+                        File dstDir = new File("D:/tessdata");
+                        try {
+                            if (!dstDir.exists()) dstDir.mkdirs();
+                            File dstTd = new File(dstDir, "chi_sim.traineddata");
+                            if (!dstTd.exists()) Files.copy(srcTd.toPath(), dstTd.toPath());
+                            // 复制完再检查 eng（Tesseract 自带的 eng.traineddata 应该还在 Program Files 里）
+                            boolean hasChi = new File(dstDir, "chi_sim.traineddata").exists();
+                            boolean hasEng = new File(dstDir, "eng.traineddata").exists();
+                            if (!hasEng) {
+                                // 把 eng.traineddata 也从安装目录拷过来（不需要管理员权限，读 Program Files 是允许的）
+                                File engSrc = new File("D:/Program Files/Tesseract-OCR/tessdata/eng.traineddata");
+                                if (engSrc.exists()) Files.copy(engSrc.toPath(), new File(dstDir, "eng.traineddata").toPath());
+                                hasEng = new File(dstDir, "eng.traineddata").exists();
+                            }
+                            // 检查最终是否齐了
+                            boolean allOk = true;
+                            for (String langPart : ocrLanguage.replaceAll("\\+", ",").split(",")) {
+                                String l = langPart.trim();
+                                if (l.isEmpty()) continue;
+                                if (!new File(dstDir, l + ".traineddata").exists()) allOk = false;
+                            }
+                            if (allOk) bestDir = dstDir;
+                        } catch (Throwable ignore) {}
+                    }
+                }
+
+                if (bestDir == null) {
+                    File tessDir = new File(ocrTessdataDir);
+                    if (!tessDir.exists() || !tessDir.isDirectory()) {
+                        diag.append("❌ tessdata 目录不存在: ").append(ocrTessdataDir);
+                    } else {
+                        diag.append("❌ 缺少语言包: ").append(missingLangs == null ? "(未知)" : missingLangs)
+                                .append(" ，已尝试目录：");
+                        for (File cd : candidateDirs) diag.append(cd.getAbsolutePath()).append("; ");
+                    }
+                } else {
+                    finalTessDir = bestDir.getAbsolutePath();
+                    ok = true;
+                    diag.append("✅ Tesseract 就绪：exe=").append(exe.getAbsolutePath())
+                            .append("\n       tessdata（自动选择）=").append(finalTessDir)
+                            .append("\n       lang=").append(ocrLanguage)
+                            .append("，dpi=").append(ocrDpi)
+                            .append("，单页超时=").append(ocrPageTimeoutSec).append("s");
+                    if (!finalTessDir.equals(ocrTessdataDir)) {
+                        diag.append("\n       ⚡ 未用配置的 tessdata-dir（自动 fallback 到可用目录），可把 app.ocr.tessdata-dir 改成上面路径避免每次探测。");
+                    }
+                }
+            }
+        } catch (Throwable th) {
+            diag.append("❌ OCR 初始化异常: ").append(th.getClass().getSimpleName()).append(": ").append(th.getMessage());
+        }
+        System.out.println();
+        System.out.println(diag);
+        if (!ok) {
+            System.out.println("  👉 不启用 OCR 兜底，纯图片扫描 PDF 将被跳过（不影响文字型 PDF 正常入库）。");
+            System.out.println("  👉 快速修复：把 D:\\AI\\demoAI\\.diag-tmp\\dl\\chi_sim.traineddata 复制到 D:\\tessdata\\ 即可（不需要管理员权限）");
+        }
+        System.out.println();
+        effectiveTessdataDir = finalTessDir; // 保存最终生效目录供 OCR 方法使用
+        ocrAvailableCache = ok;
+        return ok;
     }
 
     @PostConstruct
@@ -141,34 +297,82 @@ public class RagInitializer {
         }
 
         System.out.println();
+        isOcrAvailable(); // 先跑一次 OCR 诊断（一次性打印配置状态）
+        System.out.println();
         System.out.println("[RagInitializer] ============================================================");
         System.out.println("[RagInitializer] 共发现 " + pdfs.size() + " 个 PDF，开始批量向量化 ...");
         System.out.println("[RagInitializer] PDF 读取：PDFBox 原生 PDFTextStripper（绕开 TimSort 版面排序崩溃）");
         System.out.println("[RagInitializer] Embedding 每批最多 " + DASHSCOPE_EMBEDDING_MAX_BATCH + " 个 chunks（DashScope 硬性限制）");
         System.out.println("[RagInitializer] 每份 PDF 提取超时 = 120 秒（超大扫描件 OCR 暴力兜底防止卡死启动）");
+        System.out.println("[RagInitializer] P4 兜底 OCR = " + (isOcrAvailable() ? "启用（纯图片扫描 PDF 会自动 Tesseract OCR 识别）" : "未启用（纯图片扫描 PDF 会被跳过，详情见上方 OCR 诊断）"));
         System.out.println("[RagInitializer] ============================================================");
 
         int totalChunks = 0;
         int totalBatches = 0;
         int okCount = 0;
         int failCount = 0;
-        final long PER_PDF_TIMEOUT_MILLIS = 120_000L; // 单 PDF 提取 + 切分最多 2 分钟，超时直接跳过
+        // ★★★ 含 OCR 的 PDF 超时按「页数」动态估算，避免硬编码 120 秒对长 PDF 不够 ★★★
+        //   P1/P2/P3 + QuickScan：普通文字 PDF 1 分钟足够
+        //   加 OCR：按「15 秒/页」的最坏情况估算（300dpi 中文，低配 CPU）+ 1 分钟基础缓冲
+        final long PER_PDF_MIN_TIMEOUT_MILLIS = 120_000L;     // 最低 2 分钟保底
+        final long PER_PDF_OCR_MS_PER_PAGE = 15_000L;         // 每页 OCR 预留 15 秒（39 页 → 585s）
+        final long PER_PDF_BASE_MILLIS = 60_000L;             // 1 分钟基础缓冲（加载+渲染+切片）
         for (File pdf : pdfs) {
             System.out.println("  📥 开始处理：" + pdf.getName() + " (" + formatSize(pdf.length()) + ") ...");
             long startMs = System.currentTimeMillis();
             List<Document> chunks = Collections.emptyList();
+
+            // 先探测 PDF 页数（只读 PDF 元数据，很便宜）→ 动态计算超时
+            long thisTimeoutMs = PER_PDF_MIN_TIMEOUT_MILLIS;
+            int pageCount = 0;
+            try (PDDocument probe = Loader.loadPDF(pdf)) {
+                pageCount = probe.getNumberOfPages();
+            } catch (Throwable ignore) {}
+            if (pageCount > 0) {
+                // 如果后面会触发 OCR（纯图片 PDF），按「每页 15 秒最坏情况」估；如果是文字型 PDF，实际 P1 很快就完成也不会浪费时间
+                long ocrBased = PER_PDF_BASE_MILLIS + (long) pageCount * PER_PDF_OCR_MS_PER_PAGE;
+                thisTimeoutMs = Math.max(PER_PDF_MIN_TIMEOUT_MILLIS, ocrBased);
+            }
+            final long finalTimeoutMs = thisTimeoutMs;
+            // 注册表：该 PDF 处理期间启动过的所有外部子进程（tesseract.exe），用于超时时真正 kill -9，避免两个 PDF OCR 交叉打架
+            final Set<Process> childProcesses = Collections.synchronizedSet(java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+
             try {
                 // ====== 用独立线程 + 超时包裹 readAndSplitOnePdf，避免大 PDF 卡死整个启动 ======
-                final FutureTask<List<Document>> ft = new FutureTask<>(() -> readAndSplitOnePdf(pdf));
+                final FutureTask<List<Document>> ft = new FutureTask<>(() -> {
+                    List<Document> result;
+                    // ✅ ProcessRegistrar 是函数式接口，可直接 lambda；PdfProcessRegistry 只是 AutoCloseable 包装类，必须 new
+                    ProcessRegistrar registrarLambda = proc -> { if (proc != null) childProcesses.add(proc); };
+                    try (PdfProcessRegistry reg = new PdfProcessRegistry(registrarLambda)) {
+                        result = readAndSplitOnePdf(pdf, reg);
+                    }
+                    return result;
+                });
                 Thread t = new Thread(ft, "rag-pdf-" + pdf.getName().replaceAll("[^A-Za-z0-9]", "_"));
                 t.setDaemon(true);
                 t.start();
                 try {
-                    chunks = ft.get(PER_PDF_TIMEOUT_MILLIS, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    chunks = ft.get(finalTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
                 } catch (java.util.concurrent.TimeoutException toe) {
+                    // ★ 1) 先取消线程（interrupt）
                     ft.cancel(true);
                     t.interrupt();
-                    throw new IOException("PDF 提取超时（>120 秒），已强制跳过。可能是文件太大 / 纯图片 + 暴力递归流太多，建议：① 减小文件 ② 或上 OCR 识别图片版。");
+                    // ★ 2) 最关键：把所有已经启动的 tesseract.exe 子进程（包括子进程的子进程）强制杀掉
+                    //    否则 PDFBox 的 FutureTask 虽然 cancel，但已经 fork 出去的 tesseract.exe 会继续跑十几分钟不退出
+                    int killed = 0;
+                    synchronized (childProcesses) {
+                        for (Process p : childProcesses) {
+                            try {
+                                p.descendants().forEach(ph -> { try { ph.destroyForcibly(); } catch (Throwable ignore) {} });
+                                p.destroyForcibly();
+                                killed++;
+                            } catch (Throwable ignore) {}
+                        }
+                        childProcesses.clear();
+                    }
+                    long secs = finalTimeoutMs / 1000;
+                    throw new IOException("PDF 提取超时（>" + secs + " 秒，页数=" + pageCount + "，已强制杀掉 " + killed + " 个 OCR 子进程），已跳过。"
+                            + (pageCount > 30 ? "（大扫描件 PDF 如需更长超时，可调整 RagInitializer 中 PER_PDF_OCR_MS_PER_PAGE）" : "可能是文件损坏/加密导致死锁"));
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     ft.cancel(true);
@@ -274,7 +478,13 @@ public class RagInitializer {
      *          - 非空字符 < 200   →  ✅ 判定为【纯图片 / 普通文字型 PDF】
      *                               → 才跑 P1(PDFTextStripper) + P2，最后再用全量 Pass3 兜底。
      */
+    // 旧签名：给未来的诊断/测试代码用（不传 registrar = 不注册进程）
     private List<Document> readAndSplitOnePdf(File pdf) throws Exception {
+        return readAndSplitOnePdf(pdf, NOOP_REGISTRAR);
+    }
+
+    private List<Document> readAndSplitOnePdf(File pdf, ProcessRegistrar registrar) throws Exception {
+        if (registrar == null) registrar = NOOP_REGISTRAR;
         String password = null; // 打开密码。无密码 PDF 留 null 即可。
         try (PDDocument pdDoc = openPdfLenient(pdf, password)) {
             int pageCount = pdDoc.getNumberOfPages();
@@ -296,8 +506,8 @@ public class RagInitializer {
             //    原理：QuickScan 前5页在 Page+Annotation 里命中了文字 → 100% 是「扫描件 + Acrobat OCR 隐藏文字」型 PDF
             //          隐藏层文字 100% 存在于 Page 的 /Contents 内容流 + 页面 Annotation 外观流里
             //          Catalog 树（StructTree/AcroForm/Names/嵌入字体）里绝不会有 Tj/TJ 操作符，所以完全不递归，省 90%+ 时间！
-            int nonBlank1 = 0, nonBlank2 = 0, nonBlank3;
-            int len = 0, len2 = 0, len3;
+            int nonBlank1 = 0, nonBlank2 = 0, nonBlank3 = 0, nonBlank4 = 0;
+            int len = 0, len2 = 0, len3 = 0, len4 = 0;
             String fullText = null;
             String brutePreview = "";
             if (isScannedHiddenText) {
@@ -314,8 +524,19 @@ public class RagInitializer {
                     String p = brute.replaceAll("[\\r\\n\\t ]+", " ").trim();
                     brutePreview = p.length() > 300 ? p.substring(0, 300) : p;
                 }
+                // ★★★ 路径 A 也需要 OCR 兜底：极少数扫描件虽然 QuickScan 前5页有文字，但不是中文/正文，P3 结果仍可能为 0
+                if (nonBlank3 < 200 && isOcrAvailable()) {
+                    System.out.println("    ↪ [P4-OCR] 扫描件路径 P3 非空字符不足，启动 Tesseract OCR 识别 ...");
+                    String ocr = ocrExtractFromPdf(pdDoc, registrar);
+                    len4 = len(ocr);
+                    nonBlank4 = countNonBlank(ocr);
+                    if (nonBlank4 > Math.max(nonBlank3, nonBlankQuick)) {
+                        fullText = ocr; len = len4;
+                    }
+                    debugSb.append(" P4(OCR)=").append(len4).append('(').append(nonBlank4).append("非空)");
+                }
             } else {
-                // ---------- 路径 B：纯图片 / 普通文字型 PDF → 原顺序 P1 → P2 → Pass3 兜底 ----------
+                // ---------- 路径 B：纯图片 / 普通文字型 PDF → 原顺序 P1 → P2 → P3 兜底 → P4 OCR 终极兜底 ----------
                 // P1
                 fullText = new PDFTextStripper().getText(pdDoc);
                 len = (fullText == null) ? 0 : fullText.length();
@@ -335,7 +556,6 @@ public class RagInitializer {
                     debugSb.append(" P2=").append(len2).append('(').append(nonBlank2).append("非空)");
                 }
                 // P3 兜底（P1/P2 都不够才跑，省时间）
-                len3 = 0; nonBlank3 = 0;
                 if (Math.max(nonBlank1, nonBlank2) < 200) {
                     String brute = bruteExtractStringsFromAllStreams(pdDoc, stats, firstHitDump);
                     len3 = len(brute);
@@ -349,9 +569,21 @@ public class RagInitializer {
                         brutePreview = p.length() > 300 ? p.substring(0, 300) : p;
                     }
                 }
+                // ★★★ P4 OCR 终极兜底：P1/P2/P3 + QuickScan 全不够（典型纯图片扫描件）→ 调 Tesseract
+                int maxBeforeOcr = Math.max(Math.max(Math.max(nonBlank1, nonBlank2), nonBlank3), nonBlankQuick);
+                if (maxBeforeOcr < 200 && isOcrAvailable()) {
+                    System.out.println("    ↪ [P4-OCR] P1/P2/P3 均不足（纯图片扫描件），启动 Tesseract OCR 逐页识别 ...");
+                    String ocr = ocrExtractFromPdf(pdDoc, registrar);
+                    len4 = len(ocr);
+                    nonBlank4 = countNonBlank(ocr);
+                    if (nonBlank4 > maxBeforeOcr) {
+                        fullText = ocr; len = len4;
+                    }
+                    debugSb.append(" P4(OCR)=").append(len4).append('(').append(nonBlank4).append("非空)");
+                }
             }
 
-            int finalNonBlank = Math.max(Math.max(Math.max(nonBlank1, nonBlank2), nonBlank3), nonBlankQuick);
+            int finalNonBlank = Math.max(Math.max(Math.max(Math.max(nonBlank1, nonBlank2), nonBlank3), nonBlank4), nonBlankQuick);
             List<Document> chunks = Collections.emptyList();
             if (finalNonBlank >= 20) {
                 Document doc = new Document(fullText == null ? "" : fullText, Map.of(
@@ -813,6 +1045,170 @@ public class RagInitializer {
             return list;
         }
         return Collections.emptyList();
+    }
+
+    // ================================================================================
+    // P4 OCR 终极兜底：PDFBox 逐页渲染成 PNG → Tesseract 命令行做 OCR → 拿到纯文本
+    // ================================================================================
+
+    /**
+     * 纯图片扫描 PDF OCR 识别：逐页渲染 → 调 tesseract.exe → 拼回全文。
+     *
+     * 注意：直接走命令行调用（不依赖 Tess4J），好处：
+     *   ① pom 不用加新依赖（Tess4J 还要带 native dll，Win/Linux/Mac 各一套巨麻烦）
+     *   ② 用户电脑上安装的 Tesseract 是最新 v5.x，Tess4J 经常跟不上版本
+     *   ③ 可以直接用 --tessdata-dir 指定任意目录（绕开 Program Files 权限问题）
+     */
+    private static final boolean OCR_DEBUG_KEEP_FILES = true; // 出现空识别时保留临时文件便于手动检查
+
+    private String ocrExtractFromPdf(PDDocument pdDoc, ProcessRegistrar registrar) {
+        if (registrar == null) registrar = NOOP_REGISTRAR;
+        File workDir = null;
+        try {
+            int pages = pdDoc.getNumberOfPages();
+            PDFRenderer renderer = new PDFRenderer(pdDoc);
+            workDir = Files.createTempDirectory("rag-ocr-" + System.currentTimeMillis()).toFile();
+            StringBuilder allText = new StringBuilder(pages * 4096);
+            // 调试用：空识别时把 PNG/TXT 拷贝到这个目录（不会被清）
+            File debugKeepDir = OCR_DEBUG_KEEP_FILES ? new File("D:/tessdata/ocr-debug-" + System.currentTimeMillis()) : null;
+            int debugKept = 0;
+            if (debugKeepDir != null) debugKeepDir.mkdirs();
+
+            for (int i = 0; i < pages; i++) {
+                long pageStart = System.currentTimeMillis();
+                File png = null;
+                File outBase = null;
+                try {
+                    // ===== 1) PDF 页 → PNG =====
+                    long tRender0 = System.currentTimeMillis();
+                    BufferedImage img = renderer.renderImageWithDPI(i, ocrDpi, ImageType.RGB);
+                    int imgW = img.getWidth(), imgH = img.getHeight();
+                    // ---- 像素抽样：判断渲染结果是不是几乎全白（PDFRenderer 渲染失败典型表现）----
+                    int nonWhitePx = 0, stepX = Math.max(1, imgW/60), stepY = Math.max(1, imgH/60);
+                    for (int y = 0; y < imgH; y += stepY) {
+                        for (int x = 0; x < imgW; x += stepX) {
+                            int rgb = img.getRGB(x, y) & 0xFFFFFF;
+                            if (rgb != 0xFFFFFF) nonWhitePx++;
+                        }
+                    }
+                    double coverage = 100.0 * nonWhitePx / ((imgW/stepX)*(imgH/stepY));
+                    png = new File(workDir, "p" + i + ".png");
+                    ImageIO.write(img, "png", png);
+                    long pngSize = png.length();
+                    img.flush();
+                    long renderMs = System.currentTimeMillis() - tRender0;
+
+                    // ===== 2) tesseract PNG → TXT =====
+                    // ★ 关键：强制 Tesseract 输出 UTF-8 文件（Windows 中文环境下 tesseract 默认按系统代码页 GBK 写 TXT）
+                    //   做法：
+                    //     a) -c output_encoding=UTF-8       → Tesseract 5.x 原生配置，写 txt 文件强制 UTF-8
+                    //     b) ProcessBuilder.environment().put("TESSERACT_OUTPUT_ENCODING", "UTF-8") → 兼容老版本
+                    //   这样 Java 侧只按 UTF-8 读，不再猜 GBK，从源头杜绝「数据库中文乱码」
+                    outBase = new File(workDir, "p" + i);
+                    List<String> cmd = new ArrayList<>(12);
+                    cmd.add(ocrTesseractPath);
+                    cmd.add(png.getAbsolutePath());
+                    cmd.add(outBase.getAbsolutePath());
+                    cmd.add("-l"); cmd.add(ocrLanguage);
+                    cmd.add("--dpi"); cmd.add(String.valueOf(ocrDpi));
+                    cmd.add("--tessdata-dir"); cmd.add(effectiveTessdataDir != null ? effectiveTessdataDir : ocrTessdataDir);
+                    cmd.add("-c"); cmd.add("output_encoding=UTF-8");
+
+                    ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
+                    // 双保险：设置子进程环境变量，Tesseract 读取输出/系统代码页时走 UTF-8
+                    java.util.Map<String, String> env = pb.environment();
+                    env.put("TESSERACT_OUTPUT_ENCODING", "UTF-8");
+                    env.put("PYTHONIOENCODING", "utf-8");     // 顺带防止被 python 包装脚本污染
+                    Process p = pb.start();
+                    registrar.register(p);  // ★ 注册到该 PDF 的子进程表，超时/取消时可被强制杀掉（避免 OCR 子进程泄漏）
+                    StringBuilder procOut = new StringBuilder(512);
+                    try (BufferedReader br = new BufferedReader(new InputStreamReader(p.getInputStream(), StandardCharsets.UTF_8))) {
+                        String line;
+                        while ((line = br.readLine()) != null) procOut.append(line).append('\n');
+                    }
+                    boolean finished = p.waitFor(ocrPageTimeoutSec, TimeUnit.SECONDS);
+                    int exit = p.exitValue();
+                    long ocrOnlyMs = System.currentTimeMillis() - pageStart - renderMs;
+                    if (!finished) { p.destroyForcibly();
+                        System.out.println("      ⚠️ 第 " + (i+1) + "/" + pages + " 页 OCR 超时（>" + ocrPageTimeoutSec + "s），跳过");
+                        continue;
+                    }
+                    if (exit != 0) {
+                        String hint = procOut.toString().replaceAll("\\s+", " ").trim();
+                        if (hint.length() > 500) hint = hint.substring(0,500)+"...";
+                        System.err.println("      ❌ 第 " + (i+1) + "/" + pages + " 页 OCR 失败 exit=" + exit
+                                + "：" + (hint.isEmpty() ? "(stdout空)" : hint));
+                        System.err.println("         命令行: " + String.join(" ", cmd));
+                        continue;
+                    }
+
+                    // ===== 3) 读取 TXT 结果（Tesseract 已通过 -c output_encoding=UTF-8 强制输出 UTF-8，直接读）=====
+                    //   不再做 GBK 双解码猜谜：避免把 UTF-8 字节按 GBK 解成乱码再入库
+                    File txtFile = new File(outBase.getAbsolutePath() + ".txt");
+                    String pageText = "";
+                    long txtSize = txtFile.exists() ? txtFile.length() : -1;
+                    if (txtFile.exists() && txtSize > 0) {
+                        pageText = Files.readString(txtFile.toPath(), StandardCharsets.UTF_8);
+                    }
+                    allText.append(pageText).append("\n\n");
+                    int nb = countNonBlank(pageText);
+                    long totalMs = System.currentTimeMillis() - pageStart;
+
+                    // ===== 4) 进度输出（诊断信息增强版）=====
+                    String pageMsg = "      ↪ 第 " + (i+1) + "/" + pages + " 页 OCR 完成（共" + totalMs
+                            + "ms = 渲染" + renderMs + "ms+OCR" + ocrOnlyMs + "ms，PNG="
+                            + (pngSize/1024) + "KB，内容覆盖率≈" + String.format("%.2f", coverage)
+                            + "%，TXT=" + (txtSize>0?txtSize+"B":"空") + "，非空字符≈" + nb + "）";
+                    if (nb == 0) {
+                        System.err.println(pageMsg);
+                        // ★ 非空=0 → 打印详细诊断并保留临时文件
+                        if (coverage < 0.01) {
+                            System.err.println("         ⚠️⚠️ 原因极大概率：PDFRenderer 渲染出来的 PNG 几乎全白（内容覆盖率≈"
+                                    + String.format("%.4f", coverage) + "%）！PDF 页面损坏 / 加密 / 特殊编码 导致无法渲染");
+                        } else {
+                            System.err.println("         ⚠️⚠️ PNG 有内容（覆盖率≈" + String.format("%.2f", coverage)
+                                    + "%），但 Tesseract 识别空 → 可能是 traineddata 没正确加载，或语言不匹配");
+                        }
+                        if (debugKeepDir != null && debugKept < 3) { // 最多留前3个空页的样本
+                            try {
+                                File keepPng = new File(debugKeepDir, "empty_p" + (i+1) + ".png");
+                                File keepTxt = new File(debugKeepDir, "empty_p" + (i+1) + ".txt");
+                                Files.copy(png.toPath(), keepPng.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                                if (txtFile.exists()) Files.copy(txtFile.toPath(), keepTxt.toPath(), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                                System.err.println("         📁 样本已保留（可手动检查）: " + keepPng.getParentFile().getAbsolutePath());
+                                debugKept++;
+                            } catch (Throwable ignore) {}
+                        }
+                    } else {
+                        System.out.println(pageMsg);
+                    }
+                } catch (Throwable pageTh) {
+                    System.err.println("      ⚠️ 第 " + (i+1) + "/" + pages + " 页 OCR 异常: "
+                            + pageTh.getClass().getSimpleName() + ": " + pageTh.getMessage());
+                } finally {
+                    if (png != null && png.exists()) png.delete();
+                    if (outBase != null) {
+                        for (String suffix : new String[]{".txt", ".tsv", ".hocr", ".pdf"}) {
+                            File f = new File(outBase.getAbsolutePath() + suffix);
+                            if (f.exists()) f.delete();
+                        }
+                    }
+                }
+            }
+            return allText.toString().trim();
+        } catch (Throwable th) {
+            System.err.println("  ❌ [P4-OCR] 整体异常，放弃 OCR: " + th.getClass().getSimpleName() + ": " + th.getMessage());
+            return "";
+        } finally {
+            // 清理临时目录
+            if (workDir != null && workDir.exists()) {
+                try {
+                    File[] left = workDir.listFiles();
+                    if (left != null) for (File f : left) f.delete();
+                    workDir.delete();
+                } catch (Throwable ignore) {}
+            }
+        }
     }
 
     // ================================================================================

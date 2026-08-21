@@ -40,9 +40,19 @@ public class PgVectorConfig {
         cfg.setMinimumIdle(1);
         cfg.setConnectionTimeout(10_000);
         cfg.setIdleTimeout(60_000);
+        // -----------------------------------------------------------------
+        // ★ 防中文乱码 3 件套：
+        //   1) characterEncoding=utf-8：JDBC 驱动按 UTF-8 发字符串
+        //   2) connectionInitSql：每次从连接池拿到连接后 **立刻 SET client_encoding = UTF8**
+        //      （覆盖 postgresql.conf 里的 GBK/其它默认值，中文 Windows 装 PG 很容易踩这个坑）
+        //   3) 强制 UTF-8 写入：PgVector 底层通过 JDBC setString 传 content JSON，驱动层编码确定了就不会乱
+        // -----------------------------------------------------------------
+        cfg.addDataSourceProperty("characterEncoding", "utf-8");
+        cfg.addDataSourceProperty("useUnicode", "true");
+        cfg.setConnectionInitSql("SET client_encoding = 'UTF8'");
         System.out.println("[PgVectorConfig] ✅ 已启用 PgVector 持久化向量存储");
         System.out.println("                JDBC URL = " + props.getJdbcUrl()
-                + "  user=" + props.getUsername());
+                + "  user=" + props.getUsername() + "  characterEncoding=utf-8  initSql=SET client_encoding=UTF8");
         return new HikariDataSource(cfg);
     }
 
