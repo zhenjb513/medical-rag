@@ -10,6 +10,7 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.beans.factory.annotation.Autowired;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -23,17 +24,20 @@ public class ChatController {
     private final RagInitializer ragInitializer;
     private final ApplicationContext applicationContext;
     private final VectorStore vectorStore;
+    private final PhiDesensitizationService phiDesensitizationService;
     private final ObjectMapper jsonMapper = new ObjectMapper().enable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);
 
     public ChatController(ChatClient.Builder chatClientBuilder,
                           InventoryService inventoryService,
                           VectorStore vectorStore,
                           ApplicationContext applicationContext,
+                          PhiDesensitizationService phiDesensitizationService,
                           @Autowired(required = false) RagInitializer ragInitializer) {
         this.inventoryService = inventoryService;
         this.applicationContext = applicationContext;
         this.vectorStore = vectorStore;
         this.ragInitializer = ragInitializer;
+        this.phiDesensitizationService = phiDesensitizationService;
 
         boolean vectorStoreReady = true;
         if (applicationContext.containsBean("pgVectorSchemaInitializer")) {
@@ -50,8 +54,14 @@ public class ChatController {
 
     @GetMapping("/chat")
     public String chat(@RequestParam String message) {
+        // PHI脱敏：在进入RAG检索和大模型前，对用户输入进行隐私信息脱敏
+        String sanitizedMessage = phiDesensitizationService.desensitize(message);
+        //记录脱敏日志[审计用]
+        if(phiDesensitizationService.containsPhi(message)){
+            System.out.println("[PHI脱敏]监测到敏感信息，已脱敏处理。原始消息：" + message + "，脱敏后消息：" + sanitizedMessage);
+        }
         return chatClient.prompt()
-                .user(message)
+                .user(sanitizedMessage)
                 .tools(inventoryService)
                 .call()
                 .content();
