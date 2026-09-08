@@ -91,7 +91,9 @@ public class RagInitializer {
     private final VectorStore vectorStore;
     /** PGVector JDBC：用于「PDF 已入库」去重（PGVector 未启用时为 null） */
     private final org.springframework.jdbc.core.JdbcTemplate pgJdbc;
-    private final TokenTextSplitter splitter = new TokenTextSplitter();
+    private final TokenTextSplitter splitter = TokenTextSplitter.builder()
+            .withChunkSize(512)
+            .build();
 
     @Value("${app.pdf-path:D:/ai-docs}")
     private String pdfPath;
