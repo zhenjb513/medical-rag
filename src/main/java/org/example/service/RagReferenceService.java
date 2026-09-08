@@ -34,8 +34,11 @@ public class RagReferenceService {
 
     /**
      * 搜索相似文档（向量检索，返回top-k相关文档）
-     * @param query 用户查询
-     * @param topk  最多返回数量
+     * 双保险：同时在 DB 层（similarityThreshold）和 Java 层手动过滤 score，
+     * 防止部分 VectorStore 实现的 DB 层阈值不生效。
+     *
+     * @param query               用户查询
+     * @param topk                最多返回数量
      * @param similarityThreshold 相似度阈值（0.0~1.0），低于此值的结果被过滤；null 表示不设阈值
      */
     public List<Document> search(String query, int topk, Double similarityThreshold) {
@@ -48,7 +51,30 @@ public class RagReferenceService {
         if (similarityThreshold != null) {
             builder.similarityThreshold(similarityThreshold);
         }
-        return vectorStore.similaritySearch(builder.build());
+        List<Document> rawResults = vectorStore.similaritySearch(builder.build());
+
+        System.out.print("[RAG原始分数] Top " + (rawResults == null ? 0 : rawResults.size())
+                + " score=[ ");
+        if (rawResults != null) {
+            for (Document d : rawResults) {
+                Double s = d.getScore();
+                System.out.printf("%.4f ", s != null ? s : -1.0);
+            }
+        }
+        System.out.println("]  阈值=" + similarityThreshold);
+
+        // Java 层二次过滤：防止 DB 层阈值未生效
+        if (similarityThreshold != null && rawResults != null && !rawResults.isEmpty()) {
+            List<Document> filtered = new ArrayList<>();
+            for (Document doc : rawResults) {
+                Double score = doc.getScore();
+                if (score != null && score >= similarityThreshold) {
+                    filtered.add(doc);
+                }
+            }
+            return filtered;
+        }
+        return rawResults == null ? Collections.emptyList() : rawResults;
     }
 
     /**
@@ -116,7 +142,6 @@ public class RagReferenceService {
         prompt.append("3. 回答要准确、简洁，尽量引用原文\n");
         prompt.append("4. 不要给出诊断结论，只提供知识查询和信息参考\n");
         prompt.append("5. 涉及药物、治疗方案时，提醒用户咨询专业医生\n");
-        prompt.append("6. 使用纯文本回答，不要使用Markdown格式，不要用**加粗**、-列表、#标题等格式符号\n");
         return prompt.toString();
     }
 

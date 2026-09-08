@@ -61,16 +61,15 @@ public class ChatController {
     public String chat(@RequestParam String message) {
         // 1.PHI脱敏：在进入RAG检索和大模型前，对用户输入进行隐私信息脱敏
         String sanitizedMessage = phiDesensitizationService.desensitize(message);
-        //记录脱敏日志[审计用]
-        if(phiDesensitizationService.containsPhi(message)){
-            System.out.println("[PHI脱敏]监测到敏感信息，已脱敏处理。原始消息：" + message + "，脱敏后消息：" + sanitizedMessage);
-        }
+        boolean hasPhi = phiDesensitizationService.containsPhi(message);
 
         // 2.向量检索（Top 8，加相似度阈值 0.4 过滤低质量 chunk）
-        List<Document> docs = ragReferenceService.search(sanitizedMessage, 8, 0.4);
-        System.out.println("[RAG检索] 原始问题: \"" + message + "\"");
-        System.out.println("[RAG检索] 脱敏后:   \"" + sanitizedMessage + "\"");
-        System.out.println("[RAG检索] 召回文档数量: " + docs.size() + " (Top 8, 相似度阈值 ≥ 0.4)");
+        List<Document> docs = ragReferenceService.search(sanitizedMessage, 8, 0.65);
+        if (hasPhi) {
+            System.out.println("[PHI脱敏] 监测到敏感信息，原始: \"" + message + "\"  脱敏后: \"" + sanitizedMessage + "\"");
+        }
+        System.out.println("[RAG检索] 问题: \"" + sanitizedMessage + "\"" + (hasPhi ? " (已脱敏)" : ""));
+        System.out.println("[RAG检索] 召回文档数量: " + docs.size() + " (Top 8, 相似度阈值 ≥ 0.65)");
         for (int i = 0; i < docs.size(); i++) {
             Document doc = docs.get(i);
             double score = doc.getScore() != null ? doc.getScore() : -1.0;
