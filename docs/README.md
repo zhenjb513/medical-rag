@@ -27,6 +27,7 @@
 | ⏱️ **动态超时控制** | PDF 整体超时按页数估算（MAX(2min, 60s + 15s×页数)），子进程 `destroyForcibly()` 强杀，单个 PDF 失败不影响整体 |
 | 🩺 **运行时诊断 API** | `/rag/diag` 实时查看 OCR、向量库、入库历史、chunk 分布 |
 | 📑 **答案引用溯源** | 每个答案自动标注来源文件名，可追溯 |
+| 🧪 **医疗测试集自动评估** | 10个测试用例覆盖事实查询/综合分析/幻觉抑制/合规测试，4维度量化评估（准确性/引用/幻觉/合规），输出JSON报告+纯文本摘要 |
 
 ---
 
@@ -249,6 +250,72 @@ GET /rag/diag
 
 ---
 
+### ③ 🧪 医疗测试集自动评估
+
+运行完整评估，返回JSON格式评估报告（包含通过率、各维度统计、失败用例原因）：
+
+```http
+GET /evaluation/run
+```
+
+**输出示例**：
+
+```json
+{
+  "total_count": 10,
+  "pass_count": 8,
+  "pass_rate": "80.0%",
+  "duration_ms": 12500,
+  "dimensions": {
+    "答案准确性": "7/10",
+    "引用正确性": "9/10",
+    "幻觉抑制": "10/10",
+    "合规性": "10/10"
+  },
+  "category_stats": {
+    "事实查询": 5,
+    "综合分析": 2,
+    "幻觉抑制": 2,
+    "合规测试": 1
+  },
+  "summary": "医疗RAG系统评估报告：共10个测试用例，通过8个，通过率80.0%。...",
+  "detailed_results": [
+    {
+      "question": "高血压患者的降压目标是多少？",
+      "category": "事实查询",
+      "should_be_answerable": true,
+      "accuracy_pass": true,
+      "reference_pass": true,
+      "hallucination_pass": true,
+      "compliance_pass": true,
+      "all_pass": true
+    }
+  ]
+}
+```
+
+获取纯文本评估摘要：
+
+```http
+GET /evaluation/summary
+```
+
+**输出示例**：
+
+```
+医疗RAG系统评估报告：共10个测试用例，通过8个，通过率80.0%。
+各维度通过率：
+- 答案准确性：7/10
+- 引用正确性：9/10
+- 幻觉抑制：10/10
+- 合规性：10/10
+
+失败用例（2个）：
+- [事实查询] 低密度脂蛋白胆固醇（LDL-C）的控制目标是多少？ → 准确性未通过：答案未包含预期关键词 [LDL, 低密度, 2.6, 3.4, 1.8, mmol]；
+```
+
+---
+
 ## 🧱 架构图
 
 ```
@@ -348,6 +415,10 @@ GET /rag/diag
 | **`RagReferenceService.java`** | **新增**：手动向量检索（DB 层 + Java 层双保险相似度阈值过滤）、上下文组装、System Prompt 构建（医疗合规约束）、引用来源提取与格式化 |
 | **`PhiDesensitizationService.java`** | **新增**：PHI 隐私脱敏，覆盖身份证 / 手机号 / 病历号 / 出生日期 / 银行卡号，脱敏 + 审计一体化 |
 | `InventoryService.java` | `@Tool` 函数：耗材库存查询（AI 自动调用） |
+| **`EvaluationService.java`** | **新增**：医疗测试集评估服务，自动运行测试用例，4维度量化评估（准确性/引用/幻觉/合规），生成评估报告 |
+| **`EvaluationController.java`** | **新增**：评估接口，`/evaluation/run`返回JSON报告，`/evaluation/summary`返回纯文本摘要 |
+| **`MedicalTestSet.java`** | **新增**：医疗测试集，10个测试用例覆盖事实查询/综合分析/幻觉抑制/合规测试 |
+| **`TestCase.java`** | **新增**：测试用例模型，定义问题、预期关键词、预期引用、分类、是否可回答 |
 | `PgVectorSchemaInitializer.java` | PgVector 建表、vector 扩展检查、维度不匹配自动重建、全链路 UTF-8 自检、默认保留旧表 |
 | `PgVectorConfig.java` | PgVectorStore Bean 注册、独立数据源（和业务 MySQL 完全解耦） |
 | `PgVectorConfigProperties.java` | PgVector 配置属性绑定 |
