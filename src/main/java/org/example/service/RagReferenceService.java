@@ -81,17 +81,17 @@ public class RagReferenceService {
      * 构建上下文（将文档内容格式化为指定格式）
      * 组装上下文文本，将检索到的文件片段拼接成上下文
      */
-    public String buildContext(List<Document> docs){
-        if(docs == null || docs.isEmpty()){
+    public String buildContext(List<Document> docs) {
+        if (docs == null || docs.isEmpty()) {
             return "(无相关文档)";
         }
         StringBuilder context = new StringBuilder();
-       for(int i = 0;i<docs.size();i++){
-           Document doc = docs.get(i);
-           context.append("【文档").append(i+1).append("】\n");
-           context.append(doc.getText()).append("\n");
-       }
-       return context.toString();
+        for (int i = 0; i < docs.size(); i++) {
+            Document doc = docs.get(i);
+            context.append("【文档").append(i + 1).append("】\n");
+            context.append(doc.getText()).append("\n");
+        }
+        return context.toString();
     }
 
     /**
@@ -131,7 +131,7 @@ public class RagReferenceService {
      * 构建系统提示（包含上下文和回答规则）
      * 组装带医疗合规约束的System Prompt
      */
-    public String buildSystemPrompt(String context){
+    public String buildSystemPrompt(String context) {
         StringBuilder prompt = new StringBuilder();
         prompt.append("你是一个专业的医疗知识库问答助手，请根据以下知识库上下文回答用户的问题。\n\n");
         prompt.append("【知识库上下文】\n");
@@ -149,16 +149,16 @@ public class RagReferenceService {
      * 格式化引用来源（添加序号）,附加到答案末尾
      * 组装引用来源文本，将提取到的文件名列表拼接成引用来源
      */
-    public String formatReferences(List<String> references){
-        if(references == null || references.isEmpty()){
+    public String formatReferences(List<String> references) {
+        if (references == null || references.isEmpty()) {
             return "(无引用)";
         }
         StringBuilder refs = new StringBuilder();
         refs.append("\n\n---\n");
-        refs.append("【引用(参考)来源】\n");
-       for(int i = 0;i<references.size();i++){
-           refs.append(i+1).append(".").append(references.get(i)).append("\n");
-       }
+        refs.append("【引用来源】\n");
+        for (int i = 0; i < references.size(); i++) {
+            refs.append(i + 1).append(".").append(references.get(i)).append("\n");
+        }
         return refs.toString();
     }
 }
