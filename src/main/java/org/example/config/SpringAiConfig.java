@@ -1,4 +1,4 @@
-package org.example.service;
+package org.example.config;
 
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;

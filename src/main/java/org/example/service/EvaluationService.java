@@ -1,5 +1,8 @@
 package org.example.service;
 
+import org.example.controller.ChatController;
+import org.example.model.MedicalTestSet;
+import org.example.model.TestCase;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 

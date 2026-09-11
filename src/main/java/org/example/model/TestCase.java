@@ -1,4 +1,4 @@
-package org.example.service;
+package org.example.model;
 
 import java.util.List;
 
@@ -29,7 +29,7 @@ public class TestCase {
     private String category;
 
     /**
-     * 是否应被能回答（true 表示应回答,知识库有答案，false 表示不应回答，应该返回“无法回答”）
+     * 是否应被能回答（true 表示应回答,知识库有答案，false 表示不应回答，应该返回"无法回答"）
      */
     private boolean shouldBeAnswerable;
 

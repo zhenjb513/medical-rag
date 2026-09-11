@@ -1,6 +1,7 @@
-package org.example.service;
+package org.example.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.example.service.EvaluationService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;

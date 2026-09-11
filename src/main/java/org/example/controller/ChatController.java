@@ -1,9 +1,12 @@
-package org.example.service;
+package org.example.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.example.config.PgVectorSchemaInitializer;
+import org.example.service.InventoryService;
+import org.example.service.PhiDesensitizationService;
+import org.example.service.RagInitializer;
+import org.example.service.RagReferenceService;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.client.advisor.vectorstore.QuestionAnswerAdvisor;
 import org.springframework.ai.document.Document;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,7 +14,6 @@ import org.springframework.context.ApplicationContext;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import org.springframework.beans.factory.annotation.Autowired;
 
 import java.util.*;
 
