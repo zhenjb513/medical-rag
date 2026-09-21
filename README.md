@@ -4,7 +4,7 @@ h1 { font-size: 2.2em; }
 h2 { font-size: 1.7em; }
 h3 { font-size: 1.35em; }
 h4 { font-size: 1.15em; }
-table, pre code, code { font-size: 1em; }
+table, pre code, code { font-size: 1.1em; }
 blockquote { font-size: 1.05em; }
 </style>
 
@@ -119,41 +119,84 @@ INSERT INTO consumables(name, stock) VALUES
 
 ---
 
-## 4️⃣ 修改配置文件 `application.yml`
+## 4️⃣ 配置文件说明
+
+项目采用 **Spring Profile 机制**管理配置：
+
+| 文件 | 用途 | 是否入库 |
+|---|---|---|
+| `src/main/resources/application.yml` | 主配置（公共、非敏感项） | ✅ 已提交 |
+| `src/main/resources/application-local.yml` | 本地覆盖（密码、API Key 等敏感项） | ❌ 已加入 `.gitignore` |
+
+主 `application.yml` 已包含全部公共配置（MySQL URL、DashScope 模型参数、OCR 路径、PgVector 维度等），你只需要创建本地覆盖文件填入敏感信息：
 
 ```yaml
+# src/main/resources/application-local.yml
 spring:
-  datasource:                 # ← 修改 MySQL 账号密码
-    url: jdbc:mysql://localhost:3306/demoAI?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+  datasource:
     username: root
-    password: ${MYSQL_PASSWORD}
+    password: <你的 MySQL 密码>
 
   ai:
     dashscope:
-      api-key: sk-xxxxxxxx     # ← 替换成你自己的阿里云百炼 API Key
-                                #   申请地址：https://dashscope.console.aliyun.com/apiKey
+      api-key: <你的阿里云百炼 API Key>   # 申请地址：https://dashscope.console.aliyun.com/apiKey
+
+app:
+  pgvector:
+    username: postgres
+    password: <你的 PostgreSQL 密码>
+```
+
+> ℹ️ 如果你的 MySQL / PG 用户名、端口与默认不同，也可以在 `application-local.yml` 里覆盖 `spring.datasource.url` 和 `app.pgvector.jdbc-url`。
+
+主 `application.yml` 完整结构参考：
+
+```yaml
+server:
+  port: 8080
+
+spring:
+  profiles:
+    active: local
+
+  datasource:
+    url: jdbc:mysql://localhost:3306/demoAI?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  ai:
+    dashscope:
+      chat:
+        options:
+          model: qwen-plus
+          temperature: 0.7
       embedding:
         options:
           model: text-embedding-v3   # 默认 1024 维
 
 app:
-  pdf-path: D:/ai-docs           # ← 把你的 PDF 知识库丢进去（推荐纯目录模式）
+  pdf-path: D:/ai-docs                # 把 PDF 知识库丢进这个目录（自动扫描）
 
   ocr:
     enabled: true
     tesseract-path: D:/Program Files/Tesseract-OCR/tesseract.exe
-    tessdata-dir: D:/tessdata    # ← 改成你实际的 tessdata 目录
+    tessdata-dir: D:/tessdata
     language: chi_sim+eng
     dpi: 300
     page-timeout-seconds: 120
 
   pgvector:
-    enabled: true                # true=PgVector持久化  false=SimpleVectorStore内存（默认）
+    enabled: true                    # true=PgVector持久化  false=SimpleVectorStore内存（开箱即用）
     jdbc-url: jdbc:postgresql://localhost:5432/postgres?charSet=UTF8&stringtype=unspecified&prepareThreshold=0
-    username: postgres
-    password: postgres           # ← 修改 PG 密码
-    dimensions: 1024             # ⚠️ text-embedding-v3 默认 1024；切到 v2 请改成 1536
-    reset-table: false           # ⚠️ 正常保持 false（增量入库）。想清空重来时改成 true 启动一次即可
+    driver-class-name: org.postgresql.Driver
+    schema-name: public
+    table-name: vector_store
+    dimensions: 1024                 # ⚠️ text-embedding-v3=1024；切到 v2 改 1536
+    id-type: UUID
+    index-type: HNSW
+    distance-type: COSINE_DISTANCE
+    initialize-schema: false
+    schema-validation: false
+    reset-table: false               # ⚠️ 正常保持 false。想清空重来时改成 true 启动一次即可
 ```
 
 ---
@@ -192,6 +235,26 @@ java -Dfile.encoding=UTF-8 -jar target/demoAI-1.0-SNAPSHOT.jar
      ✅ 中国心血管病一级预防指南2020.pdf（398s） chunks=204  totalChars=95,821 → 已写入 VectorStore
      ⏭️  跳过：国家基层高血压防治管理指南2025版.pdf（已入库 49 chunks，有效字数≈35,210）
 ```
+
+## 6️⃣ 访问 Web 前端界面
+
+启动成功后，直接在浏览器打开：
+
+> 🌐 **http://localhost:8080**
+
+内置前端界面提供三大功能面板：
+
+| Tab | 功能 | 说明 |
+|---|---|---|
+| 💬 **智能问诊** | 医疗知识问答 | 支持 RAG 检索 + Tool Call 查库存 + PHI 脱敏；提供高血压降压目标、查库存、糖尿病血压目标、PHI 脱敏演示等快捷提问 |
+| 🧪 **系统评估** | 一键运行测试集 | 自动执行 10 个医疗测试用例，输出 4 维度量化评估结果 |
+| 🩻 **运行诊断** | 实时状态查看 | 展示向量库类型、OCR 就绪情况、知识库各 PDF 入库统计 |
+
+前端源码位于 `src/main/resources/static/`（纯 HTML + CSS + 原生 JS，无构建依赖）。
+
+![智能问诊界面](docs/ScreenShot_2026-08-21_153935_780.png)
+![系统评估界面](docs/ScreenShot_2026-08-21_154005_054.png)
+![运行诊断界面](docs/ScreenShot_2026-08-24_130106_793.png)
 
 ---
 
@@ -418,23 +481,40 @@ GET /evaluation/summary
 
 # 📂 关键代码文件
 
+## 后端（Java / Spring Boot）
+
 | 文件 | 职责 |
 |---|---|
-| `RagInitializer.java` | **核心**：PDF 4 层提取策略、OCR 调用、内容 QC 乱码检测、增量入库、`TokenTextSplitter` 切片（512 tokens）+ Embedding、诊断接口数据 |
+| `Main.java` | **应用入口**：`@SpringBootApplication`，启动前强制全局 UTF-8 编码（修复 Windows 默认 GBK 导致的中文乱码），手动排除 `PgVectorStoreAutoConfiguration` 以接管 PgVector 建表流程 |
+| `RagInitializer.java` | **核心**：PDF 4 层提取策略（P1 标准提取 → P2 参数调整 → P3 暴力流扫 → P4 Tesseract OCR）、内容 QC 乱码检测、动态超时、增量入库去重、`TokenTextSplitter` 切片 + Embedding、诊断接口数据 |
 | `ChatController.java` | `/chat` 对话接口（PHI 脱敏 → 手动 RAG 检索 → System Prompt 组装 → ChatClient + Tool Call → 引用来源格式化）、`/rag/diag` 诊断接口 |
-| **`RagReferenceService.java`** | **新增**：手动向量检索（DB 层 + Java 层双保险相似度阈值过滤）、上下文组装、System Prompt 构建（医疗合规约束）、引用来源提取与格式化 |
-| **`PhiDesensitizationService.java`** | **新增**：PHI 隐私脱敏，覆盖身份证 / 手机号 / 病历号 / 出生日期 / 银行卡号，脱敏 + 审计一体化 |
+| **`RagReferenceService.java`** | 手动向量检索（DB 层 + Java 层双保险相似度阈值过滤）、上下文组装、System Prompt 构建（医疗合规约束）、引用来源提取与格式化 |
+| **`PhiDesensitizationService.java`** | PHI 隐私脱敏，覆盖身份证 / 手机号 / 病历号 / 出生日期 / 银行卡号，脱敏 + 审计一体化 |
 | `InventoryService.java` | `@Tool` 函数：耗材库存查询（AI 自动调用） |
-| **`EvaluationService.java`** | **新增**：医疗测试集评估服务，自动运行测试用例，4维度量化评估（准确性/引用/幻觉/合规），生成评估报告 |
-| **`EvaluationController.java`** | **新增**：评估接口，`/evaluation/run`返回JSON报告，`/evaluation/summary`返回纯文本摘要 |
-| **`MedicalTestSet.java`** | **新增**：医疗测试集，10个测试用例覆盖事实查询/综合分析/幻觉抑制/合规测试 |
-| **`TestCase.java`** | **新增**：测试用例模型，定义问题、预期关键词、预期引用、分类、是否可回答 |
+| **`EvaluationService.java`** | 医疗测试集评估服务，自动运行测试用例，4 维度量化评估（准确性 / 引用 / 幻觉 / 合规），生成评估报告 |
+| **`EvaluationController.java`** | 评估接口，`/evaluation/run` 返回 JSON 报告，`/evaluation/summary` 返回纯文本摘要 |
+| **`MedicalTestSet.java`** | 医疗测试集，10 个测试用例覆盖事实查询 / 综合分析 / 幻觉抑制 / 合规测试 |
+| **`TestCase.java`** | 测试用例模型，定义问题、预期关键词、预期引用、分类、是否可回答 |
 | `PgVectorSchemaInitializer.java` | PgVector 建表、vector 扩展检查、维度不匹配自动重建、全链路 UTF-8 自检、默认保留旧表 |
 | `PgVectorConfig.java` | PgVectorStore Bean 注册、独立数据源（和业务 MySQL 完全解耦） |
 | `PgVectorConfigProperties.java` | PgVector 配置属性绑定 |
 | `SimpleVectorStoreConfig.java` | 条件互斥备用方案（`app.pgvector.enabled: false` 时激活），内存向量库，重启清空 |
 | `SpringAiConfig.java` | DashScope ChatModel / EmbeddingModel 配置 |
-| `application.yml` | 所有配置：DashScope API Key、PDF 路径、OCR、PgVector、日志级别 |
+
+## 前端（纯静态，零构建）
+
+| 文件 | 职责 |
+|---|---|
+| `src/main/resources/static/index.html` | 页面骨架：三大 Tab（💬 智能问诊 / 🧪 系统评估 / 🩻 运行诊断） |
+| `src/main/resources/static/app.js` | 全部交互逻辑：聊天发送、评估运行、诊断刷新、快捷提问、Markdown 渲染 |
+| `src/main/resources/static/style.css` | 主题样式（医疗风蓝白色调） |
+
+## 配置文件
+
+| 文件 | 职责 |
+|---|---|
+| `src/main/resources/application.yml` | 公共配置：服务端口、MySQL URL、DashScope 模型、OCR 路径、PgVector 参数、日志级别 |
+| `src/main/resources/application-local.yml` | **（本地覆盖，gitignore）** 敏感配置：MySQL 密码、DashScope API Key、PG 密码 |
 
 ---
 
