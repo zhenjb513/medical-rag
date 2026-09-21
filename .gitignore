@@ -36,3 +36,8 @@ build/
 ### Mac OS ###
 .DS_Store
 .dumate/
+
+### Local config (secrets) ###
+src/main/resources/application-local.yml
+src/main/resources/application-local.properties
+config/

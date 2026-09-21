@@ -1,4 +1,8 @@
 spring:
+  # ====== 默认激活 local profile，加载本地 application-local.yml（已加入 .gitignore）======
+  profiles:
+    active: local
+
   # ====== 日志级别：屏蔽第三方库无实质影响的警告 / 冗余 INFO ======
   logging:
     level:
@@ -13,13 +17,10 @@ spring:
   datasource:
     url: jdbc:mysql://localhost:3306/demoAI?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     driver-class-name: com.mysql.cj.jdbc.Driver
-    username: root
-    password: ${MYSQL_PASSWORD}
 
   # ====== 阿里云百炼 DashScope AI 配置 ======
   ai:
     dashscope:
-      api-key: ${DASHSCOPE_API_KEY}
       chat:
         options:
           model: qwen-plus
@@ -71,9 +72,7 @@ app:
       # 参数说明：
       #   charSet=UTF8             → PostgreSQL JDBC 驱动强制 UTF-8（和 MySQL 的 characterEncoding 参数名不同！）
       #   stringtype=unspecified   → 传 String 给 setString 不声明 varchar 类型，让 PG 按目标列类型隐式转换，避免一次多余的编码转换
-      #   prepareThreshold=0       → 关闭服务器端预编译语句缓存，避免一些旧版 PG JDBC 驱动和 pgvector 扩展的缓存串话问题
-    username: postgres
-    password: postgres
+    #   prepareThreshold=0       → 关闭服务器端预编译语句缓存，避免一些旧版 PG JDBC 驱动和 pgvector 扩展的缓存串话问题
     driver-class-name: org.postgresql.Driver
     schema-name: public
     table-name: vector_store
