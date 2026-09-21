@@ -1,3 +1,15 @@
+<style>
+body { font-size: 17px; line-height: 1.8; }
+h1 { font-size: 2.2em; }
+h2 { font-size: 1.7em; }
+h3 { font-size: 1.35em; }
+h4 { font-size: 1.15em; }
+table { font-size: 1em; }
+code { font-size: 0.95em; }
+pre code { font-size: 0.9em; }
+blockquote { font-size: 1.05em; }
+</style>
+
 # 🏥 mkbAI · 医疗行业 RAG 智能助手
 
 > **一句话介绍**：一个基于 Spring AI 的医疗行业 RAG 智能助手，支持文档检索 + 数据库查询双链路。
@@ -8,7 +20,7 @@
 
 ---
 
-## ✨ 特性总览
+# ✨ 特性总览
 
 | 模块 | 核心能力 |
 |---|---|
@@ -31,7 +43,7 @@
 
 ---
 
-## 🛠 技术栈
+# 🛠 技术栈
 
 | 技术 | 用途 |
 |---|---|
@@ -45,9 +57,9 @@
 
 ---
 
-## 🚀 快速开始
+# 🚀 快速开始
 
-### 1️⃣ 环境要求
+## 1️⃣ 环境要求
 
 | 软件 | 最低版本 | 下载地址 |
 |---|---|---|
@@ -59,9 +71,9 @@
 
 ---
 
-### 2️⃣ 数据库初始化
+## 2️⃣ 数据库初始化
 
-#### 🟦 PostgreSQL + pgvector（向量库）
+### 🟦 PostgreSQL + pgvector（向量库）
 
 ```sql
 -- 1. 启用 pgvector 扩展（每个数据库只执行一次）
@@ -74,7 +86,7 @@ SELECT extname, extversion FROM pg_extension WHERE extname = 'vector';
 > ℹ️ **pgvector 安装提示（Windows）**：
 > 从 https://github.com/pgvector/pgvector/releases 下载对应 PG 17 版本的 `pgvector.dll`，放到 `PostgreSQL/17/lib/` 目录，再执行上面的 `CREATE EXTENSION`。
 
-#### 🟨 MySQL（业务库 · 耗材库存）
+### 🟨 MySQL（业务库 · 耗材库存）
 
 ```sql
 CREATE DATABASE IF NOT EXISTS demoAI
@@ -96,7 +108,7 @@ INSERT INTO consumables(name, stock) VALUES
 
 ---
 
-### 3️⃣ 安装 Tesseract OCR（扫描件 PDF 识别）
+## 3️⃣ 安装 Tesseract OCR（扫描件 PDF 识别）
 
 1. 下载：https://github.com/UB-Mannheim/tesseract/wiki （安装包名类似 `tesseract-ocr-w64-setup-5.x.x.exe`）
 2. 安装时 **Additional language data → 勾选 Chinese - Simplified**（`chi_sim.traineddata`）
@@ -109,7 +121,7 @@ INSERT INTO consumables(name, stock) VALUES
 
 ---
 
-### 4️⃣ 修改配置文件 `application.yml`
+## 4️⃣ 修改配置文件 `application.yml`
 
 ```yaml
 spring:
@@ -148,7 +160,7 @@ app:
 
 ---
 
-### 5️⃣ 启动应用
+## 5️⃣ 启动应用
 
 ```powershell
 # 方式 A：Maven 命令行
@@ -185,9 +197,9 @@ java -Dfile.encoding=UTF-8 -jar target/demoAI-1.0-SNAPSHOT.jar
 
 ---
 
-## 🔌 API 接口
+# 🔌 API 接口
 
-### ① 💬 聊天对话（自带 RAG + Tool Call + PHI 脱敏）
+## ① 💬 聊天对话（自带 RAG + Tool Call + PHI 脱敏）
 
 ```http
 GET /chat?message=高血压患者的降压目标是多少？
@@ -222,7 +234,7 @@ GET /chat?message=胃镜活检钳还有多少库存？
 
 ---
 
-### ② 🩺 RAG 运行时诊断
+## ② 🩺 RAG 运行时诊断
 
 ```http
 GET /rag/diag
@@ -250,7 +262,7 @@ GET /rag/diag
 
 ---
 
-### ③ 🧪 医疗测试集自动评估
+## ③ 🧪 医疗测试集自动评估
 
 运行完整评估，返回JSON格式评估报告（包含通过率、各维度统计、失败用例原因）：
 
@@ -316,7 +328,7 @@ GET /evaluation/summary
 
 ---
 
-## 🧱 架构图
+# 🧱 架构图
 
 ```
     ┌────────────────────────────────────────────────────────────────────┐
@@ -375,9 +387,9 @@ GET /evaluation/summary
 
 ---
 
-## 🎯 RAG 检索阈值调优指南
+# 🎯 RAG 检索阈值调优指南
 
-### 为什么用 0.65 而不是 0.4？
+## 为什么用 0.65 而不是 0.4？
 
 **不同 Embedding 模型的得分范围差异巨大**，text-embedding-v3（中文）和西方模型（如 ada-002）完全不同：
 
@@ -388,7 +400,7 @@ GET /evaluation/summary
 
 中文模型的向量空间维度更高（1024 维），相似度得分天然更集中在 0.5 附近。字面词汇重合（如"火星上有没有**医疗指南**"里的"医疗指南"恰好和所有 PDF 标题重合）就能把分数拉到 0.55，但 0.65 以上才是真正语义匹配。
 
-### 实际数据验证
+## 实际数据验证
 
 ```
 火星上有没有医疗指南？  →  score 0.53 ~ 0.55  ← 字面蹭到关键词，全 < 0.65 → 被过滤 ✅
@@ -396,7 +408,7 @@ GET /evaluation/summary
 高血压患者降压目标？    →  score 0.74 ~ 0.87  ← 真正相关，全 > 0.65 → 召回 8 条 ✅
 ```
 
-### 阈值调参建议
+## 阈值调参建议
 
 | 场景 | 阈值建议 |
 |------|---------|
@@ -406,7 +418,7 @@ GET /evaluation/summary
 
 ---
 
-## 📂 关键代码文件
+# 📂 关键代码文件
 
 | 文件 | 职责 |
 |---|---|
@@ -428,9 +440,9 @@ GET /evaluation/summary
 
 ---
 
-## 🔍 运行时日志说明
+# 🔍 运行时日志说明
 
-### RAG 检索链路日志
+## RAG 检索链路日志
 
 应用启动后，每次 `/chat` 请求都会打印详细检索日志，便于诊断：
 
@@ -454,9 +466,9 @@ GET /evaluation/summary
 
 ---
 
-## 🛠 常见问题
+# 🛠 常见问题
 
-### ❓ Q1：启动时报 `expected 1536 dimensions, not 1024`
+## ❓ Q1：启动时报 `expected 1536 dimensions, not 1024`
 
 A：DashScope `text-embedding-v3` 默认输出 **1024 维**，但你库里的 `vector_store` 表是按 v2 的 1536 维建的。解决（二选一）：
 
@@ -465,7 +477,7 @@ A：DashScope `text-embedding-v3` 默认输出 **1024 维**，但你库里的 `v
 
 ---
 
-### ❓ Q2：为什么换了切分参数（chunkSize）必须清表？
+## ❓ Q2：为什么换了切分参数（chunkSize）必须清表？
 
 A：向量表的 chunk 粒度必须统一。旧数据是用 1024 tokens 切的，新数据用 512 tokens 切，两种粒度的向量混在一张表里会导致：
 - 检索分数分布混乱（大 chunk 天然得分高）
@@ -481,7 +493,7 @@ TRUNCATE TABLE public.vector_store;
 
 ---
 
-### ❓ Q3：为什么用手动检索（RagReferenceService）而不是 QuestionAnswerAdvisor？
+## ❓ Q3：为什么用手动检索（RagReferenceService）而不是 QuestionAnswerAdvisor？
 
 A：Spring AI 1.1.2 的 `QuestionAnswerAdvisor` 是黑盒，无法做到：
 1. **引用溯源**：无法精准提取每个答案 chunk 对应的文件名
@@ -493,7 +505,7 @@ A：Spring AI 1.1.2 的 `QuestionAnswerAdvisor` 是黑盒，无法做到：
 
 ---
 
-### ❓ Q4：`vector_store.content` 字段是乱码（全是 锟斤拷/�）
+## ❓ Q4：`vector_store.content` 字段是乱码（全是 锟斤拷/�）
 
 A：**项目 v1 已经修复所有已知中文乱码路径**，如果你还有旧乱码记录：
 
@@ -505,7 +517,7 @@ DELETE FROM public.vector_store WHERE metadata->>'file_name' = '乱码那个文�
 
 ---
 
-### ❓ Q5：每次启动都重复 OCR 同一份文件，增量跳过不生效
+## ❓ Q5：每次启动都重复 OCR 同一份文件，增量跳过不生效
 
 A：v1 已修复（`getAbsolutePath()` vs `getCanonicalPath()` 不一致）。如果是升级前写的旧记录，**新代码查库用 `source IN (canonical, absolute)` OR 双路径**，能自动识别老版本写入的 absolutePath 记录。如果还是重复：
 
@@ -517,7 +529,7 @@ SELECT COUNT(*), metadata->>'source' FROM public.vector_store GROUP BY 2;
 
 ---
 
-### ❓ Q6：纯图片扫描 PDF 全是 "第 N 页 OCR 退出码非 0（exit=1）"
+## ❓ Q6：纯图片扫描 PDF 全是 "第 N 页 OCR 退出码非 0（exit=1）"
 
 A：大概率是 `chi_sim.traineddata` 找不到 / tessdata 目录权限问题。
 
@@ -527,19 +539,19 @@ A：大概率是 `chi_sim.traineddata` 找不到 / tessdata 目录权限问题�
 
 ---
 
-### ❓ Q7：PDF 太大，处理到一半 "PDF 提取超时（> 120 秒）"
+## ❓ Q7：PDF 太大，处理到一半 "PDF 提取超时（> 120 秒）"
 
 A：已实现**动态超时**（`RagInitializer.calcTimeout(pageCount)`）：`MAX(120s, 60s + 页数 × 15s)`。39 页扫描件自动放宽到 `60+585=645s` 约 10 分钟，足够完成每页 OCR。若还不够，把 `app.ocr.page-timeout-seconds` 调大到 180~240。
 
 ---
 
-### ❓ Q8：答案里有 `**` 星号（Markdown 格式）
+## ❓ Q8：答案里有 `**` 星号（Markdown 格式）
 
 A：System Prompt 已加入约束"使用纯文本回答，不要使用 Markdown 格式"。如果偶发还是有残留，可在 `ChatController.java` 的答案返回前加一层正则清洗（把 `**text**` → `text`、`* text *` → `text`）。
 
 ---
 
-## 📜 版本兼容性
+# 📜 版本兼容性
 
 项目已通过 **JDK 21 + Spring Boot 3.5.10 + Spring AI 1.1.2 + Spring AI Alibaba 1.1.2.3** 严格配套验证：
 
@@ -553,7 +565,7 @@ A：System Prompt 已加入约束"使用纯文本回答，不要使用 Markdown 
 
 ---
 
-## 🚀 后续优化方向
+# 🚀 后续优化方向
 
 | 方向 | 说明 |
 |---|---|
@@ -568,7 +580,7 @@ A：System Prompt 已加入约束"使用纯文本回答，不要使用 Markdown 
 
 ---
 
-## 📄 License
+# 📄 License
 
 本项目仅供学习与医疗行业内部知识库验证使用，不得用于任何商业用途。
 
