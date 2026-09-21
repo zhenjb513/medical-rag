@@ -1,3 +1,7 @@
+server:
+  # ====== 服务端口 ======
+  port: 8080
+
 spring:
   # ====== 默认激活 local profile，加载本地 application-local.yml（已加入 .gitignore）======
   profiles:
