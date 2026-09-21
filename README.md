@@ -1,11 +1,10 @@
 <style>
-body, table { font-size: 17px; line-height: 1.8; }
+body { font-size: 17px; line-height: 1.8; }
 h1 { font-size: 2.2em; }
 h2 { font-size: 1.7em; }
 h3 { font-size: 1.35em; }
 h4 { font-size: 1.15em; }
-code { font-size: 0.95em; }
-pre code { font-size: 0.9em; }
+table, pre code, code { font-size: 1em; }
 blockquote { font-size: 1.05em; }
 </style>
 
