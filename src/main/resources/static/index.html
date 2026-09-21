@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>mkbAI · 医疗 RAG 智能助手</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="logo">
+    <span class="logo-icon">🩺</span>
+    <div class="logo-text">
+      <h1>mkbAI</h1>
+      <p>医疗 RAG 智能助手</p>
+    </div>
+  </div>
+  <nav class="tabs">
+    <button class="tab active" data-tab="chat">💬 智能问诊</button>
+    <button class="tab" data-tab="eval">🧪 系统评估</button>
+    <button class="tab" data-tab="diag">🩻 运行诊断</button>
+  </nav>
+  <div class="status-pill" id="apiStatus">
+    <span class="dot"></span> 后端检测中...
+  </div>
+</header>
+
+<main class="container">
+
+  <!-- ==================== 聊天界面 ==================== -->
+  <section class="panel active" id="panel-chat">
+    <div class="chat-area" id="chatArea">
+      <div class="chat-welcome">
+        <div class="welcome-icon">🏥</div>
+        <h2>您好，我是医疗知识库助手</h2>
+        <p>基于医院内部指南与用药手册，为您提供安全、可溯源的医疗知识问答服务。</p>
+        <div class="quick-prompts">
+          <button class="chip" data-q="高血压患者的降压目标是多少？">高血压降压目标</button>
+          <button class="chip" data-q="胃镜活检钳还有多少库存？">🔧 查库存</button>
+          <button class="chip" data-q="糖尿病患者的血压控制目标是什么？">糖尿病血压目标</button>
+          <button class="chip" data-q="请查询一下病历号MRN123456的相关信息">🔐 PHI 脱敏演示</button>
+        </div>
+        <p class="disclaimer">⚠️ 本系统仅供医疗知识辅助查询，不能替代专业诊断。</p>
+      </div>
+    </div>
+
+    <div class="input-bar">
+      <textarea id="msgInput" placeholder="输入您的医疗问题，如：高血压患者的降压目标是多少？" rows="1"></textarea>
+      <button id="sendBtn" class="send-btn" title="发送 (Ctrl+Enter)">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2L11 13"/><path d="M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+      </button>
+    </div>
+  </section>
+
+  <!-- ==================== 评估界面 ==================== -->
+  <section class="panel" id="panel-eval">
+    <div class="eval-header">
+      <h2>🧪 医疗测试集自动评估</h2>
+      <p>10 个标准测试用例 · 4 维度量化评估（准确性 / 引用 / 幻觉 / 合规性）</p>
+      <button class="btn-primary" id="runEvalBtn">▶ 开始评估</button>
+    </div>
+    <div class="eval-body" id="evalBody">
+      <div class="eval-placeholder">点击上方按钮运行评估，结果将在此展示。</div>
+    </div>
+  </section>
+
+  <!-- ==================== 诊断界面 ==================== -->
+  <section class="panel" id="panel-diag">
+    <div class="diag-header">
+      <h2>🩻 运行时诊断</h2>
+      <p>实时查看向量库状态、OCR 就绪情况、知识库统计</p>
+      <button class="btn-primary" id="refreshDiagBtn">🔄 刷新诊断</button>
+    </div>
+    <div class="diag-body" id="diagBody">
+      <div class="diag-placeholder">点击上方按钮刷新系统状态。</div>
+    </div>
+  </section>
+
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
