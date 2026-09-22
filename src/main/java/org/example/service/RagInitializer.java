@@ -29,15 +29,23 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.FileSystems;
+import java.nio.file.Path;
+import java.nio.file.StandardWatchEventKinds;
+import java.nio.file.WatchEvent;
+import java.nio.file.WatchKey;
+import java.nio.file.WatchService;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
@@ -142,6 +150,10 @@ public class RagInitializer {
     // OCR 配置有效性（运行时一次性判定，缓存结果）
     private transient Boolean ocrAvailableCache = null;
     private transient String effectiveTessdataDir = null;
+
+    // WatchService 相关：目录热监听
+    private volatile WatchService watchService;
+    private final Map<Path, Long> pendingFileStableTime = new ConcurrentHashMap<>();
     private boolean isOcrAvailable() {
         if (ocrAvailableCache != null) return ocrAvailableCache;
         if (!ocrEnabled) { ocrAvailableCache = false; return false; }
@@ -248,6 +260,158 @@ public class RagInitializer {
         return ok;
     }
 
+    /** 单个 PDF 入库结果（给 init() 汇总用） */
+    private static final class IngestResult {
+        final int chunks;
+        final int batches;
+        final boolean ok;
+        final boolean skipped;
+        IngestResult(int chunks, int batches, boolean ok, boolean skipped) {
+            this.chunks = chunks; this.batches = batches; this.ok = ok; this.skipped = skipped;
+        }
+        static IngestResult skipped(int chunks) { return new IngestResult(chunks, 0, true, true); }
+        static IngestResult ok(int chunks, int batches) { return new IngestResult(chunks, batches, true, false); }
+        static IngestResult fail() { return new IngestResult(0, 0, false, false); }
+    }
+
+    private static final long PER_PDF_MIN_TIMEOUT_MILLIS   = 120_000L;
+    private static final long PER_PDF_OCR_MS_PER_PAGE      = 15_000L;
+    private static final long PER_PDF_BASE_MILLIS          = 60_000L;
+
+    /**
+     * 把单个 PDF 做 提取→切片→Embedding→写入 VectorStore。
+     * 已入库的 PDF 直接跳过（probeAlreadyIngested）。
+     *
+     * @param pdf 目标 PDF 文件
+     * @param logPrefix 日志前缀（启动时用 "  "，热监听用 "  [热监听]"）
+     */
+    private IngestResult ingestOnePdf(File pdf, String logPrefix) {
+        AlreadyIngestedInfo ingested = probeAlreadyIngested(pdf);
+        if (ingested != null) {
+            System.out.println(logPrefix + "⏭️  跳过：" + pdf.getName() + "（已入库 " + ingested.chunkCount
+                    + " chunks，有效字数≈" + ingested.representativeNonBlank + "）");
+            return IngestResult.skipped(ingested.chunkCount);
+        }
+
+        System.out.println(logPrefix + "📥 开始处理：" + pdf.getName() + " (" + formatSize(pdf.length()) + ") ...");
+        long startMs = System.currentTimeMillis();
+        List<Document> chunks = Collections.emptyList();
+
+        long thisTimeoutMs = PER_PDF_MIN_TIMEOUT_MILLIS;
+        int pageCount = 0;
+        try (PDDocument probe = Loader.loadPDF(pdf)) {
+            pageCount = probe.getNumberOfPages();
+        } catch (Throwable ignore) {}
+        if (pageCount > 0) {
+            long ocrBased = PER_PDF_BASE_MILLIS + (long) pageCount * PER_PDF_OCR_MS_PER_PAGE;
+            thisTimeoutMs = Math.max(PER_PDF_MIN_TIMEOUT_MILLIS, ocrBased);
+        }
+        final long finalTimeoutMs = thisTimeoutMs;
+        final Set<Process> childProcesses = Collections.synchronizedSet(java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
+
+        try {
+            final FutureTask<List<Document>> ft = new FutureTask<>(() -> {
+                List<Document> result;
+                ProcessRegistrar registrarLambda = proc -> { if (proc != null) childProcesses.add(proc); };
+                try (PdfProcessRegistry reg = new PdfProcessRegistry(registrarLambda)) {
+                    result = readAndSplitOnePdf(pdf, reg);
+                }
+                return result;
+            });
+            Thread t = new Thread(ft, "rag-pdf-" + pdf.getName().replaceAll("[^A-Za-z0-9]", "_"));
+            t.setDaemon(true);
+            t.start();
+            try {
+                chunks = ft.get(finalTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException toe) {
+                ft.cancel(true);
+                t.interrupt();
+                int killed = 0;
+                synchronized (childProcesses) {
+                    for (Process p : childProcesses) {
+                        try {
+                            p.descendants().forEach(ph -> { try { ph.destroyForcibly(); } catch (Throwable ignore) {} });
+                            p.destroyForcibly();
+                            killed++;
+                        } catch (Throwable ignore) {}
+                    }
+                    childProcesses.clear();
+                }
+                long secs = finalTimeoutMs / 1000;
+                throw new IOException("PDF 提取超时（>" + secs + " 秒，页数=" + pageCount + "，已强制杀掉 " + killed + " 个 OCR 子进程），已跳过。");
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                ft.cancel(true);
+                throw ie;
+            } catch (java.util.concurrent.ExecutionException ee) {
+                Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
+                if (cause instanceof Exception e) throw e;
+                throw new IOException(cause);
+            }
+            if (chunks == null) chunks = Collections.emptyList();
+
+            long tookSec = (System.currentTimeMillis() - startMs + 500) / 1000;
+            if (chunks.isEmpty()) {
+                System.out.println(logPrefix + "⚪ " + pdf.getName() + "（用时" + tookSec + "s）无有效文本内容，跳过");
+                return IngestResult.ok(0, 0);
+            }
+            int batchesForThisPdf = 0;
+            long batchStartMs = System.currentTimeMillis();
+            for (List<Document> batch : partition(chunks, DASHSCOPE_EMBEDDING_MAX_BATCH)) {
+                vectorStore.add(batch);
+                batchesForThisPdf++;
+                if ((batchesForThisPdf % 20) == 0) {
+                    long secs = (System.currentTimeMillis() - batchStartMs + 500) / 1000;
+                    System.out.println(logPrefix + "   ↪ DashScope Embedding：已完成 " + batchesForThisPdf + " 批（已用约 " + secs + "s）");
+                }
+            }
+            long totalChars = 0;
+            int minChunk = Integer.MAX_VALUE, maxChunk = 0, emptyChunks = 0;
+            java.lang.reflect.Method docTextGetter = null;
+            for (java.lang.reflect.Method m : Document.class.getMethods()) {
+                String n = m.getName();
+                if ((n.equals("getText") || n.equals("getContent")) && m.getParameterCount() == 0 && m.getReturnType() == String.class) {
+                    docTextGetter = m;
+                    break;
+                }
+            }
+            for (Document d : chunks) {
+                String s = null;
+                if (docTextGetter != null) { try { s = (String) docTextGetter.invoke(d); } catch (Throwable ignore) {} }
+                int l = (s == null) ? 0 : s.length();
+                totalChars += l;
+                if (l == 0) emptyChunks++;
+                if (l < minChunk) minChunk = l;
+                if (l > maxChunk) maxChunk = l;
+            }
+            String qcMsg = (emptyChunks == 0) ? "" : ("  ⚠️ 空块=" + emptyChunks);
+            System.out.println(logPrefix + "✅ " + pdf.getName()
+                    + "（" + (tookSec + (System.currentTimeMillis() - startMs)/1000) + "s）"
+                    + "  chunks=" + chunks.size()
+                    + "  totalChars=" + totalChars
+                    + "  chunkLen=[" + (chunks.isEmpty() ? 0 : minChunk) + "~" + maxChunk + "]"
+                    + "  batches(≤10)=" + batchesForThisPdf
+                    + qcMsg
+                    + "  → 已写入 VectorStore");
+            return IngestResult.ok(chunks.size(), batchesForThisPdf);
+        } catch (Throwable th) {
+            String msg = (th.getMessage() == null) ? "" : th.getMessage();
+            String extraHint = "";
+            String lower = msg.toLowerCase();
+            if (lower.contains("encrypt") || lower.contains("password") || lower.contains("decrypt")
+                    || (th.getClass().getSimpleName().toLowerCase().contains("encrypt"))
+                    || (th.getClass().getSimpleName().toLowerCase().contains("password"))) {
+                extraHint = " → 🔒 这是【加密 PDF】。解法：用 Edge 打开 → Ctrl+P → 打印为 PDF，输出无密码版本。";
+            } else if (lower.contains("damaged") || lower.contains("corrupt") || lower.contains("truncated") || lower.contains("header")) {
+                extraHint = " → ❌ PDF 文件损坏/被截断。重新下载或用 Chrome Ctrl+P 另存为 PDF 修复。";
+            }
+            System.err.println(logPrefix + "❌ " + pdf.getName()
+                    + " 处理失败（跳过）: "
+                    + th.getClass().getSimpleName() + ": " + msg + extraHint);
+            return IngestResult.fail();
+        }
+    }
+
     @PostConstruct
     public void init() {
         if (Objects.isNull(vectorStore)) {
@@ -260,160 +424,27 @@ public class RagInitializer {
             pdfs = collectPdfs(pdfPath);
         } catch (Exception ex) {
             System.err.println("[RagInitializer] 收集 PDF 列表异常，全部跳过: " + ex.getMessage());
+            startDirectoryWatcher();
             return;
         }
         if (pdfs.isEmpty()) {
             System.out.println("ℹ️ [RagInitializer] 路径 " + pdfPath + " 下没有任何 .pdf 文件，跳过向量化初始化。");
+            startDirectoryWatcher();
             return;
         }
 
-        isOcrAvailable(); // 先跑一次 OCR 诊断（一次性打印配置状态）
+        isOcrAvailable();
         System.out.println();
         System.out.println("[RagInitializer] 共发现 " + pdfs.size() + " 个 PDF，开始批量向量化 ...");
         System.out.println("[RagInitializer] Embedding 每批最多 " + DASHSCOPE_EMBEDDING_MAX_BATCH + " 个 chunks（DashScope 硬性限制）");
 
-        int totalChunks = 0;
-        int totalBatches = 0;
-        int okCount = 0;
-        int failCount = 0;
-        final long PER_PDF_MIN_TIMEOUT_MILLIS = 120_000L;
-        final long PER_PDF_OCR_MS_PER_PAGE = 15_000L;
-        final long PER_PDF_BASE_MILLIS = 60_000L;
+        int totalChunks = 0, totalBatches = 0, okCount = 0, failCount = 0;
         for (File pdf : pdfs) {
-            // 增量入库：已成功入库且字数 ≥500 的 PDF 直接跳过
-            AlreadyIngestedInfo ingested = probeAlreadyIngested(pdf);
-            if (ingested != null) {
-                System.out.println("  ⏭️  跳过：" + pdf.getName() + "（已入库 " + ingested.chunkCount
-                        + " chunks，有效字数≈" + ingested.representativeNonBlank + "）");
-                totalChunks += ingested.chunkCount;
-                okCount++;
-                continue;
-            }
-            System.out.println("  📥 开始处理：" + pdf.getName() + " (" + formatSize(pdf.length()) + ") ...");
-            long startMs = System.currentTimeMillis();
-            List<Document> chunks = Collections.emptyList();
-
-            // 探测 PDF 页数 → 动态计算超时（按每页 15 秒最坏情况估算）
-            long thisTimeoutMs = PER_PDF_MIN_TIMEOUT_MILLIS;
-            int pageCount = 0;
-            try (PDDocument probe = Loader.loadPDF(pdf)) {
-                pageCount = probe.getNumberOfPages();
-            } catch (Throwable ignore) {}
-            if (pageCount > 0) {
-                long ocrBased = PER_PDF_BASE_MILLIS + (long) pageCount * PER_PDF_OCR_MS_PER_PAGE;
-                thisTimeoutMs = Math.max(PER_PDF_MIN_TIMEOUT_MILLIS, ocrBased);
-            }
-            final long finalTimeoutMs = thisTimeoutMs;
-            final Set<Process> childProcesses = Collections.synchronizedSet(java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
-
-            try {
-                // 用独立线程 + 超时包裹 readAndSplitOnePdf，避免大 PDF 卡死整个启动
-                final FutureTask<List<Document>> ft = new FutureTask<>(() -> {
-                    List<Document> result;
-                    ProcessRegistrar registrarLambda = proc -> { if (proc != null) childProcesses.add(proc); };
-                    try (PdfProcessRegistry reg = new PdfProcessRegistry(registrarLambda)) {
-                        result = readAndSplitOnePdf(pdf, reg);
-                    }
-                    return result;
-                });
-                Thread t = new Thread(ft, "rag-pdf-" + pdf.getName().replaceAll("[^A-Za-z0-9]", "_"));
-                t.setDaemon(true);
-                t.start();
-                try {
-                    chunks = ft.get(finalTimeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
-                } catch (java.util.concurrent.TimeoutException toe) {
-                    ft.cancel(true);
-                    t.interrupt();
-                    // 强制杀掉已启动的 tesseract.exe 子进程，避免泄漏
-                    int killed = 0;
-                    synchronized (childProcesses) {
-                        for (Process p : childProcesses) {
-                            try {
-                                p.descendants().forEach(ph -> { try { ph.destroyForcibly(); } catch (Throwable ignore) {} });
-                                p.destroyForcibly();
-                                killed++;
-                            } catch (Throwable ignore) {}
-                        }
-                        childProcesses.clear();
-                    }
-                    long secs = finalTimeoutMs / 1000;
-                    throw new IOException("PDF 提取超时（>" + secs + " 秒，页数=" + pageCount + "，已强制杀掉 " + killed + " 个 OCR 子进程），已跳过。");
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    ft.cancel(true);
-                    throw ie;
-                } catch (java.util.concurrent.ExecutionException ee) {
-                    Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
-                    if (cause instanceof Exception e) throw e;
-                    throw new IOException(cause);
-                }
-                if (chunks == null) chunks = Collections.emptyList();
-
-                long tookSec = (System.currentTimeMillis() - startMs + 500) / 1000;
-                if (chunks.isEmpty()) {
-                    System.out.println("  ⚪ " + pdf.getName() + "（用时" + tookSec + "s）无有效文本内容，跳过");
-                    continue;
-                }
-                int batchesForThisPdf = 0;
-                long batchStartMs = System.currentTimeMillis();
-                for (List<Document> batch : partition(chunks, DASHSCOPE_EMBEDDING_MAX_BATCH)) {
-                    vectorStore.add(batch);
-                    batchesForThisPdf++;
-                    totalBatches++;
-                    // 每 20 批打一次进度，避免长时间沉默
-                    if ((batchesForThisPdf % 20) == 0) {
-                        long secs = (System.currentTimeMillis() - batchStartMs + 500) / 1000;
-                        System.out.println("    ↪ DashScope Embedding：已完成 " + batchesForThisPdf + " 批（已用约 " + secs + "s）");
-                    }
-                }
-                // 统计切片质量（总字符 / 最短块 / 最长块）
-                long totalChars = 0;
-                int minChunk = Integer.MAX_VALUE, maxChunk = 0, emptyChunks = 0;
-                java.lang.reflect.Method docTextGetter = null;
-                for (java.lang.reflect.Method m : Document.class.getMethods()) {
-                    String n = m.getName();
-                    if ((n.equals("getText") || n.equals("getContent")) && m.getParameterCount() == 0 && m.getReturnType() == String.class) {
-                        docTextGetter = m;
-                        break;
-                    }
-                }
-                for (Document d : chunks) {
-                    String s = null;
-                    if (docTextGetter != null) { try { s = (String) docTextGetter.invoke(d); } catch (Throwable ignore) {} }
-                    int l = (s == null) ? 0 : s.length();
-                    totalChars += l;
-                    if (l == 0) emptyChunks++;
-                    if (l < minChunk) minChunk = l;
-                    if (l > maxChunk) maxChunk = l;
-                }
-                totalChunks += chunks.size();
-                okCount++;
-                String qcMsg = (emptyChunks == 0) ? "" : ("  ⚠️ 空块=" + emptyChunks);
-                System.out.println("  ✅ " + pdf.getName()
-                        + "（" + (tookSec + (System.currentTimeMillis() - startMs)/1000) + "s）"
-                        + "  chunks=" + chunks.size()
-                        + "  totalChars=" + totalChars
-                        + "  chunkLen=[" + (chunks.isEmpty() ? 0 : minChunk) + "~" + maxChunk + "]"
-                        + "  batches(≤10)=" + batchesForThisPdf
-                        + qcMsg
-                        + "  → 已写入 VectorStore");
-            } catch (Throwable th) {
-                // 单个 PDF 失败不阻断 Spring 容器启动
-                failCount++;
-                String msg = (th.getMessage() == null) ? "" : th.getMessage();
-                String extraHint = "";
-                String lower = msg.toLowerCase();
-                if (lower.contains("encrypt") || lower.contains("password") || lower.contains("decrypt")
-                        || (th.getClass().getSimpleName().toLowerCase().contains("encrypt"))
-                        || (th.getClass().getSimpleName().toLowerCase().contains("password"))) {
-                    extraHint = " → 🔒 这是【加密 PDF】。解法：用 Edge 打开 → Ctrl+P → 打印为 PDF，输出无密码版本。";
-                } else if (lower.contains("damaged") || lower.contains("corrupt") || lower.contains("truncated") || lower.contains("header")) {
-                    extraHint = " → ❌ PDF 文件损坏/被截断。重新下载或用 Chrome Ctrl+P 另存为 PDF 修复。";
-                }
-                System.err.println("  ❌ " + pdf.getName()
-                        + " 处理失败（跳过）: "
-                        + th.getClass().getSimpleName() + ": " + msg + extraHint);
-            }
+            IngestResult r = ingestOnePdf(pdf, "  ");
+            totalChunks += r.chunks;
+            totalBatches += r.batches;
+            if (r.ok) okCount++;
+            else failCount++;
         }
 
         System.out.println("[RagInitializer] 完成。成功PDF=" + okCount
@@ -422,6 +453,8 @@ public class RagInitializer {
                 + "  提交批次数=" + totalBatches
                 + " (每批≤" + DASHSCOPE_EMBEDDING_MAX_BATCH + ")");
         System.out.println();
+
+        startDirectoryWatcher();
     }
 
     /**
@@ -1019,10 +1052,134 @@ public class RagInitializer {
         return Collections.emptyList();
     }
 
-    /**
-     * 纯图片扫描 PDF OCR 识别：PDFBox 逐页渲染成 PNG → 调 tesseract.exe 命令行 → 拼回全文。
-     * 直接走命令行而不依赖 Tess4J（免 native dll、兼容 Tesseract v5.x、可用 --tessdata-dir 指定任意目录）。
-     */
+    // ========== WatchService 目录热监听 ==========
+
+    private static final long FILE_STABLE_CHECK_MS = 1000L;
+    private static final long FILE_STABLE_WAIT_TIMEOUT_MS = 30_000L;
+
+    private void startDirectoryWatcher() {
+        if (vectorStore == null) return;
+        File dir = new File(pdfPath);
+        if (!dir.exists()) {
+            System.out.println("ℹ️ [RagInitializer] WatchService 跳过：路径 " + pdfPath + " 不存在");
+            return;
+        }
+        if (!dir.isDirectory()) {
+            System.out.println("ℹ️ [RagInitializer] WatchService 跳过：" + pdfPath + " 不是目录");
+            return;
+        }
+
+        Thread watcherThread = new Thread(() -> watchLoop(dir.toPath()), "rag-pdf-watcher");
+        watcherThread.setDaemon(true);
+        watcherThread.start();
+    }
+
+    private void watchLoop(Path dirPath) {
+        try (WatchService ws = FileSystems.getDefault().newWatchService()) {
+            this.watchService = ws;
+            dirPath.register(ws, StandardWatchEventKinds.ENTRY_CREATE, StandardWatchEventKinds.ENTRY_MODIFY);
+
+            System.out.println("👁️ [RagInitializer] WatchService 已启动，监听目录：" + dirPath.toAbsolutePath());
+
+            while (true) {
+                WatchKey key;
+                try {
+                    key = ws.take();
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                if (key == null) continue;
+
+                for (WatchEvent<?> rawEvent : key.pollEvents()) {
+                    WatchEvent.Kind<?> kind = rawEvent.kind();
+                    if (kind == StandardWatchEventKinds.OVERFLOW) continue;
+
+                    @SuppressWarnings("unchecked")
+                    WatchEvent<Path> event = (WatchEvent<Path>) rawEvent;
+                    Path child = event.context();
+                    if (child == null) continue;
+
+                    Path fullPath = dirPath.resolve(child);
+                    if (!fullPath.toString().toLowerCase().endsWith(".pdf")) continue;
+
+                    try {
+                        handleFileEvent(fullPath);
+                    } catch (Throwable t) {
+                        System.err.println("  [热监听] ❌ 处理 " + fullPath.getFileName() + " 异常: " + t.getMessage());
+                    }
+                }
+
+                boolean valid = key.reset();
+                if (!valid) {
+                    System.out.println("⚠️ [RagInitializer] WatchKey 已失效，停止监听");
+                    break;
+                }
+            }
+        } catch (Throwable th) {
+            System.err.println("⚠️ [RagInitializer] WatchService 异常退出: " + th.getClass().getSimpleName() + ": " + th.getMessage());
+        } finally {
+            this.watchService = null;
+        }
+    }
+
+    private void handleFileEvent(Path fullPath) throws InterruptedException {
+        String fileName = fullPath.getFileName().toString();
+
+        // 如果已经在等待列表里，说明是连续多次 MODIFY 事件，不重复计时
+        long now = System.currentTimeMillis();
+        synchronized (pendingFileStableTime) {
+            if (pendingFileStableTime.containsKey(fullPath)) return;
+            pendingFileStableTime.put(fullPath, now);
+        }
+
+        // 等文件写完（大小连续两次稳定）
+        boolean stable = waitFileStable(fullPath);
+
+        synchronized (pendingFileStableTime) {
+            pendingFileStableTime.remove(fullPath);
+        }
+
+        if (!stable) {
+            System.err.println("  [热监听] ⚠️ 文件写入不稳定，超时放弃：" + fileName);
+            return;
+        }
+
+        File pdfFile = fullPath.toFile();
+        if (!pdfFile.exists() || !pdfFile.isFile()) return;
+
+        System.out.println();
+        System.out.println("🔔 [热监听] 检测到新/变更 PDF：" + fileName);
+        ingestOnePdf(pdfFile, "  [热监听] ");
+        System.out.println();
+    }
+
+    private boolean waitFileStable(Path path) throws InterruptedException {
+        File f = path.toFile();
+        long deadline = System.currentTimeMillis() + FILE_STABLE_WAIT_TIMEOUT_MS;
+        long lastSize = -1;
+        long stableSince = 0;
+        int stableCount = 0;
+
+        while (System.currentTimeMillis() < deadline) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+            if (!f.exists()) {
+                Thread.sleep(FILE_STABLE_CHECK_MS);
+                continue;
+            }
+            long size = f.length();
+            if (size == lastSize) {
+                stableCount++;
+                if (stableCount >= 2) return true;
+            } else {
+                stableCount = 0;
+            }
+            lastSize = size;
+            Thread.sleep(FILE_STABLE_CHECK_MS);
+        }
+        // 超时退出：如果文件已存在且有稳定过至少一次，仍然尝试处理
+        return f.exists() && stableCount >= 1;
+    }
     private String ocrExtractFromPdf(PDDocument pdDoc, ProcessRegistrar registrar) {
         if (registrar == null) registrar = NOOP_REGISTRAR;
         File workDir = null;
