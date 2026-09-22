@@ -248,150 +248,31 @@ java -Dfile.encoding=UTF-8 -jar target/demoAI-1.0-SNAPSHOT.jar
 
 医疗知识问答主界面。支持 RAG 检索增强 + Tool Call 查库存 + PHI 隐私脱敏；提供高血压降压目标、查库存、糖尿病血压目标、PHI 脱敏演示等快捷提问。
 
-![智能问诊界面](docs/web-chat.png)
+![智能问诊界面](docs/web-chat-new.png)
 
 ### 🧪 系统评估
 
 一键运行测试集，自动执行 10 个医疗测试用例，输出 4 维度量化评估结果（答案准确性 / 引用正确性 / 幻觉抑制 / 合规性），包含通过率卡片、维度进度条和逐题详细表格。
 
-![系统评估界面](docs/web-eval.png)
+![系统评估 · 结果概览](docs/web-eval-new1.png)
+
+![系统评估 · 逐题结果](docs/web-eval-new2.png)
 
 ### 🩻 运行诊断
 
 实时查看系统状态：向量库类型与就绪情况、PgVector 扩展检测、OCR 引擎可用性、PDF 入库统计、最近入库记录。
 
-![运行诊断界面](docs/web-diag.png)
+![运行诊断界面](docs/web-diag-new.png)
 
----
+### 后台运行控制台日志
 
-# 🔌 API 接口
+启动时控制台会依次输出 OCR 诊断、PgVector 自检、RAG 知识库扫描的全链路日志：
 
-## ① 💬 聊天对话（自带 RAG + Tool Call + PHI 脱敏）
+![后台运行图1](docs/web-chat.png)
 
-```http
-GET /chat?message=高血压患者的降压目标是多少？
-```
+![后台运行图2](docs/web-eval.png)
 
-**示例响应**：
-
-> 根据知识库内容，高血压患者的降压目标如下：
->
-> - 对于 **<80 岁的高血压患者**，推荐诊室血压降至 **130/80 mmHg 以下**；
-> - 对于 **≥80 岁的高血压患者**，建议诊室血压降至 **150/90 mmHg 以下**，如能耐受，可进一步降至 **140/90 mmHg 以下**。
->
-> 此外，文档2和文档3还指出：
-> - 一般高血压患者的最佳血压目标为 **<130/80 mmHg**，基本目标值为 **<140/90 mmHg**；
-> - **糖尿病患者**的降压目标为 **<130/80 mmHg**；
-> - **虚弱老年高血压患者**的血压目标需根据个体耐受性做**个体化判断**。
->
-> 以上目标需结合患者合并症、耐受性及总体心血管风险综合评估，具体治疗方案请咨询专业医生。
->
-> ---
-> 【引用(参考)来源】
-> 1.国家基层高血压防治管理指南2025版.pdf
-> 2.中国心血管病一级预防指南2020.pdf
-
-**示例（AI 自动调用 Tool 查库存）**：
-
-```http
-GET /chat?message=胃镜活检钳还有多少库存？
-```
-
-> 目前「胃镜活检钳」的当前库存为 **128 件**，请按需安排采购。
-
----
-
-## ② 🩺 RAG 运行时诊断
-
-```http
-GET /rag/diag
-```
-
-**输出示例**：
-
-```json
-{
-  "vector_store_type": "org.springframework.ai.vectorstore.pgvector.PgVectorStore",
-  "vector_store_is_null": false,
-  "pg_vector_initializer_exists": true,
-  "pg_vector_initializer_ready": true,
-  "rag_initializer": {
-    "ocr_ready": true,
-    "pdfs_total": 5,
-    "pdfs_ingested_ok": 5,
-    "recent_processed": [
-      { "name": "中国心血管病一级预防指南2020.pdf", "chunks": 204, "non_blank": 95821, "source": "ocr-p4" },
-      { "name": "国家基层高血压防治管理指南2025版.pdf", "chunks": 49, "non_blank": 35210, "source": "extract-p2" }
-    ]
-  }
-}
-```
-
----
-
-## ③ 🧪 医疗测试集自动评估
-
-运行完整评估，返回JSON格式评估报告（包含通过率、各维度统计、失败用例原因）：
-
-```http
-GET /evaluation/run
-```
-
-**输出示例**：
-
-```json
-{
-  "total_count": 10,
-  "pass_count": 8,
-  "pass_rate": "80.0%",
-  "duration_ms": 12500,
-  "dimensions": {
-    "答案准确性": "7/10",
-    "引用正确性": "9/10",
-    "幻觉抑制": "10/10",
-    "合规性": "10/10"
-  },
-  "category_stats": {
-    "事实查询": 5,
-    "综合分析": 2,
-    "幻觉抑制": 2,
-    "合规测试": 1
-  },
-  "summary": "医疗RAG系统评估报告：共10个测试用例，通过8个，通过率80.0%。...",
-  "detailed_results": [
-    {
-      "question": "高血压患者的降压目标是多少？",
-      "category": "事实查询",
-      "should_be_answerable": true,
-      "accuracy_pass": true,
-      "reference_pass": true,
-      "hallucination_pass": true,
-      "compliance_pass": true,
-      "all_pass": true
-    }
-  ]
-}
-```
-
-获取纯文本评估摘要：
-
-```http
-GET /evaluation/summary
-```
-
-**输出示例**：
-
-```
-医疗RAG系统评估报告：共10个测试用例，通过8个，通过率80.0%。
-各维度通过率：
-- 答案准确性：7/10
-- 引用正确性：9/10
-- 幻觉抑制：10/10
-- 合规性：10/10
-
-失败用例（2个）：
-- [事实查询] 低密度脂蛋白胆固醇（LDL-C）的控制目标是多少？ → 准确性未通过：答案未包含预期关键词 [LDL, 低密度, 2.6, 3.4, 1.8, mmol]；
-```
+![后台运行图3](docs/web-diag.png)
 
 ---
 
