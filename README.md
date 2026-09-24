@@ -14,7 +14,7 @@ blockquote { font-size: 1.05em; }
 >
 > 基于 **Spring Boot 3.5 + Spring AI 1.1 + 阿里云百炼 DashScope + PgVector + Tesseract OCR** 的完整 RAG（检索增强生成）医疗知识库 Demo。
 >
-> 原生支持 **纯图片扫描 PDF** 的 OCR 文字识别、**多层级 PDF 文本提取策略**、**PHI 隐私脱敏**、**手动引用溯源**、**精准相似度阈值过滤**、**增量入库去重**、**向量维度自动修复**、**库存查询 Tool Call** 等生产级特性。
+> 原生支持 **纯图片扫描 PDF** 的 OCR 文字识别、**多层级 PDF 文本提取策略**、**PHI 隐私脱敏**、**手动引用溯源**、**精准相似度阈值过滤**、**增量入库去重**、**向量维度自动修复**、**目录热监听（WatchService）**、**库存查询 Tool Call** 等生产级特性。
 
 ---
 
@@ -30,6 +30,7 @@ blockquote { font-size: 1.05em; }
 | 📄 **PDF 文本提取（4 级兜底）** | P1 标准提取 → P2 参数调整 → P3 暴力流扫 → P4 Tesseract OCR，纯图片扫描件也能识别 |
 | 🧪 **内容质量 QC + 乱码救回** | 检测 U+FFFD(�) / CJK 占比 / 控制字符，乱码时自动启动 OCR 重扫救回 |
 | 🧭 **增量入库去重** | 查 `vector_store` 表判断是否已入库成功，重启不重复 OCR / Embedding |
+| 👁️ **WatchService 目录热监听** | 运行中往 `app.pdf-path` 丢新 PDF 自动入库，无需重启；Windows 复制文件触发的 CREATE + N 次 MODIFY 用 `waitFileStable` 去重 |
 | 💾 **PgVector 持久化向量库** | PostgreSQL + pgvector 扩展，HNSW 索引 + COSINE 距离 |
 | 🔬 **向量维度自动修复** | 检测表结构维度是否匹配 Embedding 模型（v3=1024，v2=1536），不匹配自动重建 |
 | 🧩 **SimpleVectorStore 备用方案** | 条件互斥开关（`app.pgvector.enabled: false`），内存向量库开箱即用，开发测试友好 |
@@ -174,7 +175,7 @@ spring:
           model: text-embedding-v3   # 默认 1024 维
 
 app:
-  pdf-path: D:/ai-docs                # 把 PDF 知识库丢进这个目录（自动扫描）
+  pdf-path: D:/ai-docs                # 启动时全量扫描 + 运行中 WatchService 热监听
 
   ocr:
     enabled: true
@@ -234,6 +235,7 @@ java -Dfile.encoding=UTF-8 -jar target/demoAI-1.0-SNAPSHOT.jar
         ...
      ✅ 中国心血管病一级预防指南2020.pdf（398s） chunks=204  totalChars=95,821 → 已写入 VectorStore
      ⏭️  跳过：国家基层高血压防治管理指南2025版.pdf（已入库 49 chunks，有效字数≈35,210）
+     👁️ WatchService 已启动，监听目录：D:\ai-docs   ← 热监听，运行中丢新 PDF 无需重启
 ```
 
 ## 6️⃣ 访问 Web 前端界面
@@ -309,12 +311,15 @@ java -Dfile.encoding=UTF-8 -jar target/demoAI-1.0-SNAPSHOT.jar
                                      ▼
     ┌────────────────────────────────────────────────────────────────────┐
     │                    RagInitializer（知识库构建）                      │
+    │                                                                    │
+    │  🕐 启动时（@PostConstruct init）：                                 │
     │  D:/ai-docs/*.pdf  ─┬─▶ P1 标准PDFBox提取                           │
     │                     ├─▶ P2 参数调整提取                             │
     │                     ├─▶ P3 暴力流扫（隐藏文字层）                   │
     │                     └─▶ P4 Tesseract OCR（纯图片扫描件兜底）       │
     │                           │                                         │
     │                           ▼                                         │
+    │                    ✅ 增量去重（已入库 PDF 自动跳过）                 │
     │                    ✅ 内容 QC 乱码检测 + OCR 救回                    │
     │                           │                                         │
     │                           ▼                                         │
@@ -323,6 +328,12 @@ java -Dfile.encoding=UTF-8 -jar target/demoAI-1.0-SNAPSHOT.jar
     │                           ▼                                         │
     │                    DashScope text-embedding-v3 → 1024 维向量        │
     │                           │                                         │
+    │                                                                    │
+    │  👁️ 运行中（WatchService daemon 线程）：                            │
+    │  D:/ai-docs/ 监听到 CREATE/MODIFY ──▶ waitFileStable（等写入稳定）  │
+    │     ──▶ probeAlreadyIngested（已入库 → ⏭️ 跳过）                    │
+    │     ──▶ ingestOnePdf（同上 P1→P4 全流程）                          │
+    │                                                                    │
     └───────────────────────────┴─────────────────────────────────────────┘
                                  │
                                  ▼
@@ -373,7 +384,7 @@ java -Dfile.encoding=UTF-8 -jar target/demoAI-1.0-SNAPSHOT.jar
 | 文件 | 职责 |
 |---|---|
 | `Main.java` | **应用入口**：`@SpringBootApplication`，启动前强制全局 UTF-8 编码（修复 Windows 默认 GBK 导致的中文乱码），手动排除 `PgVectorStoreAutoConfiguration` 以接管 PgVector 建表流程 |
-| `RagInitializer.java` | **核心**：PDF 4 层提取策略（P1 标准提取 → P2 参数调整 → P3 暴力流扫 → P4 Tesseract OCR）、内容 QC 乱码检测、动态超时、增量入库去重、`TokenTextSplitter` 切片 + Embedding、诊断接口数据 |
+| `RagInitializer.java` | **核心**：PDF 4 层提取策略（P1 标准提取 → P2 参数调整 → P3 暴力流扫 → P4 Tesseract OCR）、内容 QC 乱码检测、动态超时、**WatchService 目录热监听**（CREATE/MODIFY → waitFileStable → probeAlreadyIngested → ingestOnePdf）、增量入库去重、`TokenTextSplitter` 切片 + Embedding、诊断接口数据 |
 | `ChatController.java` | `/chat` 对话接口（PHI 脱敏 → 手动 RAG 检索 → System Prompt 组装 → ChatClient + Tool Call → 引用来源格式化）、`/rag/diag` 诊断接口 |
 | **`RagReferenceService.java`** | 手动向量检索（DB 层 + Java 层双保险相似度阈值过滤）、上下文组装、System Prompt 构建（医疗合规约束）、引用来源提取与格式化 |
 | **`PhiDesensitizationService.java`** | PHI 隐私脱敏，覆盖身份证 / 手机号 / 病历号 / 出生日期 / 银行卡号，脱敏 + 审计一体化 |
