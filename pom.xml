@@ -27,6 +27,9 @@
         -->
         <spring-ai.version>1.1.2</spring-ai.version>
         <spring-ai-alibaba.version>1.1.2.3</spring-ai-alibaba.version>
+
+        <!-- LangChain4j 版本：使用阿里百炼官方文档推荐的 1.0.0-beta3 -->
+        <langchain4j.version>1.0.0-beta3</langchain4j.version>
     </properties>
 
     <dependencyManagement>
@@ -47,6 +50,23 @@
                 <groupId>com.alibaba.cloud.ai</groupId>
                 <artifactId>spring-ai-alibaba-bom</artifactId>
                 <version>${spring-ai-alibaba.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+
+            <!-- LangChain4j BOM：统一管理 LangChain4j 核心模块版本 -->
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-bom</artifactId>
+                <version>${langchain4j.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- LangChain4j Community BOM：社区维护的模块（DashScope 等）版本管理 -->
+            <dependency>
+                <groupId>dev.langchain4j</groupId>
+                <artifactId>langchain4j-community-bom</artifactId>
+                <version>${langchain4j.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
@@ -181,6 +201,33 @@
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-pdf-document-reader</artifactId>
             <version>${spring-ai.version}</version>
+        </dependency>
+
+        <!-- ========== LangChain4j 学习实验：核心 + DashScope + PgVector ========== -->
+        <!--
+          版本管理：langchain4j-bom 1.0.0-beta3（阿里百炼官方文档推荐版本）。
+          注意：此分支是 langchain4j-exp，Spring AI 原有依赖保留但不再主导，
+          两套框架并存，通过不同 Controller 路径（/chat vs /lc/chat）区分。
+        -->
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-community-dashscope</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-community-dashscope-spring-boot-starter</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-pgvector</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.langchain4j</groupId>
+            <artifactId>langchain4j-spring-boot-starter</artifactId>
         </dependency>
     </dependencies>
 
