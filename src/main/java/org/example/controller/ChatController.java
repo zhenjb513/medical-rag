@@ -15,7 +15,9 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.util.*;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 @RestController
 public class ChatController {
@@ -27,6 +29,7 @@ public class ChatController {
     private final VectorStore vectorStore;
     private final PhiDesensitizationService phiDesensitizationService;
     private final RagReferenceService ragReferenceService;
+    private final org.example.service.HybridRetrievalService hybridRetrievalService;
     private final ObjectMapper jsonMapper = new ObjectMapper().enable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);
 
     public ChatController(ChatClient.Builder chatClientBuilder,
@@ -35,6 +38,7 @@ public class ChatController {
                           ApplicationContext applicationContext,
                           PhiDesensitizationService phiDesensitizationService,
                           RagReferenceService ragReferenceService,
+                          org.example.service.HybridRetrievalService hybridRetrievalService,
                           @Autowired(required = false) RagInitializer ragInitializer) {
         this.inventoryService = inventoryService;
         this.applicationContext = applicationContext;
@@ -42,7 +46,7 @@ public class ChatController {
         this.ragInitializer = ragInitializer;
         this.phiDesensitizationService = phiDesensitizationService;
         this.ragReferenceService = ragReferenceService;
-
+        this.hybridRetrievalService = hybridRetrievalService;
 
         //        boolean vectorStoreReady = true;
         //        if (applicationContext.containsBean("pgVectorSchemaInitializer")) {
@@ -65,13 +69,15 @@ public class ChatController {
         String sanitizedMessage = phiDesensitizationService.desensitize(message);
         boolean hasPhi = phiDesensitizationService.containsPhi(message);
 
-        // 2.向量检索（Top 8，加相似度阈值 0.4 过滤低质量 chunk）
-        List<Document> docs = ragReferenceService.search(sanitizedMessage, 8, 0.65);
+        // 2.检索：下限阈值统一由 app.retrieval 配置决定（vector-floor 取数下限 + answer-floor 可答性闸门）。
+        //    这里不再传 0.65：实测那道逐条阈值会把正确题的候选从 20 条砍到 2 条，却照样放行超纲问题。
+        List<Document> docs = hybridRetrievalService.search(sanitizedMessage, 8, null);
         if (hasPhi) {
             System.out.println("[PHI脱敏] 监测到敏感信息，原始: \"" + message + "\"  脱敏后: \"" + sanitizedMessage + "\"");
         }
         System.out.println("[RAG检索] 问题: \"" + sanitizedMessage + "\"" + (hasPhi ? " (已脱敏)" : ""));
-        System.out.println("[RAG检索] 召回文档数量: " + docs.size() + " (Top 8, 相似度阈值 ≥ 0.65)");
+        System.out.println("[RAG检索] 模式=" + hybridRetrievalService.getMode()
+                + "  召回文档数量: " + docs.size());
         for (int i = 0; i < docs.size(); i++) {
             Document doc = docs.get(i);
             double score = doc.getScore() != null ? doc.getScore() : -1.0;
@@ -90,7 +96,7 @@ public class ChatController {
         System.out.println("[RAG检索] 提取到的引用来源: " + references);
 
         //5.调用大模型
-        String  answer = chatClient.prompt()
+        String answer = chatClient.prompt()
                 .system(systemPrompt)
                 .user(sanitizedMessage)
                 .tools(inventoryService)
@@ -119,7 +125,9 @@ public class ChatController {
         return "<unknown>";
     }
 
-    /** 运行时 RAG 诊断接口，返回 VectorStore 类型、PgVector 初始化状态及各 PDF 提取诊断信息。 */
+    /**
+     * 运行时 RAG 诊断接口，返回 VectorStore 类型、PgVector 初始化状态及各 PDF 提取诊断信息。
+     */
     @GetMapping(value = "/rag/diag", produces = "application/json; charset=utf-8")
     public String ragDiag() throws Exception {
         Map<String, Object> out = new LinkedHashMap<>();

@@ -5,6 +5,7 @@ import org.example.service.EvaluationService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.LinkedHashMap;
@@ -18,12 +19,53 @@ import java.util.Map;
 public class EvaluationController {
 
     private final EvaluationService evaluationService;
+    private final org.example.service.RecallEvaluationService recallEvaluationService;
+    private final org.example.service.HybridRetrievalService hybridRetrievalService;
     private final ObjectMapper jsonMapper = new ObjectMapper()
             .enable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);
 
     @Autowired
-    public EvaluationController(EvaluationService evaluationService) {
+    public EvaluationController(EvaluationService evaluationService,
+                                org.example.service.RecallEvaluationService recallEvaluationService,
+                                org.example.service.HybridRetrievalService hybridRetrievalService) {
         this.evaluationService = evaluationService;
+        this.recallEvaluationService = recallEvaluationService;
+        this.hybridRetrievalService = hybridRetrievalService;
+    }
+
+    /**
+     * 看生产链路真正检索到了什么：直接走 HybridRetrievalService.search()（受 mode / rerank-enabled 支配），
+     * 只召回不生成，所以改完配置可以零成本确认开关有没有生效。
+     */
+    @GetMapping(value = "/retrieve", produces = "text/plain; charset=utf-8")
+    public String retrieve(@RequestParam String q,
+                           @RequestParam(defaultValue = "8") int topK) {
+        long start = System.currentTimeMillis();
+        var docs = hybridRetrievalService.search(q, topK, null);
+        StringBuilder sb = new StringBuilder();
+        sb.append("mode=").append(hybridRetrievalService.getMode())
+                .append("  请求topK=").append(topK).append("  实际返回=").append(docs.size())
+                .append("  耗时").append(System.currentTimeMillis() - start).append("ms\n");
+        int i = 0;
+        for (var d : docs) {
+            Object ci = d.getMetadata().get("chunk_index");
+            sb.append("  ").append(++i).append(". ").append(d.getMetadata().get("file_name"))
+                    .append("#").append(ci).append("  score=").append(d.getScore() == null ? "n/a"
+                            : String.format("%.3f", d.getScore())).append('\n');
+        }
+        return sb.toString();
+    }
+
+    /** 只测检索不测生成：召回率基线，mode=vector|bm25|hybrid 零成本，mode=rerank 每题调一次重排接口。expand=true 时叠加相邻块扩展 */
+    @GetMapping(value = "/recall", produces = "text/plain; charset=utf-8")
+    public String recallBaseline(@RequestParam(defaultValue = "20") int probeK,
+                                 @RequestParam(defaultValue = "vector") String mode,
+                                 @RequestParam(defaultValue = "false") boolean expand) {
+        long start = System.currentTimeMillis();
+        System.out.println("[召回基线] 开始，mode=" + mode + " expand=" + expand + " probeK=" + probeK);
+        String report = recallEvaluationService.run(probeK, mode, expand);
+        System.out.println("[召回基线] 完成，mode=" + mode + " 耗时" + (System.currentTimeMillis() - start) + "ms");
+        return report;
     }
 
     /**
