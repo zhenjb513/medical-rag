@@ -720,13 +720,23 @@ public class RagInitializer {
     }
 
     /**
-     * 正文清洗（全库普查证据见 scratch/census.txt，2026-10-12）：
-     * ① 控制字符 U+0000–U+001F（血脂指南 640 个，是 PDF 字体 CID 解码残留，会污染整块向量）——保留 \t\n\r；
-     * ② 私用区字形（BMP PUA 及 U+F0000 以上，血脂指南里的 􀲔 上下箭头 ×10）——模型侧一律是未知字形；
-     * ③ 水印串 fmx_…（血脂指南 ×35，全部同一种写法）；
-     * ④ 连字符码点归一：U+2010/U+2011/U+2043 → '-'（全库 2374 处）。指南正文把 LDL-C 排成三种连字符，
-     *    特殊码点不进分词器，导致 LDL‐C 在关键词通道里搜不到——归一后同一术语只有一个写法。
-     * 只做删除和等长替换，不改字数统计，尽量稳住切块边界。
+     * 正文清洗。每类命中数都以只读审计为准（scratch/charaudit.txt；抽取口径与生产一致——四份 PDF 全部走 P1，
+     * 见 scratch/path2_final.txt）。写着「本库 0 个」的规则是兜底，防以后进来的 PDF，别按它们评估收益。
+     * ① 控制字符 U+0000–U+001F（保留 \t\n\r）：血脂管理指南 750 个、基层高血压 3 个，另两份 0；
+     *    U+007F–U+009F 本库 0 个。这些字符夹在正文里（实例见 scratch/fhpeek.txt 清洗前块头），
+     *    成因未考证，这里只确认「存在于正文且不是可见字符」。
+     * ② 零宽/连接符 U+200B–U+200F、U+2060、U+FEFF：本库 0 个，兜底。
+     * ③ 私用区字形：补充私用区 U+F0000 以上血脂管理指南 13 个，其中 U+100C94 􀲔 占 10 次，10 次全部紧跟在
+     *    LDL/VLDL/HDL⁃C 或 ApoB 之后，位置就是表「对脂蛋白的影响」里该画箭头的那一列（scratch/rawpeek2.txt）；
+     *    至于它到底代表升还是降，文本里读不出来，所以只做删除不做替换。BMP 私用区 U+E000–U+F8FF 本库 0 个，兜底。
+     * ④ 水印串 fmx_…：血脂管理指南 35 次，全库普查只出现 fmx_T3RoZXJNaXJyb3Jz 这一种写法（scratch/census.txt）。
+     * ⑤ 连字符码点归一：U+2010/U+2011/U+2043/U+2212 → '-'，软连字符 U+00AD 删除，全库 2374 处
+     *    （U+2011 953、U+2010 913、U+2043 508；U+2212 与 U+00AD 本库 0 个，兜底）。
+     *    「特殊码点不进分词器」是实测：scratch/p0_hyphen2.txt 里 df("ldl-c")=6，而 ldl‐c / ldl‑c / ldl⁃c / ldl−c 四种写法 df 全为 0。
+     *    同一份指南把 LDL-C 排成多种码点（一级预防 U+2010×104 / U+2011×7，血脂 U+2043×226 / U+2010×6），
+     *    归一后可逐字定位到 LDL-C 的块数：一级预防 1→38、血脂 0→86、基层 5→5（scratch/chunkdiff2.txt）。
+     * metadata 里的 text_length / non_blank_length 仍是清洗前的数字——代码顺序是先按原始文本打分选路、再清洗落库，
+     * 那两个字段是判断抽取路径合不合格的质量指标，不是正文长度，所以重灌后拿它们和块正文长度对账会看到差值。
      */
     public static String sanitizeExtractedText(String raw) {
         if (raw == null || raw.isEmpty()) return raw;
@@ -735,14 +745,16 @@ public class RagInitializer {
             int cp = raw.codePointAt(i);
             i += Character.charCount(cp);
             if (cp < 0x20 && cp != '\t' && cp != '\n' && cp != '\r') continue;
-            if (cp == 0x7F) continue;
+            if (cp >= 0x7F && cp <= 0x9F) continue;
+            if (cp == 0x00AD) continue;
+            if (cp >= 0x200B && cp <= 0x200F) continue;
+            if (cp == 0x2060 || cp == 0xFEFF) continue;
             if (cp >= 0xE000 && cp <= 0xF8FF) continue;
             if (cp >= 0xF0000) continue;
             if (cp == 0x2010 || cp == 0x2011 || cp == 0x2043 || cp == 0x2212) { sb.append('-'); continue; }
-            if (cp == 0x00AD) continue;
             sb.appendCodePoint(cp);
         }
-        // 控制字符去掉后水印串会散开，所以清洗完再摘字符串
+        // 水印按整串摘除，所以放在逐字符过滤之后；替换成一个空格而不是空串，避免相邻词被粘在一起
         return WATERMARK_RUN.matcher(sb).replaceAll(" ");
     }
 
