@@ -29,11 +29,14 @@ public class MedicalTestSet {
     private static final String XZ = "中国血脂管理指南2023年.pdf";
     private static final String WHO = "02-WHO成人高血压药物治疗指南2021.pdf";
 
-    /** 答案块：同一个块可以被两种问法问出来，抽成常量避免两处标注不一致 */
+    /**
+     * 答案块：同一个块可以被两种问法问出来，抽成常量避免两处标注不一致
+     */
     private static final List<String> G_BP_TARGET = all(at(YJ, 63), at(JC, 8, 17));
     private static final List<String> G_SALT = all(at(YJ, 52, 55), at(JC, 19));
     private static final List<String> G_ACTIVITY = at(YJ, 42, 43);
-    private static final List<String> G_WEIGHT = at(YJ, 52, 56);
+    // 全库逐字写出「BMI<24 + 腰围90/85」的只有这三块；JC#16、#59 只讲测腰围不讲目标，不算答案
+    private static final List<String> G_WEIGHT = all(at(YJ, 52, 56), at(JC, 19));
     private static final List<String> G_HR = at(YJ, 58);
     private static final List<String> G_VERY_OLD = all(at(JC, 8, 17), at(YJ, 63));
     private static final List<String> G_DM_BP = at(YJ, 63, 66);
@@ -41,13 +44,16 @@ public class MedicalTestSet {
     private static final List<String> G_DX_HOME = at(JC, 14, 15);
     private static final List<String> G_STANDING = at(JC, 13);
     private static final List<String> G_LDL_BENEFIT = all(at(XZ, 42), at(YJ, 88));
-    private static final List<String> G_NON_HDL = at(YJ, 75, 76);
-    private static final List<String> G_DM_LDL = all(at(XZ, 95), at(YJ, 73));
+    private static final List<String> G_NON_HDL = all(at(YJ, 75, 76), at(XZ, 49, 96));
+    private static final List<String> G_DM_LDL = all(at(XZ, 93, 95), at(YJ, 73));
     private static final List<String> G_FH = at(XZ, 111);
     private static final List<String> G_STROKE_LIPID = at(XZ, 100);
-    private static final List<String> G_STATIN_COMBO = all(at(YJ, 84), at(JC, 42));
-    private static final List<String> G_STATIN_RECHECK = at(JC, 44);
+    // 逐字含「依折麦布」的块有 12 个，只有真写出「单药不达标→联合」这一步的才算答案，其余在讲机制或试验证据
+    private static final List<String> G_STATIN_COMBO = all(at(YJ, 84, 85, 86), at(JC, 42), at(XZ, 53));
+    // 全库逐字含「4~6周」的只有两块：基层高血压指南#44 与血脂指南#58，后者是同一条复查建议的另一本指南写法
+    private static final List<String> G_STATIN_RECHECK = all(at(JC, 44), at(XZ, 58));
     private static final List<String> G_DASH = all(at(YJ, 54), at(JC, 19));
+    // 陷阱：一级预防#11 也逐字含「23.2%」，但那是血压130~139/80~89的人群比例，不是患病率，不能当等价答案块
     private static final List<String> G_HT_TREND = at(YJ, 10);
     private static final List<String> G_LIPID_TREND = at(YJ, 11);
     private static final List<String> G_SECOND_HAND = at(YJ, 47);
@@ -75,7 +81,7 @@ public class MedicalTestSet {
                 Arrays.asList("150", "75"), Arrays.asList(YJ), G_ACTIVITY, "事实查询");
 
         add(testCases, "控制体重时BMI和腰围的目标是多少？",
-                Arrays.asList("BMI", "24", "90", "85"), Arrays.asList(YJ), G_WEIGHT, "事实查询");
+                Arrays.asList("BMI", "24", "90", "85"), Arrays.asList(YJ, JC), G_WEIGHT, "事实查询");
 
         add(testCases, "中等强度身体活动对应的心率范围怎么计算？",
                 Arrays.asList("60%", "70%", "220"), Arrays.asList(YJ), G_HR, "事实查询");
@@ -99,7 +105,7 @@ public class MedicalTestSet {
                 Arrays.asList("20%", "23%", "21%"), Arrays.asList(XZ, YJ), G_LDL_BENEFIT, "事实查询");
 
         add(testCases, "非HDL-C的目标值如何由LDL-C目标推算？",
-                Arrays.asList("0.8", "非HDL"), Arrays.asList(YJ), G_NON_HDL, "事实查询");
+                Arrays.asList("0.8", "非HDL"), Arrays.asList(YJ, XZ), G_NON_HDL, "事实查询");
 
         add(testCases, "糖尿病患者的LDL-C控制目标是多少？",
                 Arrays.asList("1.4", "1.8", "2.6"), Arrays.asList(XZ, YJ), G_DM_LDL, "事实查询");
@@ -111,10 +117,10 @@ public class MedicalTestSet {
                 Arrays.asList("1.4", "1.8", "2.2"), Arrays.asList(XZ), G_STROKE_LIPID, "事实查询");
 
         add(testCases, "LDL-C不达标时降脂药物的联合方案是什么？",
-                Arrays.asList("他汀", "依折麦布", "PCSK9"), Arrays.asList(YJ, JC), G_STATIN_COMBO, "事实查询");
+                Arrays.asList("他汀", "依折麦布", "PCSK9"), Arrays.asList(YJ, JC, XZ), G_STATIN_COMBO, "事实查询");
 
         add(testCases, "初始用药或增加他汀剂量后多久复查血脂、ALT和肌酸激酶？",
-                Arrays.asList("4~6周", "复查"), Arrays.asList(JC), G_STATIN_RECHECK, "事实查询");
+                Arrays.asList("4~6周", "复查"), Arrays.asList(JC, XZ), G_STATIN_RECHECK, "事实查询");
 
         add(testCases, "DASH饮食可以使高血压患者的收缩压降低多少？",
                 Arrays.asList("11.4", "DASH"), Arrays.asList(YJ, JC), G_DASH, "事实查询");
@@ -132,7 +138,7 @@ public class MedicalTestSet {
                 Arrays.asList("5年", "戒烟"), Arrays.asList(YJ), G_QUIT_SMOKING, "事实查询");
 
         add(testCases, "高血压患者转诊后多久需要主动随访？",
-                Arrays.asList("2~4周", "转诊"), Arrays.asList(JC), G_REFERRAL_FOLLOWUP, "事实查询");
+                Arrays.asList("2~4周", "转诊"), List.of(JC), G_REFERRAL_FOLLOWUP, "事实查询");
 
         add(testCases, "WHO指南对无合并症的高血压患者推荐的目标血压是多少？",
                 Arrays.asList("140/90", "130"), Arrays.asList(WHO), G_WHO_TARGET, "事实查询");
@@ -167,7 +173,7 @@ public class MedicalTestSet {
                 Arrays.asList("150", "75"), Arrays.asList(YJ), G_ACTIVITY, "口语查询");
 
         add(testCases, "我肚子大，瘦到什么程度对血压才有好处？",
-                Arrays.asList("24", "腰围"), Arrays.asList(YJ), G_WEIGHT, "口语查询");
+                Arrays.asList("24", "腰围"), Arrays.asList(YJ, JC), G_WEIGHT, "口语查询");
 
         add(testCases, "运动时心跳到多少下才算练到位了？",
                 Arrays.asList("60%", "70%", "220"), Arrays.asList(YJ), G_HR, "口语查询");
@@ -191,7 +197,7 @@ public class MedicalTestSet {
                 Arrays.asList("20%", "23%", "21%"), Arrays.asList(XZ, YJ), G_LDL_BENEFIT, "口语查询");
 
         add(testCases, "化验单上除了坏胆固醇，还有一个叫非高密度脂蛋白的指标该看多少？",
-                Arrays.asList("0.8"), Arrays.asList(YJ), G_NON_HDL, "口语查询");
+                Arrays.asList("0.8"), Arrays.asList(YJ, XZ), G_NON_HDL, "口语查询");
 
         add(testCases, "我血糖偏高，化验单上那个坏胆固醇要降到多少？",
                 Arrays.asList("1.4", "1.8", "2.6"), Arrays.asList(XZ, YJ), G_DM_LDL, "口语查询");
@@ -203,10 +209,10 @@ public class MedicalTestSet {
                 Arrays.asList("1.4", "1.8", "2.2"), Arrays.asList(XZ), G_STROKE_LIPID, "口语查询");
 
         add(testCases, "吃了降脂药胆固醇还是下不来，还能再加点什么药？",
-                Arrays.asList("他汀", "依折麦布"), Arrays.asList(YJ, JC), G_STATIN_COMBO, "口语查询");
+                Arrays.asList("他汀", "依折麦布"), Arrays.asList(YJ, JC, XZ), G_STATIN_COMBO, "口语查询");
 
         add(testCases, "刚开始吃降血脂药，多久要去复查一次？",
-                Arrays.asList("4~6周", "复查"), Arrays.asList(JC), G_STATIN_RECHECK, "口语查询");
+                Arrays.asList("4~6周", "复查"), Arrays.asList(JC, XZ), G_STATIN_RECHECK, "口语查询");
 
         add(testCases, "听说有种吃法对血压好，能降压几个毫米汞柱？",
                 Arrays.asList("11.4"), Arrays.asList(YJ, JC), G_DASH, "口语查询");
@@ -272,7 +278,9 @@ public class MedicalTestSet {
         testCases.add(new TestCase(question, keywords, references, answerChunks, category, true));
     }
 
-    /** 同一份文件里的若干答案块，写成 "文件名#块号"。 */
+    /**
+     * 同一份文件里的若干答案块，写成 "文件名#块号"。
+     */
     private static List<String> at(String fileName, int... chunkIndexes) {
         List<String> out = new ArrayList<>(chunkIndexes.length);
         for (int i : chunkIndexes) out.add(fileName + "#" + i);

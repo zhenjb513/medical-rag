@@ -21,6 +21,12 @@ public class RecallEvaluationService {
 
     private static final int[] K_CUTS = {1, 2, 4, 8, 12, 20};
 
+    /**
+     * 块号容错半径。推荐意见这类表格会被切块劈成相邻两块，严格块号会把「隔壁块已经捞到」判成 0 分；
+     * 生产链路的相邻块扩展本来就会补上邻居，所以两个口径都要报，只报一个都会失真。
+     */
+    private static final int CHUNK_TOLERANCE = 1;
+
     /** 分问法统计：书面题和口语题的答案块完全相同，只比问法，这一栏就是关键词检索的"水分"。 */
     private static final class CatStat {
         int n, hit1, hit4, hit8;
@@ -62,6 +68,7 @@ public class RecallEvaluationService {
         List<TestCase> all = medicalTestSet.getTestCases();
         int[] ckHit = new int[K_CUTS.length];
         int[] ckAll = new int[K_CUTS.length];
+        int[] ckHitNear = new int[K_CUTS.length];
         double[] ckCover = new double[K_CUTS.length];
         int[] kwHit = new int[K_CUTS.length];
         int[] allKwHit = new int[K_CUTS.length];
@@ -108,6 +115,7 @@ public class RecallEvaluationService {
 
             List<String> gold = tc.getAnswerChunks();
             int goldRank = firstChunkRank(p, gold);
+            int goldRankNear = firstChunkRankWithin(p, gold, CHUNK_TOLERANCE);
             int goldWorst = worstChunkRank(p, gold);
             byCat.computeIfAbsent(tc.getCategory(), k -> new CatStat()).accept(goldRank);
             if (goldRank > 0) ckMrrSum += 1.0 / goldRank;
@@ -127,6 +135,7 @@ public class RecallEvaluationService {
             }
             for (int i = 0; i < K_CUTS.length; i++) {
                 if (goldRank > 0 && goldRank <= K_CUTS[i]) ckHit[i]++;
+                if (goldRankNear > 0 && goldRankNear <= K_CUTS[i]) ckHitNear[i]++;
                 if (goldWorst > 0 && goldWorst <= K_CUTS[i]) ckAll[i]++;
                 ckCover[i] += coveredFraction(p, gold, K_CUTS[i]);
             }
@@ -144,6 +153,7 @@ public class RecallEvaluationService {
             out.append("\n[").append(tc.getCategory()).append("] ").append(tc.getQuestion()).append('\n');
             out.append("  答案块=").append(shortGold(gold)).append('\n');
             out.append("  【答案块】首命中rank=").append(rankText(goldRank))
+                    .append("  ±").append(CHUNK_TOLERANCE).append("块容错rank=").append(rankText(goldRankNear))
                     .append("  全部到位rank=").append(rankText(goldWorst))
                     .append("  覆盖@").append(n).append('=').append(coveredText(coveredFraction(p, gold, n))).append('\n');
             if (before != null) {
@@ -161,18 +171,23 @@ public class RecallEvaluationService {
                     .append(" 第").append(n).append("位=").append(fmt(last(p.score()))).append('\n');
             if (m.equals("vector")) out.append(thresholdLine(p));
             if (goldRank == 0) {
-                out.append("  ❌ 标注的答案块一个都没召回到（probeK=").append(n)
-                        .append("）：要么检索漏了，要么这块标注/块号已失效\n");
+                out.append(goldRankNear > 0
+                        ? "  🔶 标注的答案块没进候选池，但它的第" + goldRankNear + "名邻居块被捞到了——"
+                        + "答案表格被切块劈成了两半（生产链路靠相邻块扩展能补上，严格块级口径判 0 分）\n"
+                        : "  ❌ 答案块连同左右邻居都没进候选池（probeK=" + n + "）：检索真漏了，"
+                        + "常见于该块正文被字体乱码/水印串污染，向量被带偏\n");
             } else if (goldRank > 8) {
                 out.append("  ⚠️ 答案块要到第").append(goldRank).append("位才出现，top8 之前进不了提示词\n");
             }
         }
 
         out.append("\n== 汇总（问题数=").append(total).append("）==\n");
-        out.append("  K   答案块命中(任一)  答案块全覆盖  平均覆盖度 | 任一词  全部词  文献\n");
+        out.append("  K   答案块命中(严格)  ±").append(CHUNK_TOLERANCE)
+                .append("块容错  答案块全覆盖  平均覆盖度 | 任一词  全部词  文献\n");
         for (int i = 0; i < K_CUTS.length; i++) {
             out.append("  ").append(String.format("%-3d", K_CUTS[i]))
                     .append(String.format("%6.1f%%（%d/%d）", 100.0 * ckHit[i] / Math.max(1, total), ckHit[i], total))
+                    .append(String.format("  %6.1f%%", 100.0 * ckHitNear[i] / Math.max(1, total)))
                     .append(String.format("  %6.1f%%", 100.0 * ckAll[i] / Math.max(1, total)))
                     .append(String.format("  %6.1f%%", ckCover[i] / Math.max(1, total)))
                     .append("  |  ").append(pct(kwHit[i], total))
@@ -348,6 +363,29 @@ public class RecallEvaluationService {
             if (gold.contains(p.chunk().get(i))) return i + 1;
         }
         return 0;
+    }
+
+    /** 同上，但允许同一份文档内块号相差 tolerance：捞到答案块的邻居也算命中。 */
+    private int firstChunkRankWithin(Probe p, List<String> gold, int tolerance) {
+        if (gold == null || gold.isEmpty()) return 0;
+        for (int i = 0; i < p.chunk().size(); i++) {
+            for (String g : gold) {
+                if (nearChunk(p.chunk().get(i), g, tolerance)) return i + 1;
+            }
+        }
+        return 0;
+    }
+
+    /** 邻居判定只在同一份文档内成立，跨文档的 #44 和 #44 不是邻居。 */
+    private static boolean nearChunk(String got, String want, int tolerance) {
+        if (got.equals(want)) return true;
+        int gi = got.indexOf('#'), wi = want.indexOf('#');
+        if (gi <= 0 || wi <= 0 || gi != wi || !got.regionMatches(0, want, 0, gi)) return false;
+        try {
+            return Math.abs(Long.parseLong(got.substring(gi + 1)) - Long.parseLong(want.substring(wi + 1))) <= tolerance;
+        } catch (NumberFormatException e) {
+            return false;
+        }
     }
 
     /** 综合分析题的答案散在多块，最后一个答案块到位的名次才有意义。 */
