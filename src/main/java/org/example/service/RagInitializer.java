@@ -595,10 +595,12 @@ public class RagInitializer {
             List<Document> chunks = Collections.emptyList();
 
             if (finalNonBlank >= 20) {
+                // 抽取路径的选优靠原始文本打分，正文落库前先清洗（控制字符/私用区字形/水印串/连字符码点）
+                String cleaned = sanitizeExtractedText(fullText);
                 // metadata 的 source 与 probeStoredVersion() 保持同一种路径（getCanonicalPath 归一化）
                 String metaSource;
                 try { metaSource = pdf.getCanonicalPath(); } catch (IOException ignore) { metaSource = pdf.getAbsolutePath(); }
-                Document doc = new Document(fullText == null ? "" : fullText, Map.of(
+                Document doc = new Document(cleaned == null ? "" : cleaned, Map.of(
                         "source", metaSource,
                         "file_name", pdf.getName(),
                         "page_count", pageCount,
@@ -606,7 +608,7 @@ public class RagInitializer {
                         "non_blank_length", finalNonBlank,
                         // 两级指纹：file_hash 命中可跳过抽取；content_hash 命中可跳过重灌
                         "file_hash", nullToEmpty(hashFileQuietly(pdf)),
-                        "content_hash", nullToEmpty(sha256Hex(fullText)),
+                        "content_hash", nullToEmpty(sha256Hex(cleaned)),
                         // 抽取流水线版本：和当前 file_hash 一起决定能否跳过抽取
                         "extract_version", EXTRACT_PIPELINE_VERSION
                 ));
@@ -717,10 +719,40 @@ public class RagInitializer {
         return n;
     }
 
+    /**
+     * 正文清洗（全库普查证据见 scratch/census.txt，2026-10-12）：
+     * ① 控制字符 U+0000–U+001F（血脂指南 640 个，是 PDF 字体 CID 解码残留，会污染整块向量）——保留 \t\n\r；
+     * ② 私用区字形（BMP PUA 及 U+F0000 以上，血脂指南里的 􀲔 上下箭头 ×10）——模型侧一律是未知字形；
+     * ③ 水印串 fmx_…（血脂指南 ×35，全部同一种写法）；
+     * ④ 连字符码点归一：U+2010/U+2011/U+2043 → '-'（全库 2374 处）。指南正文把 LDL-C 排成三种连字符，
+     *    特殊码点不进分词器，导致 LDL‐C 在关键词通道里搜不到——归一后同一术语只有一个写法。
+     * 只做删除和等长替换，不改字数统计，尽量稳住切块边界。
+     */
+    public static String sanitizeExtractedText(String raw) {
+        if (raw == null || raw.isEmpty()) return raw;
+        StringBuilder sb = new StringBuilder(raw.length());
+        for (int i = 0; i < raw.length(); ) {
+            int cp = raw.codePointAt(i);
+            i += Character.charCount(cp);
+            if (cp < 0x20 && cp != '\t' && cp != '\n' && cp != '\r') continue;
+            if (cp == 0x7F) continue;
+            if (cp >= 0xE000 && cp <= 0xF8FF) continue;
+            if (cp >= 0xF0000) continue;
+            if (cp == 0x2010 || cp == 0x2011 || cp == 0x2043 || cp == 0x2212) { sb.append('-'); continue; }
+            if (cp == 0x00AD) continue;
+            sb.appendCodePoint(cp);
+        }
+        // 控制字符去掉后水印串会散开，所以清洗完再摘字符串
+        return WATERMARK_RUN.matcher(sb).replaceAll(" ");
+    }
+
+    private static final java.util.regex.Pattern WATERMARK_RUN =
+            java.util.regex.Pattern.compile("fmx_[A-Za-z0-9]{12,}");
+
     // 抽取流水线版本：改动抽取/清洗逻辑时必须 bump（如换分词前的文本规范化、修 PDF 选路）。
     // 它不参与 content_hash，只用来决定"文件字节没变能不能跳过抽取"——版本一变就强制重新抽取，
     // 否则修好选路 + 判重之后，旧库会因为 file_hash 相同而永远不重灌。
-    private static final String EXTRACT_PIPELINE_VERSION = "2026-10-10a";
+    private static final String EXTRACT_PIPELINE_VERSION = "2026-10-12a";
 
     // 增量入库：该 PDF 在库里的当前版本（块数 + 两级指纹 + 抽取版本）
     private static final class StoredVersion {
