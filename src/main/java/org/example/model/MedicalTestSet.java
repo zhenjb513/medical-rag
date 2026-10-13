@@ -44,7 +44,11 @@ public class MedicalTestSet {
     private static final List<String> G_DX_HOME = at(JC, 14, 15);
     private static final List<String> G_STANDING = at(JC, 13);
     // 以下块号已按 2026-10-12 重灌后的新库（501 块）逐字定位重标，核对过程见 scratch/sent.txt + scratch/newblocks.txt
-    private static final List<String> G_LDL_BENEFIT = all(at(XZ, 39, 40), at(YJ, 87));
+    // 答案块按逐字核对改过：整句「LDL-C每降低1mmol/L，ASCVD事件降低20%~23%」在 XZ#40，
+    // 整句「LDL-C每降低1mmol/L、持续5年，人群心血管病风险降低21%」在 YJ#88（scratch/xz_chk.out）。
+    // 原来标的 XZ#39 和 YJ#87 里 20%/21%/23% 一个都没有：XZ#39 是血脂检查重点对象+治疗原则要点，
+    // YJ#87 是 HOPE-3/JUPITER 研究段。
+    private static final List<String> G_LDL_BENEFIT = all(at(XZ, 40), at(YJ, 88));
     // 逐字写出「非HDL-C 目标 = LDL-C + 0.8mmol/L」的是这四块（phrase=0.8mmol/L 全库命中 YJ#75/#76、XZ#47/#92）
     private static final List<String> G_NON_HDL = all(at(YJ, 75, 76), at(XZ, 47, 92));
     // /bm25/locate 逐字证（scratch/loc96.out）：表15 糖尿病患者血脂目标值的 1.4/1.8/2.6 三个数字全在 XZ#92，
