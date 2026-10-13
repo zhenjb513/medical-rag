@@ -96,12 +96,22 @@ public class ChatController {
         System.out.println("[RAG检索] 提取到的引用来源: " + references);
 
         //5.调用大模型
-        String answer = chatClient.prompt()
+        org.springframework.ai.chat.model.ChatResponse chatResponse = chatClient.prompt()
                 .system(systemPrompt)
                 .user(sanitizedMessage)
                 .tools(inventoryService)
                 .call()
-                .content();
+                .chatResponse();
+        String answer = chatResponse == null || chatResponse.getResult() == null
+                ? "" : chatResponse.getResult().getOutput().getText();
+        // 用量必须落日志：以前只取 .content()，全项目没有任何 token 记录，付费调用的规模无法核对
+        if (chatResponse != null) {
+            org.springframework.ai.chat.metadata.Usage usage = chatResponse.getMetadata().getUsage();
+            System.out.println("[生成用量] " + (usage == null ? "响应里没有 usage 元数据"
+                    : "prompt=" + usage.getPromptTokens() + " completion=" + usage.getCompletionTokens()
+                            + " total=" + usage.getTotalTokens())
+                    + "  上下文块数=" + docs.size() + "  上下文字符=" + context.length());
+        }
         //6.格式化引用来源（添加序号）,附加到答案末尾
         String formattedReferencestext = ragReferenceService.formatReferences(references);
 
