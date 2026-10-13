@@ -51,6 +51,11 @@ public class MedicalTestSet {
     private static final List<String> G_LDL_BENEFIT = all(at(XZ, 40), at(YJ, 88));
     // 逐字写出「非HDL-C 目标 = LDL-C + 0.8mmol/L」的是这四块（phrase=0.8mmol/L 全库命中 YJ#75/#76、XZ#47/#92）
     private static final List<String> G_NON_HDL = all(at(YJ, 75, 76), at(XZ, 47, 92));
+    // 口语题「化验单上…非高密度脂蛋白的指标该看多少」额外认 XZ#32：表3 里非HDL-C 那一行逐字是
+    // 理想<3.4 / 合适<4.1 / 边缘升高≥4.1且<4.9 / 升高≥4.9（scratch/f41_blocks.txt），这正面回答了「看多少」。
+    // 事实题「非HDL-C的控制目标是多少？」不共用这块：XZ#32 的要点提示写明「参考水平仅适用于ASCVD低危人群」，
+    // 那是分层参考标准、不是干预目标，拿它答目标题等于答错了段落。
+    private static final List<String> G_NON_HDL_ORAL = all(G_NON_HDL, at(XZ, 32));
     // /bm25/locate 逐字证（scratch/loc96.out）：表15 糖尿病患者血脂目标值的 1.4/1.8/2.6 三个数字全在 XZ#92；
     // XZ#90 另有末句「风险为中、低危的糖尿病患者，均应将LDL-C控制在 2.6 mmol/L 以下（表15）」，XZ#91 只在讲选药、无目标数值
     // 口语题「我血糖偏高」判分口径维持严格（2026-10-13 定）：不把 YJ#76 当等价答案块。
@@ -213,7 +218,7 @@ public class MedicalTestSet {
                 Arrays.asList("20%", "23%", "21%"), Arrays.asList(XZ, YJ), G_LDL_BENEFIT, "口语查询");
 
         add(testCases, "化验单上除了坏胆固醇，还有一个叫非高密度脂蛋白的指标该看多少？",
-                Arrays.asList("0.8"), Arrays.asList(YJ, XZ), G_NON_HDL, "口语查询");
+                Arrays.asList("0.8", "3.4", "4.1", "4.9"), Arrays.asList(YJ, XZ), G_NON_HDL_ORAL, "口语查询");
 
         add(testCases, "我血糖偏高，化验单上那个坏胆固醇要降到多少？",
                 Arrays.asList("1.4", "1.8", "2.6"), Arrays.asList(XZ, YJ), G_DM_LDL, "口语查询");
