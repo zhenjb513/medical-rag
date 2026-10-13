@@ -202,7 +202,7 @@ public class HybridRetrievalService {
 
     /**
      * 相邻块扩展：指南里「140/90」这类数值常在表格里被切开，命中块本身句子不完整。
-     * 命中块的前后各一块补进上下文，总块数不超过 maxContextChunks。
+     * 命中块的前后各一块补进上下文，总块数不超过 maxContextChunks，名额不够时按命中块名次优先。
      */
     private List<Document> expand(List<Document> selected) {
         if (!expandNeighbors || selected.isEmpty()) return selected;
@@ -223,11 +223,20 @@ public class HybridRetrievalService {
         pairs.removeIf(p -> have.containsKey(p[0] + "#" + p[1]));
         if (pairs.isEmpty()) return selected;
 
-        List<Document> neighbors = bm25IndexService.neighborChunks(pairs);
+        // neighborChunks 的 SQL 没有 ORDER BY，回来的顺序是数据库自己的行顺序。名额只有
+        // maxContextChunks-selected.size() 个时，按返回顺序截断会出现「排名靠后的父块把邻居占满、
+        // 第 1 名的邻居反而落选」——实测见 scratch/e2e_ctx.txt：TIA 题第 1 名 XZ#97 的邻居 #96/#99
+        // 都没进，而第 8 名 XZ#55 的邻居 #54/#56 两块都进了。
+        // pairs 是严格按 selected 的名次生成的，所以改成按 pairs 的顺序取，让高名次优先占名额。
+        Map<String, Document> pending = new LinkedHashMap<>();
+        for (Document nb : bm25IndexService.neighborChunks(pairs)) {
+            pending.putIfAbsent(keyOf(nb), nb);
+        }
         List<Document> out = new ArrayList<>(selected);
-        for (Document nb : neighbors) {
+        for (String[] p : pairs) {
             if (out.size() >= maxContextChunks) break;
-            if (have.containsKey(keyOf(nb))) continue;
+            Document nb = pending.get(p[0] + "#" + p[1]);
+            if (nb == null || have.containsKey(keyOf(nb))) continue;
             have.put(keyOf(nb), nb);
             out.add(nb);
         }
