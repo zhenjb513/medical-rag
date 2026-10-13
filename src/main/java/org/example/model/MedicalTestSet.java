@@ -43,15 +43,22 @@ public class MedicalTestSet {
     private static final List<String> G_DX_OFFICE = at(JC, 12, 14);
     private static final List<String> G_DX_HOME = at(JC, 14, 15);
     private static final List<String> G_STANDING = at(JC, 13);
-    private static final List<String> G_LDL_BENEFIT = all(at(XZ, 42), at(YJ, 88));
-    private static final List<String> G_NON_HDL = all(at(YJ, 75, 76), at(XZ, 49, 96));
-    private static final List<String> G_DM_LDL = all(at(XZ, 93, 95), at(YJ, 73));
-    private static final List<String> G_FH = at(XZ, 111);
-    private static final List<String> G_STROKE_LIPID = at(XZ, 100);
-    // 逐字含「依折麦布」的块有 12 个，只有真写出「单药不达标→联合」这一步的才算答案，其余在讲机制或试验证据
-    private static final List<String> G_STATIN_COMBO = all(at(YJ, 84, 85, 86), at(JC, 42), at(XZ, 53));
-    // 全库逐字含「4~6周」的只有两块：基层高血压指南#44 与血脂指南#58，后者是同一条复查建议的另一本指南写法
-    private static final List<String> G_STATIN_RECHECK = all(at(JC, 44), at(XZ, 58));
+    // 以下块号已按 2026-10-12 重灌后的新库（501 块）逐字定位重标，核对过程见 scratch/sent.txt + scratch/newblocks.txt
+    private static final List<String> G_LDL_BENEFIT = all(at(XZ, 39, 40), at(YJ, 87));
+    // 逐字写出「非HDL-C 目标 = LDL-C + 0.8mmol/L」的是这四块（phrase=0.8mmol/L 全库命中 YJ#75/#76、XZ#47/#92）
+    private static final List<String> G_NON_HDL = all(at(YJ, 75, 76), at(XZ, 47, 92));
+    // /bm25/locate 逐字证（scratch/loc96.out）：表15 糖尿病患者血脂目标值的 1.4/1.8/2.6 三个数字全在 XZ#92，
+    // #90/#91 只写「谁是高危」这一层推理，缺了 #92 就等于把答案本身排除在答案块之外
+    private static final List<String> G_DM_LDL = all(at(XZ, 90, 91, 92), at(YJ, 72));
+    // FH 推荐表清洗后被劈成相邻两块，两块都算答案
+    private static final List<String> G_FH = at(XZ, 107, 108);
+    // 「表17脑卒中患者的降脂治疗推荐建议」全库命中块数=1 且是 #97；2.2mmol/L 只命中 #88/#97，
+    // #96 是高龄老年他汀那段，一个目标值都没有（旧标注抄的是重灌前的块号）
+    private static final List<String> G_STROKE_LIPID = at(XZ, 97);
+    // 逐字含「依折麦布」的块仍是 12 个，只有真写出「单药不达标→联合」这一步的才算答案，其余在讲机制或试验证据
+    private static final List<String> G_STATIN_COMBO = all(at(YJ, 83, 85, 86), at(JC, 42), at(XZ, 50));
+    // 全库逐字含「4~6周」的只有两块：基层高血压指南#44 与血脂指南#55，后者是同一条复查建议的另一本指南写法
+    private static final List<String> G_STATIN_RECHECK = all(at(JC, 44), at(XZ, 55));
     private static final List<String> G_DASH = all(at(YJ, 54), at(JC, 19));
     // 陷阱：一级预防#11 也逐字含「23.2%」，但那是血压130~139/80~89的人群比例，不是患病率，不能当等价答案块
     private static final List<String> G_HT_TREND = at(YJ, 10);
