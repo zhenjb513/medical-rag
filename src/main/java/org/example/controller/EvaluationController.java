@@ -69,20 +69,42 @@ public class EvaluationController {
     }
 
     /**
+     * 零成本预演：列出 /evaluation/run 会跑到哪些题，不调任何模型接口。
+     * 付费重测之前先用它确认子集选对没有——跑错一批题的钱是白花。
+     */
+    @GetMapping(value = "/select", produces = "text/plain; charset=utf-8")
+    public String selectQuestions(@RequestParam(defaultValue = "") String only) {
+        return String.join("\n", evaluationService.matchedQuestions(parseOnly(only)));
+    }
+
+    /** only= 是题目片段，逗号分隔；留空 = 全量。片段只在内存里比 contains，不查库。 */
+    private static java.util.List<String> parseOnly(String only) {
+        if (only == null || only.isBlank()) {
+            return java.util.List.of();
+        }
+        return java.util.Arrays.stream(only.split("[,，]"))
+                .map(String::trim)
+                .filter(s -> !s.isEmpty())
+                .toList();
+    }
+
+    /**
      * 运行完整评估，返回JSON格式评估报告
      */
     @GetMapping(value = "/run", produces = "application/json; charset=utf-8")
-    public String runEvaluation() throws Exception {
-        System.out.println("[评估] 开始运行医疗测试集评估...");
+    public String runEvaluation(@RequestParam(defaultValue = "") String only) throws Exception {
+        java.util.List<String> subset = parseOnly(only);
+        System.out.println("[评估] 开始运行医疗测试集评估...  子集片段=" + (subset.isEmpty() ? "（全量）" : subset.toString()));
         long startTime = System.currentTimeMillis();
 
-        EvaluationService.EvaluationReport report = evaluationService.runEvaluation();
+        EvaluationService.EvaluationReport report = evaluationService.runEvaluation(subset);
 
         long duration = System.currentTimeMillis() - startTime;
         System.out.println("[评估] 完成，耗时" + duration + "ms，通过率" + report.passRate + "%");
 
         // 构建简化的JSON输出（避免answer太长）
         Map<String, Object> out = new LinkedHashMap<>();
+        out.put("subset_filter", subset.isEmpty() ? "全量" : String.join(",", subset));
         out.put("total_count", report.totalCount);
         out.put("pass_count", report.passCount);
         out.put("pass_rate", report.passRate + "%");
@@ -121,11 +143,13 @@ public class EvaluationController {
     }
 
     /**
-     * 获取评估摘要（纯文本）
+     * 获取评估摘要（纯文本）。
+     * ⚠️ 这个接口同样会真跑一遍评测链路（每题三次付费调用），所以必须带 only= 指定子集；
+     * 不带就是全量，别随手点。
      */
     @GetMapping(value = "/summary", produces = "text/plain; charset=utf-8")
-    public String getSummary() {
-        EvaluationService.EvaluationReport report = evaluationService.runEvaluation();
+    public String getSummary(@RequestParam(defaultValue = "") String only) {
+        EvaluationService.EvaluationReport report = evaluationService.runEvaluation(parseOnly(only));
         return report.summary;
     }
 }
