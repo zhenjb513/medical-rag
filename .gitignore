@@ -38,7 +38,9 @@ build/
 .dumate/
 
 ### Local config (secrets) ###
+# 只挡仓库根的本地配置目录；写成裸 config/ 会连 src/main/java/**/config/ 一起吞掉，
+# 那个包下的新类不进 git status（2026-10-13 ModelUsageLogConfig.java 就是这么漏的）
+/config/
 src/main/resources/application-local.yml
 src/main/resources/application-local.properties
-config/
 scratch/
