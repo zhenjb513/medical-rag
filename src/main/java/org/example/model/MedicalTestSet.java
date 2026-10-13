@@ -51,8 +51,13 @@ public class MedicalTestSet {
     private static final List<String> G_LDL_BENEFIT = all(at(XZ, 40), at(YJ, 88));
     // 逐字写出「非HDL-C 目标 = LDL-C + 0.8mmol/L」的是这四块（phrase=0.8mmol/L 全库命中 YJ#75/#76、XZ#47/#92）
     private static final List<String> G_NON_HDL = all(at(YJ, 75, 76), at(XZ, 47, 92));
-    // /bm25/locate 逐字证（scratch/loc96.out）：表15 糖尿病患者血脂目标值的 1.4/1.8/2.6 三个数字全在 XZ#92，
-    // #90/#91 只写「谁是高危」这一层推理，缺了 #92 就等于把答案本身排除在答案块之外
+    // /bm25/locate 逐字证（scratch/loc96.out）：表15 糖尿病患者血脂目标值的 1.4/1.8/2.6 三个数字全在 XZ#92；
+    // XZ#90 另有末句「风险为中、低危的糖尿病患者，均应将LDL-C控制在 2.6 mmol/L 以下（表15）」，XZ#91 只在讲选药、无目标数值
+    // 口语题「我血糖偏高」判分口径维持严格（2026-10-13 定）：不把 YJ#76 当等价答案块。
+    // 那次挂是检索没召回这四个答案块（本次 16 块上下文里一个都没有，scratch/f42_retrieve.out），
+    // 而 YJ#76 的 1.4 只对应「糖尿病+已确诊ASCVD」的超高危档，血糖偏高者按表15 应落 2.6/1.8（scratch/f42_blocks.txt）；
+    // 同一答案块集合下的事实题「糖尿病患者的LDL-C控制目标是多少？」本轮是过的（1.4→XZ#92，上下文第3块），
+    // 所以问题在「血糖偏高」这个口语措辞召不回表15，不在标注。
     private static final List<String> G_DM_LDL = all(at(XZ, 90, 91, 92), at(YJ, 72));
     // FH 推荐表清洗后被劈成相邻两块，两块都算答案
     private static final List<String> G_FH = at(XZ, 107, 108);
