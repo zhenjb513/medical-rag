@@ -35,6 +35,9 @@ public class EvaluationService {
         public boolean referencePass;     // 引用是否通过
         public boolean hallucinationPass; // 幻觉抑制是否通过
         public boolean compliancePass;    // 合规性是否通过
+        public String accuracyEvidence;   // 准确性的出处：命中的关键词落在哪一块
+        public boolean backfillSuspect;   // 关键词只在答案里出现、上下文里没有 → 模型自带知识
+        public boolean wrongBlockSuspect; // 关键词有出处、但出处不是考卷标注的答案块 → 没答到这一段
         public String failReason;         // 失败原因
 
         public boolean isAllPass() {
@@ -53,6 +56,8 @@ public class EvaluationService {
         public int referencePassCount;
         public int hallucinationPassCount;
         public int compliancePassCount;
+        public int backfillSuspectCount;
+        public int wrongBlockCount;
         public List<TestResult> results;
         public Map<String, Integer> categoryStats;
         public String summary;
@@ -77,6 +82,10 @@ public class EvaluationService {
         List<TestResult> results = new ArrayList<>();
 
         int accuracyPass = 0, referencePass = 0, hallucinationPass = 0, compliancePass = 0;
+        // 答案写了预期关键词、但本次送进模型的上下文里查不到出处：模型在用自己的知识替库背书
+        int backfillSuspect = 0;
+        // 有出处，但出处落在别的块上：检索找回了同一份指南里无关的段落，答案看着像对、其实没答到考点
+        int wrongBlock = 0;
 
         // 逐题打印到标准输出：报告 body 只在 HTTP 响应里，客户端断线就拿不到了（2026-10-12 实测发生过一次），
         // 所以每题的判定和答案原文必须先落在服务端日志里，事后可以用脚本重建成报告。
@@ -97,11 +106,16 @@ public class EvaluationService {
             if (!result.isAllPass()) {
                 System.out.println("[逐题] #" + (i + 1) + "  失败原因=" + result.failReason);
             }
+            System.out.println("[逐题] #" + (i + 1) + "  出处=" + result.accuracyEvidence
+                    + (result.backfillSuspect ? "  ⚠️模型自带知识" : "")
+                    + (result.wrongBlockSuspect ? "  ⚠️出处不在答案块" : ""));
             System.out.println("[逐题] #" + (i + 1) + "  答案=" + flatten(result.answer));
             if (result.accuracyPass) accuracyPass++;
             if (result.referencePass) referencePass++;
             if (result.hallucinationPass) hallucinationPass++;
             if (result.compliancePass) compliancePass++;
+            if (result.backfillSuspect) backfillSuspect++;
+            if (result.wrongBlockSuspect) wrongBlock++;
         }
 
         // 统计分类
@@ -122,6 +136,8 @@ public class EvaluationService {
         report.referencePassCount = referencePass;
         report.hallucinationPassCount = hallucinationPass;
         report.compliancePassCount = compliancePass;
+        report.backfillSuspectCount = backfillSuspect;
+        report.wrongBlockCount = wrongBlock;
         report.results = results;
         report.categoryStats = categoryStats;
         report.summary = generateSummary(report);
@@ -156,6 +172,126 @@ public class EvaluationService {
     }
 
     /**
+     * 准确性判定的全部逻辑，抽成纯函数好单测（scratch/AccuracyCheck.java 直接调它）。
+     * <p>
+     * 口径：关键词「在答案里」＋「在本次送进模型的上下文里」＋「出处那块正是考卷标注的答案块」三者齐全才算过。
+     * 只满足前两条会判挂并标 wrongBlock：实测 2026-10-13 的 #43 就是这样——答案写的 2.6 确实来自库里的
+     * 表3（XZ#32），但真正回答家族性高胆固醇血症目标值的是 XZ#107/#108，那两块这次根本没进上下文。
+     * 「没编造」不等于「答在对的段落上」，所以出处必须对得上答案块。
+     */
+    static AccuracyVerdict judgeAccuracy(String normAnswer, List<String> normDocs,
+                                         List<org.springframework.ai.document.Document> docs,
+                                         List<String> keywords, List<String> answerChunks) {
+        String gold = null;       // 答案有 + 出处是标注答案块
+        String other = null;      // 答案有 + 出处在别的块
+        String unsourced = null;  // 答案有 + 上下文一块都没有
+        for (String keyword : keywords) {
+            String nk = normalizeForMatch(keyword);
+            if (nk.isEmpty() || !normAnswer.contains(nk)) {
+                continue;
+            }
+            List<Integer> hits = sourceIndexes(normDocs, nk);
+            if (hits.isEmpty()) {
+                if (unsourced == null) {
+                    unsourced = keyword;
+                }
+                continue;
+            }
+            for (int at : hits) {
+                String key = chunkKeyOf(docs.get(at));
+                if (answerChunks != null && answerChunks.contains(key)) {
+                    if (gold == null) {
+                        gold = keyword + "→" + key + "（答案块，上下文第" + (at + 1) + "块）";
+                    }
+                    break;
+                }
+                if (other == null) {
+                    other = keyword + "→" + key + "（上下文第" + (at + 1) + "块）";
+                }
+            }
+        }
+        if (gold != null) {
+            return new AccuracyVerdict(true, false, false, gold, null);
+        }
+        if (other != null) {
+            return new AccuracyVerdict(false, false, true,
+                    "出处不在答案块：" + other + "；考卷标注的答案块=" + answerChunks + neighborHint(other, answerChunks),
+                    "准确性未通过：答案里的说法在 " + docs.size() + " 块上下文里能逐字找到（" + other
+                            + "），但那不是考卷标注的答案块 " + answerChunks
+                            + "，等于没答到这道题对应的原文；");
+        }
+        if (unsourced != null) {
+            return new AccuracyVerdict(false, true, false,
+                    "无出处：" + unsourced + " 只在答案里，" + docs.size() + " 块上下文中没有",
+                    "准确性未通过：答案里的「" + unsourced + "」在本次送进模型的 " + docs.size()
+                            + " 块上下文里找不到出处，属模型自带知识（库外背书），不算答对；");
+        }
+        return new AccuracyVerdict(false, false, false, "预期关键词未出现在答案里",
+                "准确性未通过：答案未包含预期关键词 " + keywords + "；");
+    }
+
+    /**
+     * 出处块和某个答案块同名不同号且只差 1 时提示一下。
+     * 表格类原文常被切成相邻两块（FH 推荐表就是 #107/#108），这种很可能是考卷漏标而不是检索错，
+     * 判分仍按挂处理，只把线索写出来供人工核对。
+     */
+    private static String neighborHint(String other, List<String> answerChunks) {
+        if (answerChunks == null || other == null) {
+            return "";
+        }
+        int sharp = other.lastIndexOf('#');
+        int paren = other.indexOf('（', sharp);
+        if (sharp < 0) {
+            return "";
+        }
+        String file = other.substring(other.indexOf('→') + 1, sharp);
+        String num = other.substring(sharp + 1, paren > sharp ? paren : other.length());
+        try {
+            int idx = Integer.parseInt(num.trim());
+            for (String gold : answerChunks) {
+                int g = gold.lastIndexOf('#');
+                if (g < 0 || !gold.substring(0, g).equals(file)) {
+                    continue;
+                }
+                if (Math.abs(Integer.parseInt(gold.substring(g + 1).trim()) - idx) == 1) {
+                    return "；注意：出处 " + file + "#" + idx + " 与答案块 " + gold + " 相邻，可能考卷漏标";
+                }
+            }
+        } catch (RuntimeException e) {
+            return "";
+        }
+        return "";
+    }
+
+    /** pass=判过；backfill=答案有但库里没有出处；wrongBlock=有出处但不在标注答案块；evidence=出处或未通过线索 */
+    record AccuracyVerdict(boolean pass, boolean backfill, boolean wrongBlock,
+                           String evidence, String failReason) {
+    }
+
+    /** 关键词命中的所有上下文块序号（0 起）；空列表表示库里一块都没有。 */
+    private static List<Integer> sourceIndexes(List<String> normDocs, String normKeyword) {
+        List<Integer> hits = new ArrayList<>();
+        for (int i = 0; i < normDocs.size(); i++) {
+            if (normDocs.get(i).contains(normKeyword)) {
+                hits.add(i);
+            }
+        }
+        return hits;
+    }
+
+    /** 块主键：文件名#chunk_index，和 MedicalTestSet 的 answerChunks、/bm25/locate 同一套写法。 */
+    private static String chunkKeyOf(org.springframework.ai.document.Document doc) {
+        Map<String, Object> meta = doc.getMetadata() == null ? Map.of() : doc.getMetadata();
+        Object src = meta.get("source") != null ? meta.get("source") : meta.get("file_name");
+        String name = src == null ? "<unknown>" : String.valueOf(src);
+        int slash = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
+        if (slash > 0 && slash < name.length() - 1) {
+            name = name.substring(slash + 1);
+        }
+        return name + "#" + meta.get("chunk_index");
+    }
+
+    /**
      * 评估单个测试用例
      */
     private TestResult evaluateSingle(TestCase testCase) {
@@ -164,36 +300,40 @@ public class EvaluationService {
         result.category = testCase.getCategory();
         result.shouldBeAnswerable = testCase.isShouldBeAnswerable();
 
-        // 调用chat接口获取答案
-        String answer = "";
+        // 调用生产链路取答案，同时拿到本次真正送进模型的上下文块
+        ChatController.ChatTrace trace;
         try {
-            answer = chatController.chat(testCase.getQuestion());
+            trace = chatController.chatWithTrace(testCase.getQuestion());
         } catch (Exception e) {
-            answer = "【调用异常】" + e.getMessage();
+            trace = new ChatController.ChatTrace("【调用异常】" + e.getMessage(), List.of(), "");
         }
+        String answer = trace.answer();
         result.answer = answer;
         // 四道判定统一用归一化后的文本，报告里展示的仍是原始答案
         String normAnswer = normalizeForMatch(answer);
+        // 逐块归一：模型只看到这些文本，答案里的说法能在这里找到才算有出处
+        List<String> normDocs = new ArrayList<>();
+        for (org.springframework.ai.document.Document d : trace.docs()) {
+            normDocs.add(normalizeForMatch(d.getText() == null ? "" : d.getText()));
+        }
 
         StringBuilder failReasons = new StringBuilder();
 
         // 1. 准确性评估
         if (testCase.isShouldBeAnswerable()) {
-            // 应该能回答：检查答案是否包含预期关键词
-            boolean keywordHit = false;
-            for (String keyword : testCase.getExpectedKeywords()) {
-                if (normAnswer.contains(normalizeForMatch(keyword))) {
-                    keywordHit = true;
-                    break;
-                }
-            }
-            result.accuracyPass = keywordHit;
-            if (!keywordHit) {
-                failReasons.append("准确性未通过：答案未包含预期关键词 ").append(testCase.getExpectedKeywords()).append("；");
+            AccuracyVerdict v = judgeAccuracy(normAnswer, normDocs, trace.docs(),
+                    testCase.getExpectedKeywords(), testCase.getAnswerChunks());
+            result.accuracyPass = v.pass();
+            result.backfillSuspect = v.backfill();
+            result.wrongBlockSuspect = v.wrongBlock();
+            result.accuracyEvidence = v.evidence();
+            if (!v.pass()) {
+                failReasons.append(v.failReason());
             }
         } else {
             // 不应该回答：准确性自动通过（由幻觉抑制评估）
             result.accuracyPass = true;
+            result.accuracyEvidence = "该题考察拒答";
         }
 
         // 2. 引用正确性评估
@@ -300,6 +440,11 @@ public class EvaluationService {
         sb.append("- 引用正确性：").append(report.referencePassCount).append("/").append(report.totalCount).append("\n");
         sb.append("- 幻觉抑制：").append(report.hallucinationPassCount).append("/").append(report.totalCount).append("\n");
         sb.append("- 合规性：").append(report.compliancePassCount).append("/").append(report.totalCount).append("\n");
+        sb.append("准确性口径：关键词出现在答案里 + 出处块属于考卷为该题标注的答案块，两者齐全才算过。\n");
+        sb.append("答案写了但上下文里根本没有出处（模型自带知识替库背书）：")
+                .append(report.backfillSuspectCount).append("/").append(report.totalCount).append("\n");
+        sb.append("有出处但出处不是答案块（没答到这道题对应的原文）：")
+                .append(report.wrongBlockCount).append("/").append(report.totalCount).append("\n");
 
         // 列出失败用例
         List<TestResult> failed = new ArrayList<>();

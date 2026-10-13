@@ -65,6 +65,14 @@ public class ChatController {
 
     @GetMapping("/chat")
     public String chat(@RequestParam String message) {
+        return chatWithTrace(message).answer();
+    }
+
+    /**
+     * 检索 + 生成一次完整链路，并把「本次真正送进模型的上下文」一起带出来。
+     * 评测判分要用它：只看答案里有没有那个数字，分不出是库里的还是模型自带的。
+     */
+    public ChatTrace chatWithTrace(String message) {
         // 1.PHI脱敏：在进入RAG检索和大模型前，对用户输入进行隐私信息脱敏
         String sanitizedMessage = phiDesensitizationService.desensitize(message);
         boolean hasPhi = phiDesensitizationService.containsPhi(message);
@@ -115,7 +123,14 @@ public class ChatController {
         //6.格式化引用来源（添加序号）,附加到答案末尾
         String formattedReferencestext = ragReferenceService.formatReferences(references);
 
-        return answer + formattedReferencestext;
+        return new ChatTrace(answer + formattedReferencestext, docs, context);
+    }
+
+    /**
+     * answer=给用户看的正文（已拼上引用来源），docs=本次送进模型的块（含邻居扩展），
+     * context=拼好的上下文字符串，和 docs 是同一批内容。
+     */
+    public record ChatTrace(String answer, List<Document> docs, String context) {
     }
 
     private String extractFileName(Document doc) {

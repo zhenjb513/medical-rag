@@ -115,6 +115,8 @@ public class EvaluationController {
         dimensions.put("引用正确性", report.referencePassCount + "/" + report.totalCount);
         dimensions.put("幻觉抑制", report.hallucinationPassCount + "/" + report.totalCount);
         dimensions.put("合规性", report.compliancePassCount + "/" + report.totalCount);
+        dimensions.put("库外背书（答案写了但上下文没有）", report.backfillSuspectCount + "/" + report.totalCount);
+        dimensions.put("出处不在答案块（有出处但答错段落）", report.wrongBlockCount + "/" + report.totalCount);
         out.put("dimensions", dimensions);
 
         out.put("category_stats", report.categoryStats);
@@ -128,6 +130,9 @@ public class EvaluationController {
             item.put("category", r.category);
             item.put("should_be_answerable", r.shouldBeAnswerable);
             item.put("accuracy_pass", r.accuracyPass);
+            item.put("accuracy_evidence", r.accuracyEvidence);
+            item.put("backfill_suspect", r.backfillSuspect);
+            item.put("wrong_block_suspect", r.wrongBlockSuspect);
             item.put("reference_pass", r.referencePass);
             item.put("hallucination_pass", r.hallucinationPass);
             item.put("compliance_pass", r.compliancePass);
