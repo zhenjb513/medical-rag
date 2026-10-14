@@ -65,6 +65,17 @@ public class HybridRetrievalService {
     @Value("${app.retrieval.rerank-enabled:false}")
     private boolean rerankEnabled = false;
 
+    /**
+     * 重排那一步用不用扩展后的查询串。
+     * <p>
+     * false（默认）= 只把患者原话送给重排模型，扩展术语只影响召回，行为与加这行配置之前完全一致。
+     * true = 重排也看见补进去的指南术语，目的是让「词面上对不上的正确答案」能被交叉编码器认出来
+     * （实测形态：口语题「我血糖偏高」的答案块《中国血脂管理指南2023年》#92，标题是「糖尿病患者血脂目标值推荐」，
+     * 融合池第 14 名，用原话重排后仍进不了前 8，见 scratch/g12_run.json）。
+     */
+    @Value("${app.retrieval.rerank-use-expanded-query:false}")
+    private boolean rerankUseExpandedQuery = false;
+
     /** 重排前先从融合池里取多少块。重排只能在这个池子里换座位，池子太小它再准也救不回来。 */
     @Value("${app.retrieval.rerank-window:20}")
     private int rerankWindow = 20;
@@ -100,13 +111,13 @@ public class HybridRetrievalService {
         }
         switch (m) {
             case "bm25" -> {
-                return fromHits(bm25IndexService.search(query, topK));
+                return fromHits(bm25IndexService.search(retrievalQuery(query), topK));
             }
             case "hybrid" -> {
                 return hybrid(query, topK, true, rerankEnabled);
             }
             default -> {
-                List<Document> v = ragReferenceService.search(query, topK,
+                List<Document> v = ragReferenceService.search(retrievalQuery(query), topK,
                         threshold == null ? vectorFloor : threshold);
                 return hasEvidence(v) ? v : List.of();
             }
@@ -125,6 +136,13 @@ public class HybridRetrievalService {
 
     public double getAnswerFloor() { return answerFloor; }
 
+    /** 重排实际用哪个查询串（受 rerank-use-expanded-query 支配）。评测要对同一批候选单独调重排，得跟线上用同一个口径。 */
+    public String rerankQuery(String query) {
+        return rerankUseExpandedQuery ? QueryExpander.expand(query) : query;
+    }
+
+    public boolean isRerankUseExpandedQuery() { return rerankUseExpandedQuery; }
+
     /** 第一名都不够像（或压根没召回到）就判定为「这次没有资料」，只判一次，不逐条砍。 */
     private boolean hasEvidence(List<Document> vectorDocs) {
         if (vectorDocs == null || vectorDocs.isEmpty()) return false;
@@ -135,15 +153,20 @@ public class HybridRetrievalService {
     private List<Document> hybrid(String query, int topK, boolean expand, boolean rerank) {
         int poolSize = rerank ? Math.max(topK, rerankWindow) : topK;
         int perChannel = rerank ? Math.max(probeSize, poolSize) : probeSize;
-        List<Document> vectorDocs = ragReferenceService.search(query, perChannel, vectorFloor);
+        String recallQuery = retrievalQuery(query);
+        List<Document> vectorDocs = ragReferenceService.search(recallQuery, perChannel, vectorFloor);
         if (!hasEvidence(vectorDocs)) {
             System.out.println("[检索闸门] 最像的一条也不够像（阈值 " + String.format("%.2f", answerFloor)
                     + "），本次不提供知识库上下文：" + query);
             return List.of();
         }
         List<Document> fused = fuse(vectorDocs,
-                fromHits(bm25IndexService.search(query, perChannel)), poolSize);
-        if (rerank) fused = take(rerankService.rerank(query, fused), topK);
+                fromHits(bm25IndexService.search(recallQuery, perChannel)), poolSize);
+        String rerankQuery = rerankQuery(query);
+        if (rerank && !rerankQuery.equals(query)) {
+            System.out.println("[重排查询] 本次送重排的是扩展串（rerank-use-expanded-query=true）：" + rerankQuery);
+        }
+        if (rerank) fused = take(rerankService.rerank(rerankQuery, fused), topK);
         return expand ? expand(fused) : fused;
     }
 
@@ -153,8 +176,17 @@ public class HybridRetrievalService {
      */
     public List<Document> fuseCandidates(String query, int poolSize) {
         int perChannel = Math.max(probeSize, poolSize);
-        return fuse(ragReferenceService.search(query, perChannel, vectorFloor),
-                fromHits(bm25IndexService.search(query, perChannel)), poolSize);
+        String recallQuery = retrievalQuery(query);
+        return fuse(ragReferenceService.search(recallQuery, perChannel, vectorFloor),
+                fromHits(bm25IndexService.search(recallQuery, perChannel)), poolSize);
+    }
+
+    /** 命中口语措辞时给召回通道补指南术语（详见 QueryExpander），没命中就原样返回、不打日志。 */
+    private static String retrievalQuery(String query) {
+        List<String> extra = QueryExpander.addedTerms(query);
+        if (extra.isEmpty()) return query;
+        System.out.println("[查询扩展] 补充术语: " + String.join(" ", extra) + "  原问句: " + query);
+        return QueryExpander.expand(query);
     }
 
     private static List<Document> take(List<Document> docs, int limit) {

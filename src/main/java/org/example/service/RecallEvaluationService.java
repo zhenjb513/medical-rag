@@ -13,8 +13,9 @@ import java.util.Map;
 /**
  * 只测「检索」不测「生成」：拿测试集问题跑召回，看该被召回的正文/文献有没有进到 top-K。
  * <p>
- * 目的是给混合检索一条不调用生成模型、可重复的基线，mode 支持 vector / bm25 / hybrid / rerank，
- * 换检索器时同一份口径可以直接对比。注意 mode=rerank 每题要调一次重排接口，是这条链路里唯一花钱的模式。
+ * 目的是给混合检索一条可重复的基线，mode 支持 vector / bm25 / hybrid / rerank，
+ * 换检索器时同一份口径可以直接对比。调用量：mode=bm25 全程不碰模型接口；vector / hybrid 每题一次
+ * text-embedding-v3；rerank 在此基础上每题再加一次 gte-rerank-v2（它还要给「重排前后」取同一批候选）。
  */
 @Service
 public class RecallEvaluationService {
@@ -107,7 +108,9 @@ public class RecallEvaluationService {
                 // 候选池只取一次：before=融合顺序，p=重排顺序，两者题目集合完全相同，只差排序
                 List<Document> pool = hybridRetrievalService.fuseCandidates(tc.getQuestion(), probeK);
                 before = documentProbe(pool);
-                p = documentProbe(rerankService.rerank(tc.getQuestion(), pool));
+                // 用 HybridRetrievalService.rerankQuery 而不是直接用原话：这张对照表要复现的就是线上那次重排，
+                // 线上换成扩展串（rerank-use-expanded-query=true）时评测必须跟着换，否则测的是线上不走的分支。
+                p = documentProbe(rerankService.rerank(hybridRetrievalService.rerankQuery(tc.getQuestion()), pool));
             } else {
                 p = probe(tc.getQuestion(), probeK, m, expand);
             }
@@ -260,11 +263,16 @@ public class RecallEvaluationService {
     }
 
     private Probe probe(String query, int probeK, String mode, boolean expand) {
+        // bm25 / vector 这两条单边通道也要过 QueryExpander：线上 HybridRetrievalService 是在进通道前就扩展好的，
+        // 评测若拿原话去打分边通道，测到的是线上根本不会用的查询串。hybrid / rerank 走 searchFused/searchReranked，
+        // 扩展已经在 hybrid() 里做了，这里不能再补一遍。
+        String recallQuery = (mode.equals("bm25") || mode.equals("vector"))
+                ? QueryExpander.expand(query) : query;
         return switch (mode) {
-            case "bm25" -> bm25Probe(query, probeK);
+            case "bm25" -> bm25Probe(recallQuery, probeK);
             case "hybrid" -> documentProbe(hybridRetrievalService.searchFused(query, probeK, expand));
             case "rerank" -> documentProbe(hybridRetrievalService.searchReranked(query, probeK, expand));
-            default -> documentProbe(ragReferenceService.search(query, probeK, null));
+            default -> documentProbe(ragReferenceService.search(recallQuery, probeK, null));
         };
     }
 

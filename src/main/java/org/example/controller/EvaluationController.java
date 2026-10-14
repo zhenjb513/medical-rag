@@ -35,7 +35,8 @@ public class EvaluationController {
 
     /**
      * 看生产链路真正检索到了什么：直接走 HybridRetrievalService.search()（受 mode / rerank-enabled 支配），
-     * 只召回不生成，所以改完配置可以零成本确认开关有没有生效。
+     * 只召回不生成。⚠️ 不是零调用——每次至少打一遍向量通道（text-embedding-v3），
+     * 生产开着 rerank-enabled 时还要多打一次 gte-rerank-v2；零调用的对照口子是 /evaluation/recall?mode=bm25。
      */
     @GetMapping(value = "/retrieve", produces = "text/plain; charset=utf-8")
     public String retrieve(@RequestParam String q,
@@ -45,6 +46,7 @@ public class EvaluationController {
         StringBuilder sb = new StringBuilder();
         sb.append("mode=").append(hybridRetrievalService.getMode())
                 .append("  请求topK=").append(topK).append("  实际返回=").append(docs.size())
+                .append("  重排查询串=").append(hybridRetrievalService.isRerankUseExpandedQuery() ? "扩展后" : "原话")
                 .append("  耗时").append(System.currentTimeMillis() - start).append("ms\n");
         int i = 0;
         for (var d : docs) {
