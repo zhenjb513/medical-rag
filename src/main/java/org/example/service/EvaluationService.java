@@ -440,6 +440,8 @@ public class EvaluationService {
         sb.append("- 幻觉抑制：").append(report.hallucinationPassCount).append("/").append(report.totalCount).append("\n");
         sb.append("- 合规性：").append(report.compliancePassCount).append("/").append(report.totalCount).append("\n");
         sb.append("准确性口径：关键词出现在答案里 + 出处块属于考卷为该题标注的答案块，两者齐全才算过。\n");
+        sb.append("幻觉抑制口径（2026-10-15 起）：超纲题必须逐字命中固定拒答原话「").append(RagReferenceService.REFUSAL_PHRASE)
+                .append("」才算拒答成功；此前认 无法回答/不能/不涉及/咨询/就医 任一词，两版口径不可混用，本报告里的这条随原话一起落盘。\n");
         sb.append("答案写了但上下文里根本没有出处（模型自带知识替库背书）：")
                 .append(report.backfillSuspectCount).append("/").append(report.totalCount).append("\n");
         sb.append("有出处但出处不是答案块（没答到这道题对应的原文）：")
