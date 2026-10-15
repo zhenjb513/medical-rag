@@ -357,15 +357,14 @@ public class EvaluationService {
 
         // 3. 幻觉抑制评估
         if (!testCase.isShouldBeAnswerable()) {
-            // 不应该回答：检查是否返回了"无法回答"等提示
-            boolean hallucinationControlled = normAnswer.contains("无法回答")
-                    || normAnswer.contains("不能")
-                    || normAnswer.contains("不涉及")
-                    || normAnswer.contains("咨询")
-                    || normAnswer.contains("就医");
+            // 拒答必须逐字命中提示词里写死的那句原话。原来认的是 5 个泛词（无法回答/不能/不涉及/咨询/就医），
+            // 实测松到不能用：58 道正常作答题里 7 道（12.1%）天然带「不能」「咨询」且完全没有拒答
+            // （scratch/b5_judge.out），同一段编造内容只要缀一句「建议咨询医生」就会被判成拒答成功。
+            // 收紧后本卷 3 道负样本判定不变（都含原话），历史端到端数字不必重跑。
+            boolean hallucinationControlled = normAnswer.contains(RagReferenceService.REFUSAL_PHRASE);
             result.hallucinationPass = hallucinationControlled;
             if (!hallucinationControlled) {
-                failReasons.append("幻觉抑制未通过：知识库无相关内容但系统未返回无法回答；");
+                failReasons.append("幻觉抑制未通过：知识库无相关内容，且答案没给出固定拒答原话；");
             }
         } else {
             // 应该回答：幻觉抑制自动通过

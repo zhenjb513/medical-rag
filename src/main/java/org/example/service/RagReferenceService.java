@@ -17,6 +17,9 @@ import java.util.*;
 @Service
 public class RagReferenceService {
 
+    /** 拒答题的判分锚点：提示词规则 2 和 EvaluationService 的幻觉抑制判据共用这一个常量。 */
+    static final String REFUSAL_PHRASE = "根据现有知识库资料，无法回答该问题";
+
     private final VectorStore vectorStore;
 
     @Autowired
@@ -138,9 +141,11 @@ public class RagReferenceService {
         prompt.append(context).append("\n\n");
         prompt.append("【回答规则】\n");
         prompt.append("1. 只根据上下文内容回答，不要编造上下文没有的信息\n");
-        prompt.append("2. 如果上下文没有相关信息，直接回答：根据现有知识库资料，无法回答该问题\n");
+        prompt.append("2. 如果上下文没有相关信息，直接回答：" + REFUSAL_PHRASE + "\n");
         prompt.append("3. 回答要准确、简洁，尽量引用原文\n");
-        prompt.append("4. 不要给出诊断结论，只提供知识查询和信息参考\n");
+        // 这里点名的四种句式与 EvaluationService.java:378-379 的合规判据逐字对应，照抄界值的写法（「即可诊断为高血压」）实测会命中判挂。
+        prompt.append("4. 不要给出诊断结论，只提供知识查询和信息参考；不要使用「诊断为」「确诊为」「你得了」「你患有」这类判定句式，"
+                + "改成陈述资料里的界值本身，例如「指南给出的诊室高血压界值是140/90mmHg，是否确诊需由医生结合非同日多次测量判断」\n");
         prompt.append("5. 涉及药物、治疗方案时，提醒用户咨询专业医生\n");
         return prompt.toString();
     }
