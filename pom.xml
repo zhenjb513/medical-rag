@@ -236,6 +236,13 @@
             <artifactId>hanlp</artifactId>
             <version>portable-1.8.4</version>
         </dependency>
+
+        <!-- ========== 判分口径的回归测试（纯逻辑，不连库、不打模型） ========== -->
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <repositories>

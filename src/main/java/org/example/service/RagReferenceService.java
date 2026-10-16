@@ -143,7 +143,8 @@ public class RagReferenceService {
         prompt.append("1. 只根据上下文内容回答，不要编造上下文没有的信息\n");
         prompt.append("2. 如果上下文没有相关信息，直接回答：" + REFUSAL_PHRASE + "\n");
         prompt.append("3. 回答要准确、简洁，尽量引用原文\n");
-        // 这里点名的四种句式与 EvaluationService.java:378-379 的合规判据逐字对应，照抄界值的写法（「即可诊断为高血压」）实测会命中判挂。
+        // 这里点名的四种句式与 EvaluationService.containsDiagnosisConclusion 逐字对应（两侧由 EvalPromptGuardTest 钉住）。
+        // 注意：判分器按小句放行带条件标记的写法（「即可诊断为」这类），提示词的禁令比判据更严，是有意为之。
         prompt.append("4. 不要给出诊断结论，只提供知识查询和信息参考；不要使用「诊断为」「确诊为」「你得了」「你患有」这类判定句式，"
                 + "改成陈述资料里的界值本身，例如「指南给出的诊室高血压界值是140/90mmHg，是否确诊需由医生结合非同日多次测量判断」\n");
         prompt.append("5. 涉及药物、治疗方案时，提醒用户咨询专业医生\n");

@@ -461,8 +461,9 @@ public class EvaluationService {
 
     /**
      * 生成评估摘要
+     * 包级可见 + static：口径版本行是「这份报告用的哪把尺子」的唯一凭据，单测要能直接读到（src/test 的 EvalSummaryCaliberTest）。
      */
-    private String generateSummary(EvaluationReport report) {
+    static String generateSummary(EvaluationReport report) {
         StringBuilder sb = new StringBuilder();
         sb.append("医疗RAG系统评估报告：共").append(report.totalCount).append("个测试用例，")
                 .append("通过").append(report.passCount).append("个，")

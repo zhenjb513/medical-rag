@@ -211,7 +211,13 @@ mvn spring-boot:run -Dfile.encoding=UTF-8 "-Dspring-boot.run.jvmArguments=-Dfile
 # 方式 B：先打包再跑
 mvn -DskipTests package
 java -Dfile.encoding=UTF-8 -jar target/demoAI-1.0-SNAPSHOT.jar
+
+# 判分口径回归：40 条纯逻辑单测，不连库、不打模型、几秒钟跑完
+# （口径改动最容易「改了判分器没改提示词」这类两边漂移，靠这组测试兜住；见下面「📊 评测口径」）
+mvn test
 ```
+
+> 本机没有独立的 `mvn`，上面的命令用 IDEA 自带 Maven + Microsoft JDK 21 跑；提交前跑一次 `mvn test` 即可，CI 同理。
 
 ✅ **启动成功标志**：
 
@@ -615,7 +621,7 @@ A：System Prompt 已加入约束"使用纯文本回答，不要使用 Markdown 
 | 多轮对话上下文 | 引入对话历史管理，支持追问、澄清和多轮上下文连贯对话 |
 | 流式响应（SSE） | 将 `/chat` 接口改造为 Server-Sent Events 流式输出，提升用户等待体验 |
 | Java 层 Markdown 清洗 | 在答案返回前加正则，彻底去除 `**` / `*` / `#` 等 Markdown 残留 |
-| 单元测试与集成测试 | 补充核心链路（OCR 兜底、Tool Call 路由、向量检索、PHI 脱敏）的自动化测试 |
+| 单元测试与集成测试 | 判分口径已有 40 条纯逻辑单测（`src/test/java/org/example/`，不连库不打模型）；核心链路（OCR 兜底、Tool Call 路由、向量检索、PHI 脱敏）仍缺 |
 | 多格式文档支持 | 扩展对 Word、Markdown、Excel 等非 PDF 格式的解析与入库 |
 | 多模型路由 | 根据问题类型自动选择最优大模型（简单问答用 qwen-turbo，复杂推理用 qwen-max） |
 | 权限与审计 | 接入企业级 RBAC 权限控制，记录所有问答操作的审计日志 |
