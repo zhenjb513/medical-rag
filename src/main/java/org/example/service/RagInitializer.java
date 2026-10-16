@@ -172,6 +172,10 @@ public class RagInitializer {
     // OCR 配置有效性（运行时一次性判定，缓存结果）
     private transient Boolean ocrAvailableCache = null;
     private transient String effectiveTessdataDir = null;
+    /** OCR 诊断原文（启动时打印的那行）。/rag/diag 要能回答「OCR 到底就绪没、tessdata 用的哪个目录」。 */
+    private transient String ocrDiagLine = null;
+    /** 本轮启动的入库流水：扫描/跳过/新灌/失败/chunks/批次。/rag/diag 的「入库历史」数据来源。 */
+    private volatile Map<String, Object> lastBootIngest = null;
 
     // WatchService 相关：目录热监听
     private volatile WatchService watchService;
@@ -279,6 +283,7 @@ public class RagInitializer {
         System.out.println();
         effectiveTessdataDir = finalTessDir;
         ocrAvailableCache = ok;
+        ocrDiagLine = diag.toString();
         return ok;
     }
 
@@ -488,16 +493,26 @@ public class RagInitializer {
         System.out.println("[RagInitializer] 共发现 " + pdfs.size() + " 个 PDF，开始批量向量化 ...");
         System.out.println("[RagInitializer] Embedding 每批最多 " + DASHSCOPE_EMBEDDING_MAX_BATCH + " 个 chunks（DashScope 硬性限制）");
 
-        int totalChunks = 0, totalBatches = 0, okCount = 0, failCount = 0;
+        int totalChunks = 0, totalBatches = 0, okCount = 0, failCount = 0, skippedCount = 0;
         for (File pdf : pdfs) {
             IngestResult r = ingestOnePdf(pdf, "  ");
             totalChunks += r.chunks;
             totalBatches += r.batches;
+            if (r.skipped) skippedCount++;
             if (r.ok) okCount++;
             else failCount++;
         }
+        lastBootIngest = Map.of(
+                "scanned_pdf_count", pdfs.size(),
+                "skipped_unchanged", skippedCount,
+                "newly_ingested_or_rewritten", okCount - skippedCount,
+                "failed", failCount,
+                "chunks_seen", totalChunks,
+                "embedding_batches", totalBatches,
+                "extract_pipeline_version", EXTRACT_PIPELINE_VERSION);
 
         System.out.println("[RagInitializer] 完成。成功PDF=" + okCount
+                + "  其中判重跳过=" + skippedCount
                 + "  失败PDF=" + failCount
                 + "  chunks总数=" + totalChunks
                 + "  提交批次数=" + totalBatches
@@ -1398,26 +1413,155 @@ public class RagInitializer {
         }
     }
 
-    /** 运行时诊断：返回当前配置、扫描到的 PDF 列表及各 PDF 提取诊断（不写 VectorStore）。 */
-    public Map<String, Object> diagnose() {
+    /**
+     * 运行时诊断：配置、OCR 状态、本轮入库流水、库内 chunk 分布 + 逐份 PDF 体检（不写 VectorStore）。
+     *
+     * @param deep false（默认）= 只开文件读页数并和库内指纹比对；true = 再跑 P1/P2/P3 三层正文提取。
+     *             三层提取每份 PDF 都要把全文扒一遍，文件一多这个接口自己就先把自己打挂了，所以不进默认路径。
+     */
+    public Map<String, Object> diagnose(boolean deep) {
         Map<String, Object> out = new java.util.LinkedHashMap<>();
         out.put("pdf_path_config", pdfPath);
         out.put("vector_store_type", vectorStore == null ? "<NULL>" : vectorStore.getClass().getName());
         out.put("vector_store_is_null", vectorStore == null);
+        out.put("ocr", ocrSection());
+        out.put("last_boot_ingest", lastBootIngest == null
+                ? "本轮启动没跑批量入库（目录里没有 PDF，或没有 VectorStore Bean）" : lastBootIngest);
+        out.put("stored_overview", storedOverview());
 
         List<File> pdfs;
         try { pdfs = collectPdfs(pdfPath); }
         catch (Exception ex) { out.put("collect_error", ex.toString()); return out; }
 
         out.put("scanned_pdf_count", pdfs.size());
+        // 逐份体检要开一次文件读页数、再打一条 SQL 问库内指纹，是 per-file 成本。
+        // 和库内列表一样套 LIMIT：目录里堆到几万份时，这个接口不该自己把连接打满。
+        int listed = Math.min(pdfs.size(), STORED_OVERVIEW_LIMIT);
         List<Map<String, Object>> pdfDiags = new ArrayList<>();
-        for (File pdf : pdfs) pdfDiags.add(diagnoseOnePdf(pdf));
+        for (int i = 0; i < listed; i++) {
+            File pdf = pdfs.get(i);
+            Map<String, Object> one = quickPdfDiag(pdf);
+            if (deep) one.putAll(deepExtractDiag(pdf));
+            pdfDiags.add(one);
+        }
         out.put("pdfs", pdfDiags);
+        out.put("pdfs_listed", listed);
+        out.put("pdfs_truncated", pdfs.size() > listed);
         return out;
     }
 
+    /** OCR 这条腿的真实状态：README 让人「看 ocr_ready 和 tessdata_dir」，那两个键必须真的存在。 */
+    private Map<String, Object> ocrSection() {
+        Map<String, Object> o = new java.util.LinkedHashMap<>();
+        o.put("enabled_config", ocrEnabled);
+        // 没跑过批量入库时探测结果还没产生，区分「没探过」和「探过=不可用」
+        o.put("probed", ocrAvailableCache != null);
+        o.put("ocr_ready", ocrAvailableCache);
+        o.put("tesseract_path_config", ocrTesseractPath);
+        o.put("tessdata_dir", effectiveTessdataDir != null ? effectiveTessdataDir : ocrTessdataDir);
+        o.put("tessdata_dir_config", ocrTessdataDir);
+        o.put("language", ocrLanguage);
+        o.put("dpi", ocrDpi);
+        o.put("diag_line", ocrDiagLine);
+        return o;
+    }
+
+    /** 单份 PDF 的便宜体检：页数/字节指纹 + 库里已有的块数，下次启动会不会跳过。 */
+    private Map<String, Object> quickPdfDiag(File pdf) {
+        Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("name", pdf.getName());
+        m.put("size_bytes", pdf.length());
+        try (PDDocument pdDoc = openPdfLenient(pdf, null)) {
+            m.put("page_count", pdDoc.getNumberOfPages());
+            m.put("encrypted", pdDoc.isEncrypted());
+        } catch (Throwable ex) {
+            m.put("open_error", ex.getClass().getSimpleName() + ": " + ex.getMessage());
+        }
+        String fileHash = hashFileQuietly(pdf);
+        m.put("file_hash", fileHash == null ? "" : fileHash.substring(0, Math.min(12, fileHash.length())));
+        StoredVersion stored = null;
+        try {
+            stored = probeStoredVersion(pdf);
+        } catch (RuntimeException ex) {
+            m.put("probe_error", ex.getMessage());
+        }
+        if (stored == null) {
+            m.put("in_store", false);
+        } else {
+            m.put("in_store", true);
+            m.put("stored_chunks", stored.chunkCount);
+            m.put("stored_total_chunks", stored.totalChunks);
+            m.put("complete", stored.complete());
+            m.put("stored_extract_version", stored.extractVersion);
+            m.put("current_extract_version", EXTRACT_PIPELINE_VERSION);
+            m.put("will_skip_next_boot", stored.sameFile(fileHash));
+        }
+        return m;
+    }
+
+    /** 库内实况：按 source 数块（只读 SQL，不碰模型）。列表一律带 LIMIT，百万份文件下不能全表往外倒。 */
+    private static final int STORED_OVERVIEW_LIMIT = 200;
+
+    private Map<String, Object> storedOverview() {
+        Map<String, Object> o = new java.util.LinkedHashMap<>();
+        if (pgJdbc == null) {
+            o.put("available", false);
+            o.put("reason", "pgVectorJdbcTemplate 未注入（PGVector 未启用），库内分布只能看启动日志");
+            return o;
+        }
+        String table = vectorStoreTable();
+        try {
+            Map<String, Object> totals = pgJdbc.query(
+                    "SELECT COUNT(*) AS chunks, COUNT(DISTINCT metadata->>'source') AS files FROM " + table,
+                    rs -> {
+                        Map<String, Object> row = new java.util.LinkedHashMap<>();
+                        if (rs.next()) {
+                            row.put("chunks_in_store", rs.getLong("chunks"));
+                            row.put("files_in_store", rs.getLong("files"));
+                        }
+                        return row;
+                    });
+            o.put("chunks_in_store", totals.get("chunks_in_store"));
+            o.put("files_in_store", totals.get("files_in_store"));
+        } catch (Exception ex) {
+            o.put("error", ex.getClass().getSimpleName() + ": " + ex.getMessage());
+            return o;
+        }
+        try {
+            List<Map<String, Object>> rows = pgJdbc.query(
+                    "SELECT metadata->>'source' AS src, COUNT(*) AS c, "
+                            + "MAX((metadata->>'total_chunks')::int) AS total, "
+                            + "MAX(metadata->>'extract_version') AS ev "
+                            + "FROM " + table + " GROUP BY 1 ORDER BY 1 LIMIT " + STORED_OVERVIEW_LIMIT,
+                    (java.sql.ResultSet rs, int n) -> {
+                        Map<String, Object> row = new java.util.LinkedHashMap<>();
+                        String src = rs.getString("src");
+                        int c = rs.getInt("c");
+                        int total = rs.getInt("total");
+                        String ev = rs.getString("ev");
+                        row.put("source", src == null ? "<无 source>" : new File(src).getName());
+                        row.put("chunks", c);
+                        row.put("total_chunks", total);
+                        row.put("extract_version", ev);
+                        row.put("incomplete", total > 0 && c != total);
+                        row.put("stale_extract_version", !EXTRACT_PIPELINE_VERSION.equals(ev));
+                        row.put("file_missing_on_disk", src != null && !new File(src).exists());
+                        return row;
+                    });
+            o.put("per_file", rows);
+            o.put("per_file_limit", STORED_OVERVIEW_LIMIT);
+            o.put("per_file_truncated", rows.size() >= STORED_OVERVIEW_LIMIT);
+            o.put("incomplete_count_in_listed", rows.stream().filter(r -> Boolean.TRUE.equals(r.get("incomplete"))).count());
+            o.put("stale_version_count_in_listed", rows.stream().filter(r -> Boolean.TRUE.equals(r.get("stale_extract_version"))).count());
+            o.put("orphan_count_in_listed", rows.stream().filter(r -> Boolean.TRUE.equals(r.get("file_missing_on_disk"))).count());
+        } catch (Exception ex) {
+            o.put("per_file_error", ex.getClass().getSimpleName() + ": " + ex.getMessage());
+        }
+        return o;
+    }
+
     /** 对单个 PDF 跑多层提取 + 暴力扫统计（不切片不写库，返回诊断 Map）。 */
-    private Map<String, Object> diagnoseOnePdf(File pdf) {
+    private Map<String, Object> deepExtractDiag(File pdf) {
         Map<String, Object> m = new java.util.LinkedHashMap<>();
         m.put("name", pdf.getName());
         m.put("size_bytes", pdf.length());

@@ -36,7 +36,7 @@ blockquote { font-size: 1.05em; }
 | 🧩 **SimpleVectorStore 备用方案** | 条件互斥开关（`app.pgvector.enabled: false`），内存向量库开箱即用，开发测试友好 |
 | 🌏 **中文端到端无乱码** | JVM / JDBC / PG 客户端 / Tesseract 输出全链路强制 UTF-8 + 字节级自检 |
 | ⏱️ **动态超时控制** | PDF 整体超时按页数估算（MAX(2min, 60s + 15s×页数)），子进程 `destroyForcibly()` 强杀，单个 PDF 失败不影响整体 |
-| 🩺 **运行时诊断 API** | `/rag/diag` 实时查看 OCR、向量库、入库历史、chunk 分布 |
+| 🩺 **运行时诊断 API** | `/rag/diag` 实时查看 OCR 就绪状态、向量库、本轮入库流水（扫描/判重跳过/新灌/失败/chunks）、库内 chunk 分布与逐份 PDF 指纹；默认不重扒正文，深挖加 `?deep=true` |
 | 📑 **答案引用溯源** | 每个答案自动标注来源文件名，可追溯 |
 | 🧪 **医疗测试集自动评估** | 61 题测试集（58 道库内可答 + 3 道超纲负样本）覆盖事实查询/综合分析/口语查询/幻觉抑制/合规测试，4 维度量化评估（准确性/引用/幻觉/合规），输出JSON报告+纯文本摘要 |
 
@@ -582,7 +582,7 @@ SELECT COUNT(*), metadata->>'source' FROM public.vector_store GROUP BY 2;
 
 A：大概率是 `chi_sim.traineddata` 找不到 / tessdata 目录权限问题。
 
-1. 开诊断：`GET /rag/diag` 看 `ocr_ready` 和 `tessdata_dir` 是否为 `✅ 配置路径命中`
+1. 开诊断：`GET /rag/diag` 看 `rag_initializer.ocr.ocr_ready` 是否为 `true`，再看同级的 `diag_line` 里有没有「配置路径命中：…」——那行就是启动时打到控制台的那句 OCR 诊断原文
 2. 把 tessdata 从 `C:\Program Files\Tesseract-OCR\tessdata\` 复制到 **`D:\tessdata\`**（无权限限制）
 3. `application.yml` 同步改 `tessdata-dir: D:/tessdata`
 

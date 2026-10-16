@@ -151,10 +151,12 @@ public class ChatController {
     }
 
     /**
-     * 运行时 RAG 诊断接口，返回 VectorStore 类型、PgVector 初始化状态及各 PDF 提取诊断信息。
+     * 运行时 RAG 诊断接口：VectorStore 类型、PgVector 初始化状态、OCR 就绪、本轮入库流水、库内 chunk 分布、逐份 PDF 体检。
+     * 默认不跑正文三层提取（每份 PDF 扒一遍全文，文件多了这个接口自己就先挂），要深挖加 `?deep=true`。
      */
     @GetMapping(value = "/rag/diag", produces = "application/json; charset=utf-8")
-    public String ragDiag() throws Exception {
+    public String ragDiag(
+            @org.springframework.web.bind.annotation.RequestParam(name = "deep", defaultValue = "false") boolean deep) throws Exception {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("vector_store_type", vectorStore == null ? "<NULL>" : vectorStore.getClass().getName());
         out.put("vector_store_is_null", vectorStore == null);
@@ -167,7 +169,7 @@ public class ChatController {
         }
 
         if (ragInitializer != null) {
-            out.put("rag_initializer", ragInitializer.diagnose());
+            out.put("rag_initializer", ragInitializer.diagnose(deep));
         } else {
             out.put("rag_initializer", "<NULL：RagInitializer Bean 未注册>");
         }
