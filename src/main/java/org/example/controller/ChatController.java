@@ -28,6 +28,7 @@ public class ChatController {
     private final ApplicationContext applicationContext;
     private final VectorStore vectorStore;
     private final PhiDesensitizationService phiDesensitizationService;
+    private final org.example.service.PhiAuditService phiAuditService;
     private final RagReferenceService ragReferenceService;
     private final org.example.service.HybridRetrievalService hybridRetrievalService;
     private final ObjectMapper jsonMapper = new ObjectMapper().enable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);
@@ -45,6 +46,7 @@ public class ChatController {
                           VectorStore vectorStore,
                           ApplicationContext applicationContext,
                           PhiDesensitizationService phiDesensitizationService,
+                          org.example.service.PhiAuditService phiAuditService,
                           RagReferenceService ragReferenceService,
                           org.example.service.HybridRetrievalService hybridRetrievalService,
                           @Autowired(required = false) RagInitializer ragInitializer) {
@@ -53,6 +55,7 @@ public class ChatController {
         this.vectorStore = vectorStore;
         this.ragInitializer = ragInitializer;
         this.phiDesensitizationService = phiDesensitizationService;
+        this.phiAuditService = phiAuditService;
         this.ragReferenceService = ragReferenceService;
         this.hybridRetrievalService = hybridRetrievalService;
 
@@ -80,7 +83,9 @@ public class ChatController {
         //    这里不再传 0.65：实测那道逐条阈值会把正确题的候选从 20 条砍到 2 条，却照样放行超纲问题。
         List<Document> docs = hybridRetrievalService.search(sanitizedMessage, chatTopK, null);
         if (hasPhi) {
-            System.out.println("[PHI脱敏] 监测到敏感信息，原始: \"" + message + "\"  脱敏后: \"" + sanitizedMessage + "\"");
+            // 审计只落「命中类型 + 条数 + 原句指纹」，原始问句和脱敏后文本都不再打进控制台。
+            // 以前这行 println 会把含身份证/手机号的整条原话写进日志，本身就是一次泄露。
+            phiAuditService.recordPhiHit(message, "/chat");
         }
         System.out.println("[RAG检索] 问题: \"" + sanitizedMessage + "\"" + (hasPhi ? " (已脱敏)" : ""));
         System.out.println("[RAG检索] 模式=" + hybridRetrievalService.describeMode()
@@ -166,6 +171,19 @@ public class ChatController {
             PgVectorSchemaInitializer init = applicationContext.getBean(PgVectorSchemaInitializer.class);
             out.put("pg_vector_initializer_ready", init.isReady());
         }
+
+        Map<String, Object> phiAudit = new LinkedHashMap<>();
+        phiAudit.put("table_ready", phiAuditService.isTableReady());
+        phiAudit.put("table", "MySQL demoAI.phi_audit_log");
+        phiAudit.put("columns", List.of("message_hash", "endpoint", "hit_types", "hit_count"));
+        phiAudit.put("stores_raw_text", false);
+        // 零模型调用的探针：不打通问答就能确认业务库连上了、表建出来了
+        phiAudit.put("rows_total", phiAuditService.countRows());
+        out.put("phi_audit", phiAudit);
+
+        // 库存工具连的库能不能查到 consumables（零模型调用探针）。修复前的实测：
+        // PG 侧 relation "consumables" does not exist、MySQL 侧 行数=3，见 InventoryService 构造器注释。
+        out.put("inventory_db_probe", inventoryService.probeConsumablesForDiag());
 
         if (ragInitializer != null) {
             out.put("rag_initializer", ragInitializer.diagnose(deep));

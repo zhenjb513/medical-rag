@@ -144,4 +144,34 @@ public class PhiDesensitizationService {
                 || BIRTH_DATE_PATTERN.matcher(input).find()
                 || BANK_CARD_PATTERN.matcher(input).find();
     }
+
+    /** 一类 PHI 的命中情况，供审计落库用（只带类型名和条数，不带命中文本）。 */
+    public java.util.List<PhiHit> countHits(String input) {
+        java.util.List<PhiHit> hits = new java.util.ArrayList<>();
+        if (input == null || input.isEmpty()) {
+            return hits;
+        }
+        addHits(hits, "身份证", ID_CARD_PATTERN, input);
+        addHits(hits, "手机号", PHONE_PATTERN, input);
+        addHits(hits, "病历号", MEDICAL_RECORD_NO_PATTERN, input);
+        addHits(hits, "出生日期", BIRTH_DATE_PATTERN, input);
+        addHits(hits, "银行卡", BANK_CARD_PATTERN, input);
+        return hits;
+    }
+
+    private static void addHits(java.util.List<PhiHit> hits, String type, Pattern pattern, String input) {
+        int n = 0;
+        java.util.regex.Matcher m = pattern.matcher(input);
+        while (m.find()) n++;
+        if (n > 0) hits.add(new PhiHit(type, n));
+    }
+
+    /**
+     * 审计用的分类命中计数：按原文逐类数正则命中了多少条，类别顺序与 {@link #desensitize} 的处理顺序一致。
+     * <p>
+     * ⚠️ 口径：数的是**原文上各正则各自的命中数**，类与类会重叠。18 位身份证同时满足银行卡的
+     * 16~19 位数字，所以会报成「身份证 1 条 + 银行卡 1 条」。这是刻意的——审计回答的是
+     * 「原文里有哪些形态的敏感数字被规则看见了」，不是「脱敏链实际改了几处」，别拿它去对星号数。
+     */
+    public record PhiHit(String type, int count) {}
 }

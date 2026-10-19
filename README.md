@@ -23,10 +23,10 @@ blockquote { font-size: 1.05em; }
 | 模块 | 核心能力 |
 |---|---|
 | 🤖 **大模型对话** | 阿里云百炼 `qwen-plus`，通过 `ChatClient` API 流式调用 |
-| 🔌 **Function Call（工具调用）** | 基于 `@Tool` 注解，AI 可实时查询耗材库存（MySQL `consumables` 表）。工具返回**带语义的一句话**，把「有货 N 件」「库里没登记这个耗材」「库存系统连不上」三态分开——以前返回裸 int 且异常一律 0，模型会把后两种都答成「缺货，建议联系采购」 |
+| 🔌 **Function Call（工具调用）** | 基于 `@Tool` 注解，AI 可实时查询耗材库存（MySQL `consumables` 表）。工具返回**带语义的一句话**，把「有货 N 件」「库里没登记这个耗材」「库存系统连不上」三态分开——以前返回裸 int 且异常一律 0，模型会把后两种都答成「缺货，建议联系采购」。另外这轮才发现该工具**一直连的是 PostgreSQL**（`@ConditionalOnMissingBean` 让 MySQL 侧的 JdbcTemplate 从未生成，PG 里没有 `consumables` 表，实测 `relation "consumables" does not exist`），所以它每次查询都在报错、被旧代码吞成 0；现已显式注入 `businessJdbcTemplate`，`/rag/diag` 的 `inventory_db_probe` 返回 `行数=3` 为准 |
 | 📚 **RAG 检索增强（手动模式）** | 弃用 QuestionAnswerAdvisor，改为手动控制检索、引用溯源、System Prompt（医疗合规约束） |
 | 🎯 **可答性闸门** | 向量通道下限 `vector-floor: 0.45` 只做粗筛；能不能答由 `answer-floor: 0.60` 判**向量第一名**的余弦，不够就整批不给上下文。逐条 0.65 那套已废弃，原因见「检索闸门」一节。闸门要的是余弦，所以纯关键词 `mode=bm25` 不作为生产模式（自动降级成 `hybrid`，评测口子照旧） |
-| 🔐 **PHI 隐私脱敏** | 身份证 / 手机号 / 病历号 / 出生日期 / 银行卡号 正则脱敏，合规必备 |
+| 🔐 **PHI 隐私脱敏 + 审计落库** | 身份证 / 手机号 / 病历号 / 出生日期 / 银行卡号 正则脱敏，合规必备。命中后只往 MySQL `phi_audit_log` 写「原文指纹 + 接口 + 命中类型:条数」，**原文和脱敏后文本都不落库、不打日志**——以前 `[PHI脱敏] 原始: …` 那行 println 会把整条含身份证的原话写进控制台，本身就是一次泄露 |
 | 📄 **PDF 文本提取（4 级兜底）** | P1 标准提取 → P2 参数调整 → P3 暴力流扫 → P4 Tesseract OCR，纯图片扫描件也能识别 |
 | 🧪 **内容质量 QC + 乱码救回** | 检测 U+FFFD(�) / CJK 占比 / 控制字符，乱码时自动启动 OCR 重扫救回 |
 | 🧭 **增量入库去重** | 查 `vector_store` 表判断是否已入库成功，重启不重复 OCR / Embedding |
@@ -36,7 +36,7 @@ blockquote { font-size: 1.05em; }
 | 🧩 **SimpleVectorStore 备用方案** | 条件互斥开关（`app.pgvector.enabled: false`），内存向量库开箱即用，开发测试友好 |
 | 🌏 **中文端到端无乱码** | JVM / JDBC / PG 客户端 / Tesseract 输出全链路强制 UTF-8 + 字节级自检 |
 | ⏱️ **动态超时控制** | PDF 整体超时按页数估算（MAX(2min, 60s + 15s×页数)），子进程 `destroyForcibly()` 强杀，单个 PDF 失败不影响整体 |
-| 🩺 **运行时诊断 API** | `/rag/diag` 实时查看 OCR 就绪状态、向量库、本轮入库流水（扫描/判重跳过/新灌/失败/chunks）、库内 chunk 分布与逐份 PDF 指纹；默认不重扒正文，深挖加 `?deep=true` |
+| 🩺 **运行时诊断 API** | `/rag/diag` 实时查看 OCR 就绪状态、向量库、本轮入库流水（扫描/判重跳过/新灌/失败/chunks）、库内 chunk 分布与逐份 PDF 指纹、`phi_audit`（审计表是否就绪 + 列清单 + `stores_raw_text:false` 明示不落原文 + `rows_total`）、`inventory_db_probe`（库存工具连的库里 `consumables` 行数）；这些探针都不打模型。默认不重扒正文，深挖加 `?deep=true` |
 | 📑 **答案引用溯源** | 每个答案自动标注来源文件名，可追溯 |
 | 🧪 **医疗测试集自动评估** | 61 题测试集（58 道库内可答 + 3 道超纲负样本）覆盖事实查询/综合分析/口语查询/幻觉抑制/合规测试，4 维度量化评估（准确性/引用/幻觉/合规），输出JSON报告+纯文本摘要 |
 
@@ -85,7 +85,7 @@ SELECT extname, extversion FROM pg_extension WHERE extname = 'vector';
 > ℹ️ **pgvector 安装提示（Windows）**：
 > 从 https://github.com/pgvector/pgvector/releases 下载对应 PG 17 版本的 `pgvector.dll`，放到 `PostgreSQL/17/lib/` 目录，再执行上面的 `CREATE EXTENSION`。
 
-### 🟨 MySQL（业务库 · 耗材库存）
+### 🟨 MySQL（业务库 · 耗材库存 + PHI 审计）
 
 ```sql
 CREATE DATABASE IF NOT EXISTS demoAI
@@ -104,6 +104,32 @@ INSERT INTO consumables(name, stock) VALUES
   ('医用外科口罩', 20000),
   ('一次性注射器(5ml)', 3200);
 ```
+
+> **`phi_audit_log` 不用手动建**：应用启动时 `PhiAuditService.ensureSchema()` 会执行下面这段
+> `CREATE TABLE IF NOT EXISTS`，日志里能看到 `[PHI审计] phi_audit_log 就绪`；建表失败只打警告，不影响对话。
+> 这里贴出等价 DDL 只是为了让 DBA 提前知道应用会动哪张表：
+
+```sql
+-- 由应用自动创建，含 PHI 命中流水，权限按需收紧
+CREATE TABLE IF NOT EXISTS phi_audit_log (
+  id           BIGINT AUTO_INCREMENT PRIMARY KEY,
+  created_at   TIMESTAMP   DEFAULT CURRENT_TIMESTAMP,
+  message_hash CHAR(12),                    -- 原文 SHA-256 前 12 位，只能判「是不是同一句」，还原不了内容
+  endpoint     VARCHAR(32),                 -- 哪个接口命中的，例如 /chat
+  hit_types    VARCHAR(128),                -- 「身份证:1,银行卡:1」这类 类型:条数 串
+  hit_count    INT,                         -- 命中总条数
+  KEY idx_phi_audit_created (created_at)
+) DEFAULT CHARSET=utf8mb4;
+```
+
+> ⚠️ **两个数据源、两个 JdbcTemplate，必须点名注入。**
+> `PgVectorConfig` 早先自己注册了 `pgVectorJdbcTemplate`，而 Spring Boot 的
+> `JdbcTemplateAutoConfiguration` 是 `@ConditionalOnMissingBean` —— 于是 `spring.datasource` 配的 MySQL
+> **从来没有生成过连接池**，任何按类型注入 `JdbcTemplate` 的服务都静默连到了 PG（耗材库存工具就是这么坏了很久）。
+> 现在 `MysqlBusinessConfig` 显式补了 `businessDataSource` / `businessJdbcTemplate`，两边都不标 `@Primary`，
+> 所以按类型注入会 `NoUniqueBeanDefinitionException` 直接起不来：新写服务要用哪个库，构造器里就写
+> `@Qualifier("businessJdbcTemplate")`（MySQL 业务）或 `@Qualifier("pgVectorJdbcTemplate")`（向量库）。
+> 启动日志里两个池各自的名字是 `MysqlBusinessPool` / `PgVectorHikariPool`，一眼能确认连对没连对。
 
 ---
 
@@ -212,7 +238,7 @@ mvn spring-boot:run -Dfile.encoding=UTF-8 "-Dspring-boot.run.jvmArguments=-Dfile
 mvn -DskipTests package
 java -Dfile.encoding=UTF-8 -jar target/demoAI-1.0-SNAPSHOT.jar
 
-# 判分口径 + 检索模式 + 工具返回值回归：50 条纯逻辑单测，不连库、不打模型、几秒钟跑完
+# 判分口径 + 检索模式 + 工具返回值 + PHI 审计行回归：57 条纯逻辑单测，不连库、不打模型、几秒钟跑完
 # （口径改动最容易「改了判分器没改提示词」这类两边漂移，靠这组测试兜住；见下面「📊 评测口径」）
 mvn test
 ```
@@ -451,17 +477,19 @@ mvn test
 |---|---|
 | `Main.java` | **应用入口**：`@SpringBootApplication`，启动前强制全局 UTF-8 编码（修复 Windows 默认 GBK 导致的中文乱码），手动排除 `PgVectorStoreAutoConfiguration` 以接管 PgVector 建表流程 |
 | `RagInitializer.java` | **核心**：PDF 4 层提取策略（P1 标准提取 → P2 参数调整 → P3 暴力流扫 → P4 Tesseract OCR）、内容 QC 乱码检测、动态超时、**WatchService 目录热监听**（CREATE/MODIFY → waitFileStable → probeAlreadyIngested → ingestOnePdf）、增量入库去重、`TokenTextSplitter` 切片 + Embedding、诊断接口数据 |
-| `ChatController.java` | `/chat` 对话接口（PHI 脱敏 → 手动 RAG 检索 → System Prompt 组装 → ChatClient + Tool Call → 引用来源格式化）、`/rag/diag` 诊断接口 |
+| `ChatController.java` | `/chat` 对话接口（PHI 脱敏 → 手动 RAG 检索 → System Prompt 组装 → ChatClient + Tool Call → 引用来源格式化）、`/rag/diag` 诊断接口；命中 PHI 时调 `PhiAuditService` 落审计，**不再把原话打进控制台** |
 | **`HybridRetrievalService.java`** | **`/chat` 实际走的检索链路**：向量通道（floor 0.45）+ BM25 加权 RRF 融合 → 取 20 候选送 gte-rerank-v2 重排 → 截 8 → 同名相邻块扩展至 16；`mode`、`rerank-enabled` 等开关全在 `application.yml`。`search()` 只走「闸门判得动」的通道，`mode=bm25` 在这里降级成 `hybrid`（`enforceGateCapable`）；`searchFused` / `searchReranked` / `fuseCandidates` 三个评测口子不受降级影响，照旧给单边对照 |
 | **`RagReferenceService.java`** | 向量检索的底层封装（DB 层 + Java 层二次过滤，阈值由 `vector-floor` 传入）、上下文组装、System Prompt 构建（医疗合规约束）、引用来源提取与格式化 |
-| **`PhiDesensitizationService.java`** | PHI 隐私脱敏，覆盖身份证 / 手机号 / 病历号 / 出生日期 / 银行卡号，脱敏 + 审计一体化 |
-| `InventoryService.java` | `@Tool` 函数：耗材库存查询（AI 自动调用）。返回文字三态（有货 / 未登记 / 查询不可用），`EmptyResultDataAccessException` 和其余 `DataAccessException` 分开处理，不再一律返回 0 |
+| **`PhiDesensitizationService.java`** | PHI 隐私脱敏，覆盖身份证 / 手机号 / 病历号 / 出生日期 / 银行卡号；`countHits()` 按正则在**原文**上数命中条数，供审计用。计数口径刻意保留重叠：18 位身份证同时命中「身份证」和「银行卡」两条，是设计不是 bug（见类注释） |
+| **`PhiAuditService.java`** | PHI 命中审计落库（MySQL `demoAI.phi_audit_log`）。启动 `@PostConstruct` 自动 `CREATE TABLE IF NOT EXISTS`；一行只写 `message_hash`（原文 SHA-256 前 12 位）、`endpoint`、`hit_types`（`类型:条数`）、`hit_count` 四列，**原文和脱敏后文本都不进库**；建表或写库失败只打警告，不阻断问答 |
+| `InventoryService.java` | `@Tool` 函数：耗材库存查询（AI 自动调用）。返回文字三态（有货 / 未登记 / 查询不可用），`EmptyResultDataAccessException` 和其余 `DataAccessException` 分开处理，不再一律返回 0。注入 `@Qualifier("businessJdbcTemplate")` 连 MySQL；构造器注释留了「此前连 PG、`consumables` 不存在」的实测证据 |
 | **`EvaluationService.java`** | 医疗测试集评估服务，自动运行测试用例，4 维度量化评估（准确性 / 引用 / 幻觉 / 合规），生成评估报告 |
 | **`EvaluationController.java`** | 评估接口，`/evaluation/run` 返回 JSON 报告，`/evaluation/summary` 返回纯文本摘要 |
 | **`MedicalTestSet.java`** | 医疗测试集，61 题（58 道库内可答题 + 3 道超纲负样本）覆盖事实查询 / 综合分析 / 口语查询 / 幻觉抑制 / 合规测试；每道可答题带 `答案块标注`（`文件名#chunk_index`，用 `/bm25/locate` 逐字定位得到），判分靠它判定「答没答到对应的原文」 |
 | **`TestCase.java`** | 测试用例模型，定义问题、预期关键词、预期引用、分类、是否可回答 |
 | `PgVectorSchemaInitializer.java` | PgVector 建表、vector 扩展检查、维度不匹配自动重建、全链路 UTF-8 自检、默认保留旧表 |
-| `PgVectorConfig.java` | PgVectorStore Bean 注册、独立数据源（和业务 MySQL 完全解耦） |
+| `PgVectorConfig.java` | PgVectorStore Bean 注册、独立 PG 数据源。注意它注册的 `pgVectorJdbcTemplate` 会顶掉 Boot 的 `JdbcTemplateAutoConfiguration`（`@ConditionalOnMissingBean`），MySQL 侧因此必须靠下面的 `MysqlBusinessConfig` 显式补 |
+| **`MysqlBusinessConfig.java`** | 显式声明 MySQL 业务库的 `businessDataSource`（池名 `MysqlBusinessPool`）+ `businessJdbcTemplate`，绑定 `spring.datasource.*`。不加 `@Primary`，所以谁要哪个库都得 `@Qualifier` 点名；类注释里有「以前只有 PG 一个 JdbcTemplate、业务库根本没起池」的启动日志证据 |
 | `PgVectorConfigProperties.java` | PgVector 配置属性绑定 |
 | `SimpleVectorStoreConfig.java` | 条件互斥备用方案（`app.pgvector.enabled: false` 时激活），内存向量库，重启清空 |
 | `SpringAiConfig.java` | DashScope ChatModel / EmbeddingModel 配置 |
@@ -490,7 +518,9 @@ mvn test
 应用启动后，每次 `/chat` 请求都会打印详细检索日志，便于诊断：
 
 ```
-[PHI脱敏] 监测到敏感信息，原始: "病历号MRN123456的患者诊断是什么？"  脱敏后: "病历号MR**56的患者诊断是什么？"  ← 仅命中 PHI 时打印
+[PHI审计] ✅ phi_audit_log 就绪（MySQL 业务库，只存类型/条数/原句指纹，不存原文）   ← 启动时一次
+[PHI审计] 已落库 hash=6f2c1a9b0d3e  身份证:1,银行卡:1   ← 仅命中 PHI 时打印，只有指纹和类型计数，绝不带原话
+[RAG检索] 问题: "病历号MR**56的患者诊断是什么？" (已脱敏)   ← 打的是脱敏后文本
 [评估] 开始运行医疗测试集评估...  子集片段=[全家胆固醇]
 [模型用量] 向量化  第1次  http=200 OK  model=text-embedding-v3  输入条数=1  usage{total_tokens=17}  累计tokens=17
 [RAG原始分数] Top 20 score=[ 0.7179 0.7128 0.7047 0.7027 0.7011 0.6991 ... 0.6539 ]  阈值=0.45
@@ -623,7 +653,7 @@ A：System Prompt 已加入约束"使用纯文本回答，不要使用 Markdown 
 | 多轮对话上下文 | 引入对话历史管理，支持追问、澄清和多轮上下文连贯对话 |
 | 流式响应（SSE） | 将 `/chat` 接口改造为 Server-Sent Events 流式输出，提升用户等待体验 |
 | Java 层 Markdown 清洗 | 在答案返回前加正则，彻底去除 `**` / `*` / `#` 等 Markdown 残留 |
-| 单元测试与集成测试 | 判分口径 + 检索模式收口 + 库存工具返回值已有 50 条纯逻辑单测（`src/test/java/org/example/`，不连库不打模型）；核心链路（OCR 兜底、Tool Call 路由本身、向量检索、PHI 脱敏）仍缺 |
+| 单元测试与集成测试 | 判分口径 + 检索模式收口 + 库存工具返回值 + PHI 审计行（含「四列都不许出现原文」的守门断言）已有 57 条纯逻辑单测（`src/test/java/org/example/`，不连库不打模型）；核心链路（OCR 兜底、Tool Call 路由本身、向量检索、脱敏方法本身）仍缺 |
 | 多格式文档支持 | 扩展对 Word、Markdown、Excel 等非 PDF 格式的解析与入库 |
 | 多模型路由 | 根据问题类型自动选择最优大模型（简单问答用 qwen-turbo，复杂推理用 qwen-max） |
 | 权限与审计 | 接入企业级 RBAC 权限控制，记录所有问答操作的审计日志 |
