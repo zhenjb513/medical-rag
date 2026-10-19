@@ -23,7 +23,7 @@ blockquote { font-size: 1.05em; }
 | 模块 | 核心能力 |
 |---|---|
 | 🤖 **大模型对话** | 阿里云百炼 `qwen-plus`，通过 `ChatClient` API 流式调用 |
-| 🔌 **Function Call（工具调用）** | 基于 `@Tool` 注解，AI 可实时查询耗材库存（MySQL `consumables` 表） |
+| 🔌 **Function Call（工具调用）** | 基于 `@Tool` 注解，AI 可实时查询耗材库存（MySQL `consumables` 表）。工具返回**带语义的一句话**，把「有货 N 件」「库里没登记这个耗材」「库存系统连不上」三态分开——以前返回裸 int 且异常一律 0，模型会把后两种都答成「缺货，建议联系采购」 |
 | 📚 **RAG 检索增强（手动模式）** | 弃用 QuestionAnswerAdvisor，改为手动控制检索、引用溯源、System Prompt（医疗合规约束） |
 | 🎯 **可答性闸门** | 向量通道下限 `vector-floor: 0.45` 只做粗筛；能不能答由 `answer-floor: 0.60` 判**向量第一名**的余弦，不够就整批不给上下文。逐条 0.65 那套已废弃，原因见「检索闸门」一节。闸门要的是余弦，所以纯关键词 `mode=bm25` 不作为生产模式（自动降级成 `hybrid`，评测口子照旧） |
 | 🔐 **PHI 隐私脱敏** | 身份证 / 手机号 / 病历号 / 出生日期 / 银行卡号 正则脱敏，合规必备 |
@@ -212,7 +212,7 @@ mvn spring-boot:run -Dfile.encoding=UTF-8 "-Dspring-boot.run.jvmArguments=-Dfile
 mvn -DskipTests package
 java -Dfile.encoding=UTF-8 -jar target/demoAI-1.0-SNAPSHOT.jar
 
-# 判分口径 + 检索模式回归：45 条纯逻辑单测，不连库、不打模型、几秒钟跑完
+# 判分口径 + 检索模式 + 工具返回值回归：50 条纯逻辑单测，不连库、不打模型、几秒钟跑完
 # （口径改动最容易「改了判分器没改提示词」这类两边漂移，靠这组测试兜住；见下面「📊 评测口径」）
 mvn test
 ```
@@ -379,7 +379,7 @@ mvn test
 | 检索级 | `/evaluation/recall?mode=vector\|bm25\|hybrid\|rerank&expand=` | 考卷标注的答案块**排第几名**（Hit@K / MRR） | `mode=bm25` 零调用（这个 `mode` 只是接口参数，和生产 `app.retrieval.mode` 不是一回事——生产配 bm25 会自动降级）；`vector`/`hybrid` 每题 1 次向量化；`rerank` 每题 1 次向量化 + 1 次重排 |
 | 端到端 | `/evaluation/run` | 最终答案文本过不过四维判定 | 每题 1 次向量化 +（过闸门的题）1 次重排 + 1 次生成 |
 
-现行生产配置（`application.yml` 的 `app.retrieval`）：`mode=hybrid` + `rerank-enabled=true` + `rerank-use-expanded-query=true`，候选窗口 20 → 重排截 8 → 相邻块扩展至 16，可答性闸门 `answer-floor: 0.60`。
+现行生产配置（`application.yml` 的 `app.retrieval`）：`mode=hybrid` + `rerank-enabled=true` + `rerank-use-expanded-query=true`，候选窗口 20 → 重排截 `chat-top-k`（默认 8）→ 相邻块扩展至 16，可答性闸门 `answer-floor: 0.60`。
 
 检索级当前基线（2026-10-13，501 块库，58 题带块号标注，`mode=hybrid`、probeK=20、expand=false，**问句已带术语扩展**，报告 `scratch/g11_hybrid_exp.txt`）：答案块严格 Hit@1 50.0%（29/58）、@4 87.9%、@8 **96.6%（56/58）**、@20 **100%（58/58）**，MRR 0.660，±1 块容错 @8 已 100%；分组看事实查询 @8 100% / 综合分析 100% / **口语查询 @8 93.1%**（@1 仍只有 37.9%）。域外对照：肺癌手术、脑瘤、Java、电影票房 4 题命中条数=0，火星题剩 14 条、top1 余弦 0.657。
 
@@ -455,7 +455,7 @@ mvn test
 | **`HybridRetrievalService.java`** | **`/chat` 实际走的检索链路**：向量通道（floor 0.45）+ BM25 加权 RRF 融合 → 取 20 候选送 gte-rerank-v2 重排 → 截 8 → 同名相邻块扩展至 16；`mode`、`rerank-enabled` 等开关全在 `application.yml`。`search()` 只走「闸门判得动」的通道，`mode=bm25` 在这里降级成 `hybrid`（`enforceGateCapable`）；`searchFused` / `searchReranked` / `fuseCandidates` 三个评测口子不受降级影响，照旧给单边对照 |
 | **`RagReferenceService.java`** | 向量检索的底层封装（DB 层 + Java 层二次过滤，阈值由 `vector-floor` 传入）、上下文组装、System Prompt 构建（医疗合规约束）、引用来源提取与格式化 |
 | **`PhiDesensitizationService.java`** | PHI 隐私脱敏，覆盖身份证 / 手机号 / 病历号 / 出生日期 / 银行卡号，脱敏 + 审计一体化 |
-| `InventoryService.java` | `@Tool` 函数：耗材库存查询（AI 自动调用） |
+| `InventoryService.java` | `@Tool` 函数：耗材库存查询（AI 自动调用）。返回文字三态（有货 / 未登记 / 查询不可用），`EmptyResultDataAccessException` 和其余 `DataAccessException` 分开处理，不再一律返回 0 |
 | **`EvaluationService.java`** | 医疗测试集评估服务，自动运行测试用例，4 维度量化评估（准确性 / 引用 / 幻觉 / 合规），生成评估报告 |
 | **`EvaluationController.java`** | 评估接口，`/evaluation/run` 返回 JSON 报告，`/evaluation/summary` 返回纯文本摘要 |
 | **`MedicalTestSet.java`** | 医疗测试集，61 题（58 道库内可答题 + 3 道超纲负样本）覆盖事实查询 / 综合分析 / 口语查询 / 幻觉抑制 / 合规测试；每道可答题带 `答案块标注`（`文件名#chunk_index`，用 `/bm25/locate` 逐字定位得到），判分靠它判定「答没答到对应的原文」 |
@@ -623,7 +623,7 @@ A：System Prompt 已加入约束"使用纯文本回答，不要使用 Markdown 
 | 多轮对话上下文 | 引入对话历史管理，支持追问、澄清和多轮上下文连贯对话 |
 | 流式响应（SSE） | 将 `/chat` 接口改造为 Server-Sent Events 流式输出，提升用户等待体验 |
 | Java 层 Markdown 清洗 | 在答案返回前加正则，彻底去除 `**` / `*` / `#` 等 Markdown 残留 |
-| 单元测试与集成测试 | 判分口径 + 检索模式收口已有 45 条纯逻辑单测（`src/test/java/org/example/`，不连库不打模型）；核心链路（OCR 兜底、Tool Call 路由、向量检索、PHI 脱敏）仍缺 |
+| 单元测试与集成测试 | 判分口径 + 检索模式收口 + 库存工具返回值已有 50 条纯逻辑单测（`src/test/java/org/example/`，不连库不打模型）；核心链路（OCR 兜底、Tool Call 路由本身、向量检索、PHI 脱敏）仍缺 |
 | 多格式文档支持 | 扩展对 Word、Markdown、Excel 等非 PDF 格式的解析与入库 |
 | 多模型路由 | 根据问题类型自动选择最优大模型（简单问答用 qwen-turbo，复杂推理用 qwen-max） |
 | 权限与审计 | 接入企业级 RBAC 权限控制，记录所有问答操作的审计日志 |

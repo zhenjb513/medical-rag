@@ -32,6 +32,14 @@ public class ChatController {
     private final org.example.service.HybridRetrievalService hybridRetrievalService;
     private final ObjectMapper jsonMapper = new ObjectMapper().enable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);
 
+    /**
+     * 给模型的召回块数（相邻块扩展之前的名额）。默认 8 = 改造前的写死值，行为不变。
+     * 58 题实测：重排后取 8 块、再扩展至 16 块时答案块 Hit@8 已 96.6%（README 检索级基线），
+     * 继续加大只是撑上下文，所以留成可配而不改默认。
+     */
+    @org.springframework.beans.factory.annotation.Value("${app.retrieval.chat-top-k:8}")
+    private int chatTopK = 8;
+
     public ChatController(ChatClient.Builder chatClientBuilder,
                           InventoryService inventoryService,
                           VectorStore vectorStore,
@@ -48,18 +56,8 @@ public class ChatController {
         this.ragReferenceService = ragReferenceService;
         this.hybridRetrievalService = hybridRetrievalService;
 
-        //        boolean vectorStoreReady = true;
-        //        if (applicationContext.containsBean("pgVectorSchemaInitializer")) {
-        //            PgVectorSchemaInitializer init = applicationContext.getBean(PgVectorSchemaInitializer.class);
-        //            vectorStoreReady = init.isReady();
-        //        }
-        //
-        //        ChatClient.Builder builder = chatClientBuilder;
-        //        if (Objects.nonNull(vectorStore) && vectorStoreReady) {
-        //            builder = builder.defaultAdvisors(QuestionAnswerAdvisor.builder(vectorStore).build());
-        //        }
-        //注意:这里不在使用QuestionAnswerAdvisor，改为手动检索(ragReferenceService)
-        //因为手动检索可以精确控制引用溯源和System prompt
+        // 这里不用 QuestionAnswerAdvisor，改为手动检索（ragReferenceService / HybridRetrievalService）：
+        // Advisor 会把阈值和上下文组装都吞进去，手动链路才能精确控制引用溯源、System Prompt 和可答性闸门。
         this.chatClient = chatClientBuilder.build();
     }
 
@@ -77,9 +75,10 @@ public class ChatController {
         String sanitizedMessage = phiDesensitizationService.desensitize(message);
         boolean hasPhi = phiDesensitizationService.containsPhi(message);
 
-        // 2.检索：下限阈值统一由 app.retrieval 配置决定（vector-floor 取数下限 + answer-floor 可答性闸门）。
+        // 2.检索：下限阈值统一由 app.retrieval 配置决定（vector-floor 取数下限 + answer-floor 可答性闸门），
+        //    召回块数由 app.retrieval.chat-top-k 决定。
         //    这里不再传 0.65：实测那道逐条阈值会把正确题的候选从 20 条砍到 2 条，却照样放行超纲问题。
-        List<Document> docs = hybridRetrievalService.search(sanitizedMessage, 8, null);
+        List<Document> docs = hybridRetrievalService.search(sanitizedMessage, chatTopK, null);
         if (hasPhi) {
             System.out.println("[PHI脱敏] 监测到敏感信息，原始: \"" + message + "\"  脱敏后: \"" + sanitizedMessage + "\"");
         }

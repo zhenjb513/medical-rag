@@ -92,14 +92,14 @@ public class LangChain4jChatController {
         }
 
         /**
-         * 查询指定医疗耗材的当前库存数量。
+         * 查询指定医疗耗材的当前库存。
          * 当用户询问某个耗材还有多少库存、够不够用时使用此工具。
          *
          * @param consumableName 耗材的精确名称，例如：胃镜活检钳、一次性手套、注射器
-         * @return 当前库存数量（-1 表示该耗材不存在）
+         * @return 一句话结论：有库存报数量；库里没登记这个耗材会明说；查询失败会说「库存系统暂时不可用」
          */
         @Tool("查询指定医疗耗材的当前库存数量。当用户询问某个耗材还有多少库存、够不够用时使用此工具。")
-        public int queryConsumableStock(String consumableName) {
+        public String queryConsumableStock(String consumableName) {
             return delegate.queryConsumableStock(consumableName);
         }
     }
@@ -139,10 +139,10 @@ public class LangChain4jChatController {
     // ---- 场景 5：单工具 —— 库存查询 ----
     interface InventoryQueryAssistant {
         @SystemMessage("""
-                你是一个库存查询助手。调用工具查询结果后：
-                - 库存 > 0：直接告知数量
-                - 库存 = 0：提示缺货，建议联系采购
-                - 如果工具返回 -1：说明该耗材不存在或未录入系统
+                你是一个库存查询助手。工具返回的是一句话结论，照它说，不要自己猜数字：
+                - 返回「当前库存 N 件」：直接告知数量
+                - 返回「没有登记该耗材」：说明这个耗材未录入系统，不要说成缺货、也不要建议采购
+                - 返回「库存系统暂时不可用」：告诉用户稍后再试，不要说成缺货或库存为 0
                 """)
         String chat(String message);
     }
