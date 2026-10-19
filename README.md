@@ -25,7 +25,7 @@ blockquote { font-size: 1.05em; }
 | 🤖 **大模型对话** | 阿里云百炼 `qwen-plus`，通过 `ChatClient` API 流式调用 |
 | 🔌 **Function Call（工具调用）** | 基于 `@Tool` 注解，AI 可实时查询耗材库存（MySQL `consumables` 表） |
 | 📚 **RAG 检索增强（手动模式）** | 弃用 QuestionAnswerAdvisor，改为手动控制检索、引用溯源、System Prompt（医疗合规约束） |
-| 🎯 **可答性闸门** | 向量通道下限 `vector-floor: 0.45` 只做粗筛；能不能答由 `answer-floor: 0.60` 判**向量第一名**的余弦，不够就整批不给上下文。逐条 0.65 那套已废弃，原因见「检索闸门」一节 |
+| 🎯 **可答性闸门** | 向量通道下限 `vector-floor: 0.45` 只做粗筛；能不能答由 `answer-floor: 0.60` 判**向量第一名**的余弦，不够就整批不给上下文。逐条 0.65 那套已废弃，原因见「检索闸门」一节。闸门要的是余弦，所以纯关键词 `mode=bm25` 不作为生产模式（自动降级成 `hybrid`，评测口子照旧） |
 | 🔐 **PHI 隐私脱敏** | 身份证 / 手机号 / 病历号 / 出生日期 / 银行卡号 正则脱敏，合规必备 |
 | 📄 **PDF 文本提取（4 级兜底）** | P1 标准提取 → P2 参数调整 → P3 暴力流扫 → P4 Tesseract OCR，纯图片扫描件也能识别 |
 | 🧪 **内容质量 QC + 乱码救回** | 检测 U+FFFD(�) / CJK 占比 / 控制字符，乱码时自动启动 OCR 重扫救回 |
@@ -212,7 +212,7 @@ mvn spring-boot:run -Dfile.encoding=UTF-8 "-Dspring-boot.run.jvmArguments=-Dfile
 mvn -DskipTests package
 java -Dfile.encoding=UTF-8 -jar target/demoAI-1.0-SNAPSHOT.jar
 
-# 判分口径回归：40 条纯逻辑单测，不连库、不打模型、几秒钟跑完
+# 判分口径 + 检索模式回归：45 条纯逻辑单测，不连库、不打模型、几秒钟跑完
 # （口径改动最容易「改了判分器没改提示词」这类两边漂移，靠这组测试兜住；见下面「📊 评测口径」）
 mvn test
 ```
@@ -354,7 +354,7 @@ mvn test
 
 # 🎯 检索闸门：现在到底靠哪几个数把关
 
-**已废弃的做法**：早先按「每条相似度低于 0.65 就丢掉」把关，实测证明是错的——它把「每日食盐摄入量」这类**正常题**的 20 条候选砍到只剩 2 条，却照样放行超纲的火星题（见 `HybridRetrievalService.java:75`、`ChatController.java:81` 的注释）。所以 `text-embedding-v3` 的分数不能拿一个逐条阈值去切。
+**已废弃的做法**：早先按「每条相似度低于 0.65 就丢掉」把关，实测证明是错的——它把「每日食盐摄入量」这类**正常题**的 20 条候选砍到只剩 2 条，却照样放行超纲的火星题（见 `HybridRetrievalService` 里 `answer-floor` 字段的注释、`ChatController.chatWithTrace` 第 2 步的注释）。所以 `text-embedding-v3` 的分数不能拿一个逐条阈值去切。
 
 **现行三道闸门**（`src/main/resources/application.yml`）：
 
@@ -363,6 +363,8 @@ mvn test
 | 向量通道下限 | `vector-floor` | 0.45 | 只是把明显不挨边的候选挡在融合前。正常题 top1 落在 0.614~0.881，真无关的问题只有 0.39~0.44（Java、电影票房），0.45 足够 |
 | 可答性闸门 | `answer-floor` | 0.60 | **只看向量通道第一名**的余弦，不够就把 16 块上下文全丢掉（返回「无法回答」）。超纲题实测：肺癌手术 0.542、脑瘤 0.568、Java 0.439、电影票房 0.388，全部 < 0.60 |
 | 重排 | `rerank-enabled` + `rerank-window` | true / 20 | gte-rerank-v2 只负责**排序**，分数不参与可答性判定。实测答对的题重排 top1 也能只有 0.198，而火星题 0.194，两边搅在一起，拿它当判据必错 |
+
+⚠️ **闸门只认余弦，所以纯关键词通道不能当生产模式用**：`app.retrieval.mode` 配成 `bm25` 时启动会打 `[检索模式] ⚠️` 警告并自动降级成 `hybrid`（BM25 索引不可用则降成 `vector`），`/chat` 与 `/evaluation/retrieve` 的日志会把「配置值」和「实际执行值」两个都打出来。原因：BM25 命中不带 score，`hasEvidence()` 在它上面恒等于全放行；用关键词覆盖率替代也分不开（火星题 60% vs 口语题 25~50%，`scratch/termcoverage.out`）。要看纯关键词的效果，用零调用的评测口子 `/evaluation/recall?mode=bm25`，那条路不经过 `search()`、不受影响。降级表由 `src/test` 的 `RetrievalModeGuardTest` 钉住。
 
 ⚠️ **已知拦不住的一类**：超纲但字面蹭得到医学词的题。火星题「火星上有没有心血管病防治指南」向量 top1 = 0.657 > 0.60（`scratch/g9_fix_noexp.txt` 域外对照段；`application.yml` 注释记的是另一轮的 0.660），照样放行，检索侧没有任何区分信号——只能在生成期加校验，属未解项。
 
@@ -374,7 +376,7 @@ mvn test
 
 | 层次 | 接口 | 衡量什么 | 调用 |
 |---|---|---|---|
-| 检索级 | `/evaluation/recall?mode=vector\|bm25\|hybrid\|rerank&expand=` | 考卷标注的答案块**排第几名**（Hit@K / MRR） | `mode=bm25` 零调用；`vector`/`hybrid` 每题 1 次向量化；`rerank` 每题 1 次向量化 + 1 次重排 |
+| 检索级 | `/evaluation/recall?mode=vector\|bm25\|hybrid\|rerank&expand=` | 考卷标注的答案块**排第几名**（Hit@K / MRR） | `mode=bm25` 零调用（这个 `mode` 只是接口参数，和生产 `app.retrieval.mode` 不是一回事——生产配 bm25 会自动降级）；`vector`/`hybrid` 每题 1 次向量化；`rerank` 每题 1 次向量化 + 1 次重排 |
 | 端到端 | `/evaluation/run` | 最终答案文本过不过四维判定 | 每题 1 次向量化 +（过闸门的题）1 次重排 + 1 次生成 |
 
 现行生产配置（`application.yml` 的 `app.retrieval`）：`mode=hybrid` + `rerank-enabled=true` + `rerank-use-expanded-query=true`，候选窗口 20 → 重排截 8 → 相邻块扩展至 16，可答性闸门 `answer-floor: 0.60`。
@@ -450,7 +452,7 @@ mvn test
 | `Main.java` | **应用入口**：`@SpringBootApplication`，启动前强制全局 UTF-8 编码（修复 Windows 默认 GBK 导致的中文乱码），手动排除 `PgVectorStoreAutoConfiguration` 以接管 PgVector 建表流程 |
 | `RagInitializer.java` | **核心**：PDF 4 层提取策略（P1 标准提取 → P2 参数调整 → P3 暴力流扫 → P4 Tesseract OCR）、内容 QC 乱码检测、动态超时、**WatchService 目录热监听**（CREATE/MODIFY → waitFileStable → probeAlreadyIngested → ingestOnePdf）、增量入库去重、`TokenTextSplitter` 切片 + Embedding、诊断接口数据 |
 | `ChatController.java` | `/chat` 对话接口（PHI 脱敏 → 手动 RAG 检索 → System Prompt 组装 → ChatClient + Tool Call → 引用来源格式化）、`/rag/diag` 诊断接口 |
-| **`HybridRetrievalService.java`** | **`/chat` 实际走的检索链路**：向量通道（floor 0.45）+ BM25 加权 RRF 融合 → 取 20 候选送 gte-rerank-v2 重排 → 截 8 → 同名相邻块扩展至 16；`mode`、`rerank-enabled` 等开关全在 `application.yml` |
+| **`HybridRetrievalService.java`** | **`/chat` 实际走的检索链路**：向量通道（floor 0.45）+ BM25 加权 RRF 融合 → 取 20 候选送 gte-rerank-v2 重排 → 截 8 → 同名相邻块扩展至 16；`mode`、`rerank-enabled` 等开关全在 `application.yml`。`search()` 只走「闸门判得动」的通道，`mode=bm25` 在这里降级成 `hybrid`（`enforceGateCapable`）；`searchFused` / `searchReranked` / `fuseCandidates` 三个评测口子不受降级影响，照旧给单边对照 |
 | **`RagReferenceService.java`** | 向量检索的底层封装（DB 层 + Java 层二次过滤，阈值由 `vector-floor` 传入）、上下文组装、System Prompt 构建（医疗合规约束）、引用来源提取与格式化 |
 | **`PhiDesensitizationService.java`** | PHI 隐私脱敏，覆盖身份证 / 手机号 / 病历号 / 出生日期 / 银行卡号，脱敏 + 审计一体化 |
 | `InventoryService.java` | `@Tool` 函数：耗材库存查询（AI 自动调用） |
@@ -621,7 +623,7 @@ A：System Prompt 已加入约束"使用纯文本回答，不要使用 Markdown 
 | 多轮对话上下文 | 引入对话历史管理，支持追问、澄清和多轮上下文连贯对话 |
 | 流式响应（SSE） | 将 `/chat` 接口改造为 Server-Sent Events 流式输出，提升用户等待体验 |
 | Java 层 Markdown 清洗 | 在答案返回前加正则，彻底去除 `**` / `*` / `#` 等 Markdown 残留 |
-| 单元测试与集成测试 | 判分口径已有 40 条纯逻辑单测（`src/test/java/org/example/`，不连库不打模型）；核心链路（OCR 兜底、Tool Call 路由、向量检索、PHI 脱敏）仍缺 |
+| 单元测试与集成测试 | 判分口径 + 检索模式收口已有 45 条纯逻辑单测（`src/test/java/org/example/`，不连库不打模型）；核心链路（OCR 兜底、Tool Call 路由、向量检索、PHI 脱敏）仍缺 |
 | 多格式文档支持 | 扩展对 Word、Markdown、Excel 等非 PDF 格式的解析与入库 |
 | 多模型路由 | 根据问题类型自动选择最优大模型（简单问答用 qwen-turbo，复杂推理用 qwen-max） |
 | 权限与审计 | 接入企业级 RBAC 权限控制，记录所有问答操作的审计日志 |

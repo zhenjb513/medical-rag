@@ -1,5 +1,6 @@
 package org.example.service;
 
+import jakarta.annotation.PostConstruct;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -17,6 +18,10 @@ import java.util.Map;
  * 所以只比较「名次」——RRF：score = Σ 1/(rrfK + rank)，谁排得前谁进，量纲不参与。
  * <p>
  * mode=vector 时整条链路直接委托给原来的向量检索，行为与改造前一致。
+ * <p>
+ * mode=bm25 只是评测通道，生产入口（/chat、/evaluation/retrieve）拿不到它：可答性闸门要的是
+ * 向量侧的余弦，纯关键词命中没有 score 可判（实测域外问题在 BM25 侧照样能拿 20 分，
+ * 用关键词覆盖率替代也分不开——火星题 60% vs 口语题 25~50%，见 scratch/termcoverage.out）。
  */
 @Service
 public class HybridRetrievalService {
@@ -25,6 +30,7 @@ public class HybridRetrievalService {
     private final Bm25IndexService bm25IndexService;
     private final RerankService rerankService;
 
+    /** app.retrieval.mode 的原始值；实际执行哪个模式看 effectiveMode()（配成 bm25 会降级成 hybrid） */
     @Value("${app.retrieval.mode:vector}")
     private String mode = "vector";
 
@@ -99,20 +105,49 @@ public class HybridRetrievalService {
         this.rerankService = rerankService;
     }
 
+    /** 配置里的原始模式（app.retrieval.mode）。生产实际执行哪个模式看 {@link #effectiveMode()}。 */
     public String getMode() { return mode == null ? "vector" : mode; }
+
+    /** 本次真正会执行的模式：配置成 bm25 时这里是 hybrid。 */
+    public String effectiveMode() {
+        return enforceGateCapable(getMode(), bm25IndexService.isAvailable());
+    }
+
+    /** 打印用：配置值与实际执行值不一致时两个都写出来，别让日志看着像生产在跑纯关键词。 */
+    public String describeMode() {
+        String raw = getMode();
+        String eff = effectiveMode();
+        return raw.equalsIgnoreCase(eff) ? eff : eff + "（配置=" + raw + "，已降级）";
+    }
+
+    @PostConstruct
+    void warnUngatedModeConfig() {
+        if (getMode().equalsIgnoreCase("bm25")) {
+            System.out.println("[检索模式] ⚠️ app.retrieval.mode=bm25 已降级为 " + effectiveMode()
+                    + "：纯关键词通道没有余弦，可答性闸门判不了，生产问答不允许只走关键词。"
+                    + "需要 bm25 单边对照请用零调用口子 /evaluation/recall?mode=bm25。");
+        }
+    }
+
+    /**
+     * 把「会被绕过闸门」的模式配置折算成实际可执行的模式（纯函数，单测直接查这张表）。
+     * <p>
+     * bm25 → hybrid：BM25 命中不带 score，hasEvidence() 在它上面恒等于「全放行」；
+     * BM25 索引不可用（没 PG）且配了非 vector → vector，跟改造前一样的退路。
+     */
+    static String enforceGateCapable(String configured, boolean bm25IndexAvailable) {
+        String m = configured == null ? "vector" : configured.toLowerCase();
+        if (!bm25IndexAvailable && !m.equals("vector")) return "vector";
+        if (m.equals("bm25")) return "hybrid";
+        return m;
+    }
 
     /**
      * @param threshold 向量通道的相似度下限，传 null 时用 app.retrieval.vector-floor
      */
     public List<Document> search(String query, int topK, Double threshold) {
-        String m = getMode().toLowerCase();
-        if (!bm25IndexService.isAvailable() && !m.equals("vector")) {
-            m = "vector";   // 没有 PG 就没有倒排表，退回向量
-        }
+        String m = enforceGateCapable(getMode(), bm25IndexService.isAvailable());
         switch (m) {
-            case "bm25" -> {
-                return fromHits(bm25IndexService.search(retrievalQuery(query), topK));
-            }
             case "hybrid" -> {
                 return hybrid(query, topK, true, rerankEnabled);
             }

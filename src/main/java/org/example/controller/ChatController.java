@@ -84,7 +84,7 @@ public class ChatController {
             System.out.println("[PHI脱敏] 监测到敏感信息，原始: \"" + message + "\"  脱敏后: \"" + sanitizedMessage + "\"");
         }
         System.out.println("[RAG检索] 问题: \"" + sanitizedMessage + "\"" + (hasPhi ? " (已脱敏)" : ""));
-        System.out.println("[RAG检索] 模式=" + hybridRetrievalService.getMode()
+        System.out.println("[RAG检索] 模式=" + hybridRetrievalService.describeMode()
                 + "  召回文档数量: " + docs.size());
         for (int i = 0; i < docs.size(); i++) {
             Document doc = docs.get(i);

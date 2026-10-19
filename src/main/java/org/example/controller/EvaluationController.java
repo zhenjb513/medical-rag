@@ -44,7 +44,7 @@ public class EvaluationController {
         long start = System.currentTimeMillis();
         var docs = hybridRetrievalService.search(q, topK, null);
         StringBuilder sb = new StringBuilder();
-        sb.append("mode=").append(hybridRetrievalService.getMode())
+        sb.append("mode=").append(hybridRetrievalService.describeMode())
                 .append("  请求topK=").append(topK).append("  实际返回=").append(docs.size())
                 .append("  重排查询串=").append(hybridRetrievalService.isRerankUseExpandedQuery() ? "扩展后" : "原话")
                 .append("  耗时").append(System.currentTimeMillis() - start).append("ms\n");

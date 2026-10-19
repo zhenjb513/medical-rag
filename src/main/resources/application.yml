@@ -66,8 +66,10 @@ app:
     page-timeout-seconds: 120
 
   retrieval:
-    # 检索模式：vector=纯向量（改造前的行为）；bm25=纯关键词；hybrid=向量+BM25 做 RRF 融合
+    # 检索模式：vector=纯向量（改造前的行为）；hybrid=向量+BM25 做 RRF 融合
     # hybrid 是否再叠一层重排由下面的 rerank-enabled 决定（评测接口另有 mode=rerank 可强制开启对比）
+    # bm25 在这里配了会自动降级成 hybrid 并打启动警告：纯关键词命中没有余弦，可答性闸门判不了，
+    # 生产问答不允许只走关键词；要看 bm25 单边用零调用的 /evaluation/recall?mode=bm25
     # 58 题 ground-truth 实测后切到 hybrid+重排：答案块@1 从 39.7% 提到 58.6%，MRR 0.543→0.691
     mode: hybrid
     # 每一路先取多少条参与融合。29 题 ground-truth 实测：probe-size=8 比 20 在 top8 口径上
