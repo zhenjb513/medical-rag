@@ -30,7 +30,7 @@ public class HybridRetrievalService {
     private final Bm25IndexService bm25IndexService;
     private final RerankService rerankService;
 
-    /** app.retrieval.mode 的原始值；实际执行哪个模式看 effectiveMode()（配成 bm25 会降级成 hybrid） */
+    /** app.retrieval.mode 的原始值；实际执行哪个通道看 {@link #executedMode(String, boolean)}（配成 bm25 会降级成 hybrid） */
     @Value("${app.retrieval.mode:vector}")
     private String mode = "vector";
 
@@ -105,7 +105,7 @@ public class HybridRetrievalService {
         this.rerankService = rerankService;
     }
 
-    /** 配置里的原始模式（app.retrieval.mode）。生产实际执行哪个模式看 {@link #effectiveMode()}。 */
+    /** 配置里的原始模式（app.retrieval.mode）。生产实际执行哪个通道看 {@link #executedMode(String, boolean)}。 */
     public String getMode() { return mode == null ? "vector" : mode; }
 
     /** 本次真正会执行的模式：配置成 bm25 时这里是 hybrid。 */
@@ -113,20 +113,52 @@ public class HybridRetrievalService {
         return enforceGateCapable(getMode(), bm25IndexService.isAvailable());
     }
 
-    /** 打印用：配置值与实际执行值不一致时两个都写出来，别让日志看着像生产在跑纯关键词。 */
+    /**
+     * search() 里这次究竟走哪条通道（纯函数）。
+     * <p>
+     * 和 {@link #effectiveMode()} 的差别只在不认识的写法上：enforceGateCapable 对它原样透传，
+     * 但 {@link #search} 的 switch 只有 hybrid 一个 case，其余全落 default 分支＝向量通道。
+     * 所以配成 rerank、或把 hybrid 拼错时，真正执行的是 vector。
+     */
+    static String executedMode(String configured, boolean bm25IndexAvailable) {
+        return enforceGateCapable(configured, bm25IndexAvailable).equals("hybrid") ? "hybrid" : "vector";
+    }
+
+    /** 打印用：配置值与实际执行值不一致时两个都写出来，并说明原因，别让日志替错误配置背书。 */
     public String describeMode() {
         String raw = getMode();
-        String eff = effectiveMode();
-        return raw.equalsIgnoreCase(eff) ? eff : eff + "（配置=" + raw + "，已降级）";
+        String run = executedMode(raw, bm25IndexService.isAvailable());
+        if (raw.equalsIgnoreCase(run)) return run;
+        String why = unrecognizedModeWarning(raw) != null ? "，模式名不认识" : "，已降级";
+        return run + "（配置=" + raw + why + "）";
     }
 
     @PostConstruct
     void warnUngatedModeConfig() {
+        String unrecognized = unrecognizedModeWarning(getMode());
+        if (unrecognized != null) {
+            System.out.println(unrecognized);
+        }
         if (getMode().equalsIgnoreCase("bm25")) {
             System.out.println("[检索模式] ⚠️ app.retrieval.mode=bm25 已降级为 " + effectiveMode()
                     + "：纯关键词通道没有余弦，可答性闸门判不了，生产问答不允许只走关键词。"
                     + "需要 bm25 单边对照请用零调用口子 /evaluation/recall?mode=bm25。");
         }
+    }
+
+    /**
+     * 配了认不出来的模式名时给一句话，返回 {@code null} 表示不用警告。
+     * <p>
+     * 为什么要有这条：{@link #enforceGateCapable} 把不认识的写法原样透传，{@link #search} 的 switch
+     * 只剩 default 分支接住它，于是**静默按 vector 跑**——把 hybrid 拼错、或把评测专用的 rerank
+     * 当生产模式写进配置，检索照样出结果，谁都不报错，只有分数和降级行为悄悄变了。
+     * 本次改造只加提示和 {@link #executedMode()} 这个如实标签，执行路径一个字节没动（仍然是 vector，和改造前一致）。
+     */
+    static String unrecognizedModeWarning(String configured) {
+        String m = configured == null ? "vector" : configured.toLowerCase();
+        if (m.equals("vector") || m.equals("hybrid") || m.equals("bm25")) return null;
+        return "[检索模式] ⚠️ app.retrieval.mode=" + configured + " 不是可识别的模式（生产只有 vector / hybrid；"
+                + "bm25、rerank 是评测口子专用），本次实际按 vector 执行，这份配置等于没生效。";
     }
 
     /**

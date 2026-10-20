@@ -31,6 +31,7 @@ public class ChatController {
     private final org.example.service.PhiAuditService phiAuditService;
     private final RagReferenceService ragReferenceService;
     private final org.example.service.HybridRetrievalService hybridRetrievalService;
+    private final org.example.service.Bm25IndexService bm25IndexService;
     private final ObjectMapper jsonMapper = new ObjectMapper().enable(com.fasterxml.jackson.databind.SerializationFeature.INDENT_OUTPUT);
 
     /**
@@ -49,6 +50,7 @@ public class ChatController {
                           org.example.service.PhiAuditService phiAuditService,
                           RagReferenceService ragReferenceService,
                           org.example.service.HybridRetrievalService hybridRetrievalService,
+                          org.example.service.Bm25IndexService bm25IndexService,
                           @Autowired(required = false) RagInitializer ragInitializer) {
         this.inventoryService = inventoryService;
         this.applicationContext = applicationContext;
@@ -58,6 +60,7 @@ public class ChatController {
         this.phiAuditService = phiAuditService;
         this.ragReferenceService = ragReferenceService;
         this.hybridRetrievalService = hybridRetrievalService;
+        this.bm25IndexService = bm25IndexService;
 
         // 这里不用 QuestionAnswerAdvisor，改为手动检索（ragReferenceService / HybridRetrievalService）：
         // Advisor 会把阈值和上下文组装都吞进去，手动链路才能精确控制引用溯源、System Prompt 和可答性闸门。
@@ -94,9 +97,12 @@ public class ChatController {
             Document doc = docs.get(i);
             double score = doc.getScore() != null ? doc.getScore() : -1.0;
             String source = extractFileName(doc);
+            Object chunkIndex = doc.getMetadata() == null ? null : doc.getMetadata().get("chunk_index");
             String preview = doc.getText() == null ? "" : doc.getText().replaceAll("[\\r\\n\\t]+", " ").trim();
             if (preview.length() > 120) preview = preview.substring(0, 120) + "...";
-            System.out.printf("[RAG检索]   #%d  score=%.4f  source=%s  预览: %s%n", i + 1, score, source, preview);
+            // chunk= 和引用行、考卷答案块、/rag/chunk 是同一套 chunk_index，日志里就能直接对上是哪一块
+            System.out.printf("[RAG检索]   #%d  score=%.4f  source=%s  chunk=%s  预览: %s%n",
+                    i + 1, score, source, chunkIndex == null ? "<无>" : chunkIndex, preview);
         }
 
         //3.组装上下文和带医疗合规约束的System prompt
@@ -152,6 +158,35 @@ public class ChatController {
             }
         }
         return "<unknown>";
+    }
+
+    /**
+     * 引用溯源：按「文件名 + chunk_index」回读库里那一块的原文，并顺带给出它在 PDF 里的物理页。
+     * 只读，一次库查询 + 本地读 PDF，不调大模型、不写任何东西。
+     * 答案末尾的【引用来源】现在给到块号，这个口子负责把块号兑现成正文和页码，人才真的能核对。
+     */
+    @GetMapping(value = "/rag/chunk", produces = "text/plain; charset=utf-8")
+    public String ragChunk(@RequestParam String file, @RequestParam int chunk) {
+        if (!bm25IndexService.isAvailable()) {
+            return "没连上 PgVector：SimpleVectorStore 模式下块号没有可回读的落库位置，引用只能停在文件名。";
+        }
+        List<org.example.service.Bm25IndexService.StoredChunk> rows = bm25IndexService.readChunk(file, chunk, 5);
+        if (rows.isEmpty()) {
+            return "库里查不到 " + file + "#" + chunk
+                    + "（file 用不带路径的文件名，chunk 是入库时的 chunk_index，从 0 开始）";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (var row : rows) {
+            String text = row.content() == null ? "" : row.content();
+            // 页码是现算的：库里从来没存过页，靠按页重抽一遍再对文字；页上印的页码也从这些行里认（见 PdfPageLocator）
+            org.example.service.PdfPageLocator.PageSpan span =
+                    org.example.service.PdfPageLocator.locate(new java.io.File(row.source() == null ? "" : row.source()), text);
+            sb.append("文件=").append(row.fileName()).append("  块号=").append(row.chunkIndex())
+                    .append("  source=").append(row.source()).append("  正文字符=").append(text.length()).append('\n')
+                    .append("页码=").append(org.example.service.PdfPageLocator.describe(span)).append('\n')
+                    .append("---- 正文 ----\n").append(text).append("\n\n");
+        }
+        return sb.toString();
     }
 
     /**

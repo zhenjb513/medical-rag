@@ -203,6 +203,34 @@ public class Bm25IndexService {
                 args.toArray());
     }
 
+    /** 库里的一块正文：引用溯源时按块号回读原文用。 */
+    public record StoredChunk(String source, String fileName, Integer chunkIndex, String content) {}
+
+    /**
+     * 按「文件名 + chunk_index」从 vector_store 取回原文块。只读，不碰倒排表。
+     * <p>
+     * 引用列表里给了块号却读不到那一块，溯源只做了一半，所以这个口子跟着 {@code /rag/chunk} 一起给。
+     * 放在本类是因为它已经是「用 pgVectorJdbcTemplate 直查 vector_store」的地方（neighborChunks、locate 同理），
+     * 换到别处就得再抄一遍可选数据源的接法。
+     */
+    public List<StoredChunk> readChunk(String fileName, int chunkIndex, int limit) {
+        requirePg();
+        // source 在库里是带盘符的路径（实测 D:\ai-docs\02-WHO成人高血压药物治疗指南2021.pdf），
+        // 先把反斜杠统一成正斜杠再按 basename 兜底匹配，chr(92) 是为避免 SQL 字面量里的转义歧义。
+        String likeName = fileName.replace("%", "\\%").replace("_", "\\_");
+        String sql = "SELECT metadata->>'source' AS src,"
+                + " coalesce(metadata->>'file_name', metadata->>'source') AS fname,"
+                + " (metadata->>'chunk_index')::int AS ci, content FROM " + vectorTable()
+                + " WHERE (metadata->>'chunk_index')::int = ?"
+                + "   AND ( coalesce(metadata->>'file_name', metadata->>'source') = ?"
+                + "      OR metadata->>'source' = ?"
+                + "      OR replace(metadata->>'source', chr(92), '/') LIKE ? )"
+                + " ORDER BY fname, ci LIMIT ?";
+        return pg.query(sql, (rs, i) -> new StoredChunk(rs.getString(1), rs.getString(2),
+                        rs.getObject(3) == null ? null : rs.getInt(3), rs.getString(4)),
+                chunkIndex, fileName, fileName, "%/" + likeName, Math.max(1, limit));
+    }
+
     /** 某个词在库里出现了多少次（判断"库里到底有没有这个词"，用来解释召回失败）。 */
     public int documentFrequency(String term) {
         requirePg();

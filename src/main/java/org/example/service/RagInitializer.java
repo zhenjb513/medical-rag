@@ -881,8 +881,11 @@ public class RagInitializer {
     /**
      * 打开 PDF（兼容 PDFBox 3.0.x / 3.1.x）。仅用 Loader.loadPDF 系列稳定 API，
      * 内存/磁盘缓存策略由 static{} 块统一配置。对加密文档尝试放开权限位，便于抽取可见文字。
+     * <p>
+     * 包级可见（不是 private）是给 {@link PdfPageLocator} 复用的：页码定位必须走同一个开文件的路子，
+     * 否则加密文档在入库时抽得出、定位时抽不出，页码就会莫名其妙对不上。
      */
-    private static PDDocument openPdfLenient(File pdf, String password) throws IOException {
+    static PDDocument openPdfLenient(File pdf, String password) throws IOException {
         PDDocument doc = (password != null && !password.isEmpty())
                 ? Loader.loadPDF(pdf, password)
                 : Loader.loadPDF(pdf);

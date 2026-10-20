@@ -98,36 +98,117 @@ public class RagReferenceService {
     }
 
     /**
-     * 提取引用来源（去重），返回文件名列表
-     * 从Document的metadata中提取source/file_name/filename字段
-     * 去重并返回文件名列表
+     * 提取引用来源（按文件聚合到块级），返回可以直接展示的引用行。
+     * <p>
+     * 以前只回文件名：一份指南几百块，用户拿到「中国血脂管理指南2023年.pdf」根本没法核对
+     * 答案到底出自哪一段，「引用溯源」只是看着像。现在每行带本次真正送进模型的那几块的 chunk_index，
+     * 配合只读口子 {@code GET /rag/chunk?file=文件名&chunk=块号} 就能把那一块的正文、它在 PDF 里第几页、
+     * 以及那一页角上印的页码读出来（印码只在整份文件规律一致时才给，见 {@link PdfPageLocator}）。
+     * <p>
+     * 文件名仍排在每行最前：评测的引用判据是「预期文档名是否为答案文本的子串」
+     * （EvaluationService 第 375-387 行），在后面追加块号不影响它，98.4% 基线不用重测。
      */
     public List<String> extractReferences(List<Document> docs) {
+        List<String> references = new ArrayList<>();
+        for (Citation c : groupCitations(docs)) {
+            references.add(formatCitation(c));
+        }
+        return references;
+    }
+
+    /**
+     * 一条引用：去掉路径的文件名 + 该文件被送进模型的块号（升序去重）+ 有几个块查不到块号。
+     * chunk_index 是入库时的连续编号，和上下文里「【文档N】」那个展示序号不是一套序号，别混。
+     */
+    record Citation(String fileName, List<Integer> chunks, int missingChunkIndex) {}
+
+    /** 按文件聚合引用块（纯逻辑，只读 Document 的字段，不连库不打模型）。 */
+    static List<Citation> groupCitations(List<Document> docs) {
         if (docs == null || docs.isEmpty()) {
-            return Collections.emptyList();
+            return List.of();
         }
-        Set<String> references = new LinkedHashSet<>();
+        Map<String, TreeSet<Integer>> byFile = new LinkedHashMap<>();
+        Map<String, Integer> missingByFile = new LinkedHashMap<>();
         for (Document doc : docs) {
-            Map<String, Object> metadata = doc.getMetadata();
-            String source = null;
-            //尝试多种(metadata中可能的键名)方式提取文件名
-            if (metadata.containsKey("source")) {
-                source = (String) metadata.get("source");
-            } else if (metadata.containsKey("file_name")) {
-                source = (String) metadata.get("file_name");
-            } else if (metadata.containsKey("filename")) {
-                source = (String) metadata.get("filename");
+            Map<String, Object> metadata = doc.getMetadata() == null ? Map.of() : doc.getMetadata();
+            String source = firstNonEmpty(metadata.get("source"), metadata.get("file_name"), metadata.get("filename"));
+            if (source == null) {
+                continue;
             }
-            if (source != null && !source.isEmpty()) {
-                //提取文件名（去掉路径前缀）
-                int lastSlash = Math.max(source.lastIndexOf('/'), source.lastIndexOf('\\'));
-                if (lastSlash > 0 && lastSlash < source.length() - 1) {
-                    source = source.substring(lastSlash + 1);
-                }
-                references.add(source);
+            String fileName = stripPath(source);
+            Integer chunkIndex = parseChunkIndex(metadata.get("chunk_index"));
+            if (chunkIndex == null) {
+                missingByFile.merge(fileName, 1, Integer::sum);
+                byFile.computeIfAbsent(fileName, k -> new TreeSet<>());
+            } else {
+                byFile.computeIfAbsent(fileName, k -> new TreeSet<>()).add(chunkIndex);
             }
         }
-        return new ArrayList<>(references);
+        List<Citation> citations = new ArrayList<>();
+        for (Map.Entry<String, TreeSet<Integer>> e : byFile.entrySet()) {
+            citations.add(new Citation(e.getKey(), new ArrayList<>(e.getValue()),
+                    missingByFile.getOrDefault(e.getKey(), 0)));
+        }
+        return citations;
+    }
+
+    /**
+     * 引用行的展示文本。三种形态：
+     * 「x.pdf（块号 3、4、12）」／「x.pdf（块号 3、4；另有 2 块未记录块号）」／「x.pdf（本批块未记录块号）」。
+     * 最后一行是退路：SimpleVectorStore 模式下 metadata 里没有 chunk_index，宁可承认查不到也不编造编号。
+     */
+    static String formatCitation(Citation c) {
+        StringBuilder sb = new StringBuilder(c.fileName());
+        if (c.chunks().isEmpty()) {
+            return c.missingChunkIndex() > 0 ? sb.append("（本批块未记录块号）").toString() : sb.toString();
+        }
+        StringJoiner numbers = new StringJoiner("、");
+        for (Integer ci : c.chunks()) {
+            numbers.add(String.valueOf(ci));
+        }
+        sb.append("（块号 ").append(numbers);
+        if (c.missingChunkIndex() > 0) {
+            sb.append("；另有 ").append(c.missingChunkIndex()).append(" 块未记录块号");
+        }
+        return sb.append("）").toString();
+    }
+
+    /** metadata 里的块号可能是 Integer、Long，也可能是 JSON 里的字符串；认不出来就返回 null。 */
+    static Integer parseChunkIndex(Object raw) {
+        if (raw == null) {
+            return null;
+        }
+        if (raw instanceof Number n) {
+            return n.intValue();
+        }
+        try {
+            return Integer.valueOf(String.valueOf(raw).trim());
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    /**
+     * 按顺序取第一个有值的键（同一份文件可能写在 source / file_name / filename 任一键上）。
+     * 取 {@code String.valueOf} 而不是强转：和 {@code ChatController.extractFileName}、
+     * {@code EvaluationService.chunkKeyOf} 用同一套取法，日志里的文件名、引用行的文件名、判分用的块主键三者必须一致。
+     */
+    private static String firstNonEmpty(Object... values) {
+        for (Object v : values) {
+            if (v == null) {
+                continue;
+            }
+            String s = String.valueOf(v);
+            if (!s.isEmpty()) {
+                return s;
+            }
+        }
+        return null;
+    }
+
+    private static String stripPath(String source) {
+        int lastSlash = Math.max(source.lastIndexOf('/'), source.lastIndexOf('\\'));
+        return lastSlash > 0 && lastSlash < source.length() - 1 ? source.substring(lastSlash + 1) : source;
     }
 
     /**
@@ -153,7 +234,7 @@ public class RagReferenceService {
 
     /**
      * 格式化引用来源（添加序号）,附加到答案末尾
-     * 组装引用来源文本，将提取到的文件名列表拼接成引用来源
+     * 组装引用来源文本，将提取到的引用行拼接成引用来源
      */
     public String formatReferences(List<String> references) {
         if (references == null || references.isEmpty()) {
@@ -161,7 +242,8 @@ public class RagReferenceService {
         }
         StringBuilder refs = new StringBuilder();
         refs.append("\n\n---\n");
-        refs.append("【引用来源】\n");
+        refs.append("【引用来源】（括号内是本次实际送入模型的文档块编号，即库里的 chunk_index；"
+                + "回读该块正文、它在 PDF 里的第几页和页上印的页码：GET /rag/chunk?file=文件名&chunk=块号）\n");
         for (int i = 0; i < references.size(); i++) {
             refs.append(i + 1).append(".").append(references.get(i)).append("\n");
         }
