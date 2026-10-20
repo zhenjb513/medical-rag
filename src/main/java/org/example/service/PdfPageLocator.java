@@ -68,8 +68,23 @@ public final class PdfPageLocator {
     public record PageSpan(boolean found, int startPage, int endPage, int pageCount,
                            int printedOffset, String printedNote, String reason) {}
 
-    /** 一份 PDF 读盘一次的结果：压平正文用来对文字，印码规律用来把物理页换算成书上那一页。 */
-    record Pages(List<String> pageFlat, int printedOffset, String printedNote, int detectedPages, int ambiguousPages) {}
+    /**
+     * 一份 PDF 读盘一次的结果：压平正文用来对文字，印码规律用来把物理页换算成书上那一页，
+     * 章节大纲是同一次扫描顺手认出来的（{@link SectionIndex}），省掉第二遍读盘。
+     */
+    record Pages(List<String> pageFlat, int printedOffset, String printedNote, int detectedPages, int ambiguousPages,
+                 SectionIndex.Outline outline) {}
+
+    /** 按页压平后拼成整篇：{@link #spanOf} 和 {@link SectionIndex} 用的是同一个下标坐标系（已压平的再压一遍不变）。 */
+    static String joined(List<String> pageFlat) {
+        StringBuilder sb = new StringBuilder();
+        if (pageFlat != null) {
+            for (String p : pageFlat) {
+                sb.append(flat(p));
+            }
+        }
+        return sb.toString();
+    }
 
     /** 纯逻辑那一半：给定每页压平的正文和一块文字，算它跨了哪几页（页号从 1 开始），顺带带上印码规律。 */
     static PageSpan spanOf(List<String> pageFlat, String chunkText, int printedOffset, String printedNote) {
@@ -135,12 +150,37 @@ public final class PdfPageLocator {
     }
 
     /**
+     * 块号 → 第几节。和 {@link #locate} 共用同一份按页扫描的结果（{@link #pagesCached}），
+     * 所以一次核对里页码和章节号是从同一遍正文里读出来的，不会各说各话。
+     */
+    public static SectionIndex.SectionSpan locateSection(File pdf, String chunkText) {
+        if (pdf == null || !pdf.isFile()) {
+            return SectionIndex.miss("本地读不到这份 PDF（库里的 source 指向的是当时那台机器的路径），章节号只能人工翻："
+                    + (pdf == null || pdf.getPath().isBlank() ? "<库里没记 source>" : pdf.getPath()),
+                    SectionIndex.Outline.NONE);
+        }
+        Pages pages;
+        try {
+            pages = pagesCached(pdf);
+        } catch (IOException | RuntimeException e) {
+            return SectionIndex.miss("这份 PDF 抽不动：" + e.getClass().getSimpleName()
+                    + (e.getMessage() == null ? "" : " " + e.getMessage()), SectionIndex.Outline.NONE);
+        }
+        return SectionIndex.sectionOf(pages.pageFlat(), pages.outline(), chunkText);
+    }
+
+    /**
      * 逐页抽取：默认参数的 {@link PDFTextStripper}（与入库 P1 路径同一套，否则压平后的串和整篇抽的不是一个串），
-     * 顺手用同一页的原文认印码——不额外再抽第二遍。
+     * 顺手用同一页的原文认印码和章节标题——不再额外抽第二遍。
+     *
+     * <p>标题的下标基准 {@code base} 就是这一页在压平整篇里的起始位置，和块文字用的坐标系天然一致，
+     * 所以章节归属和页码归属是同一次扫描的两个读数，不会出现两套说法。
      */
     static Pages load(File pdf) throws IOException {
         List<String> flatPages = new ArrayList<>();
         List<Set<Integer>> candidates = new ArrayList<>();
+        List<SectionIndex.Head> heads = new ArrayList<>();
+        int base = 0;
         try (PDDocument doc = RagInitializer.openPdfLenient(pdf, null)) {
             int pageCount = doc.getNumberOfPages();
             for (int i = 1; i <= pageCount; i++) {
@@ -150,13 +190,16 @@ public final class PdfPageLocator {
                 String text = RagInitializer.sanitizeExtractedText(stripper.getText(doc));
                 flatPages.add(flat(text));
                 candidates.add(printedCandidates(text));
+                heads.addAll(SectionIndex.pageHeads(text, base));
+                base += flat(text).length();
             }
         }
-        return withOffset(candidates, flatPages);
+        return withOffset(candidates, flatPages, heads);
     }
 
     /** 把每页的印码候选汇总成一个规律（见 {@link #printedOffsetOf}），装配成 {@link Pages}。 */
-    private static Pages withOffset(List<Set<Integer>> candidates, List<String> flatPages) {
+    private static Pages withOffset(List<Set<Integer>> candidates, List<String> flatPages,
+                                    List<SectionIndex.Head> heads) {
         int detected = 0;
         int ambiguous = 0;
         for (Set<Integer> c : candidates) {
@@ -168,7 +211,7 @@ public final class PdfPageLocator {
         }
         int offset = printedOffsetOf(candidates, flatPages.size());
         String note = offset == NO_OFFSET ? printedReason(candidates, flatPages.size(), detected) : null;
-        return new Pages(flatPages, offset, note, detected, ambiguous);
+        return new Pages(flatPages, offset, note, detected, ambiguous, SectionIndex.chain(heads));
     }
 
     /**
@@ -303,7 +346,7 @@ public final class PdfPageLocator {
     }
 
     /** 压掉所有空白：PDF 抽取会在中文字之间塞空格，不压会假阴性（与 {@code Bm25IndexService.flat} 同一口径）。 */
-    private static String flat(String s) {
+    static String flat(String s) {
         return s == null ? "" : s.replaceAll("\\s+", "");
     }
 

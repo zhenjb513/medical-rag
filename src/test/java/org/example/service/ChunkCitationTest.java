@@ -120,7 +120,7 @@ class ChunkCitationTest {
     void formatsNumberedBlock() {
         String text = SVC.formatReferences(SVC.extractReferences(List.of(doc(YJ, 5, "A"), doc(XZ, 3, "B"))));
         String expected = "\n\n---\n【引用来源】（括号内是本次实际送入模型的文档块编号，即库里的 chunk_index；"
-                + "回读该块正文、它在 PDF 里的第几页和页上印的页码：GET /rag/chunk?file=文件名&chunk=块号）\n"
+                + "回读该块正文、它在 PDF 里的第几页、页上印的页码和它归在哪一节：GET /rag/chunk?file=文件名&chunk=块号）\n"
                 + "1." + YJ + "（块号 5）\n"
                 + "2." + XZ + "（块号 3）\n";
         assertEquals(expected, text);

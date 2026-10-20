@@ -161,9 +161,9 @@ public class ChatController {
     }
 
     /**
-     * 引用溯源：按「文件名 + chunk_index」回读库里那一块的原文，并顺带给出它在 PDF 里的物理页。
+     * 引用溯源：按「文件名 + chunk_index」回读库里那一块的原文，并顺带给出它在 PDF 里的物理页和归在哪一节。
      * 只读，一次库查询 + 本地读 PDF，不调大模型、不写任何东西。
-     * 答案末尾的【引用来源】现在给到块号，这个口子负责把块号兑现成正文和页码，人才真的能核对。
+     * 答案末尾的【引用来源】现在给到块号，这个口子负责把块号兑现成正文、页码和章节号，人才真的能核对。
      */
     @GetMapping(value = "/rag/chunk", produces = "text/plain; charset=utf-8")
     public String ragChunk(@RequestParam String file, @RequestParam int chunk) {
@@ -178,12 +178,16 @@ public class ChatController {
         StringBuilder sb = new StringBuilder();
         for (var row : rows) {
             String text = row.content() == null ? "" : row.content();
+            java.io.File pdf = new java.io.File(row.source() == null ? "" : row.source());
             // 页码是现算的：库里从来没存过页，靠按页重抽一遍再对文字；页上印的页码也从这些行里认（见 PdfPageLocator）
-            org.example.service.PdfPageLocator.PageSpan span =
-                    org.example.service.PdfPageLocator.locate(new java.io.File(row.source() == null ? "" : row.source()), text);
+            org.example.service.PdfPageLocator.PageSpan span = org.example.service.PdfPageLocator.locate(pdf, text);
+            // 章节号同一次扫描里顺手认（正文里现成的「5.4.3.2 …」，库里也没存过）：跨节报范围、顺序存疑就明说
+            org.example.service.SectionIndex.SectionSpan section =
+                    org.example.service.PdfPageLocator.locateSection(pdf, text);
             sb.append("文件=").append(row.fileName()).append("  块号=").append(row.chunkIndex())
                     .append("  source=").append(row.source()).append("  正文字符=").append(text.length()).append('\n')
                     .append("页码=").append(org.example.service.PdfPageLocator.describe(span)).append('\n')
+                    .append("章节=").append(org.example.service.SectionIndex.describe(section)).append('\n')
                     .append("---- 正文 ----\n").append(text).append("\n\n");
         }
         return sb.toString();

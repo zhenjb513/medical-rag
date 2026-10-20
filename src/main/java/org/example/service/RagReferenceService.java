@@ -103,7 +103,8 @@ public class RagReferenceService {
      * 以前只回文件名：一份指南几百块，用户拿到「中国血脂管理指南2023年.pdf」根本没法核对
      * 答案到底出自哪一段，「引用溯源」只是看着像。现在每行带本次真正送进模型的那几块的 chunk_index，
      * 配合只读口子 {@code GET /rag/chunk?file=文件名&chunk=块号} 就能把那一块的正文、它在 PDF 里第几页、
-     * 以及那一页角上印的页码读出来（印码只在整份文件规律一致时才给，见 {@link PdfPageLocator}）。
+     * 以及那一页角上印的页码读出来（印码只在整份文件规律一致时才给，见 {@link PdfPageLocator}），
+     * 还有一行「章节=」给出这块归在哪个标题底下（同一遍扫描现算，跨节报范围、认不出就明说，见 {@link SectionIndex}）。
      * <p>
      * 文件名仍排在每行最前：评测的引用判据是「预期文档名是否为答案文本的子串」
      * （EvaluationService 第 375-387 行），在后面追加块号不影响它，98.4% 基线不用重测。
@@ -243,7 +244,7 @@ public class RagReferenceService {
         StringBuilder refs = new StringBuilder();
         refs.append("\n\n---\n");
         refs.append("【引用来源】（括号内是本次实际送入模型的文档块编号，即库里的 chunk_index；"
-                + "回读该块正文、它在 PDF 里的第几页和页上印的页码：GET /rag/chunk?file=文件名&chunk=块号）\n");
+                + "回读该块正文、它在 PDF 里的第几页、页上印的页码和它归在哪一节：GET /rag/chunk?file=文件名&chunk=块号）\n");
         for (int i = 0; i < references.size(); i++) {
             refs.append(i + 1).append(".").append(references.get(i)).append("\n");
         }
