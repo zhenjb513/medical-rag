@@ -78,16 +78,13 @@ public class Bm25IndexService {
         List<Object[]> docArgs = new ArrayList<>();
         List<Object[]> postingArgs = new ArrayList<>();
         for (Map<String, Object> r : rows) {
-            Object id = r.get("id");
-            String content = (String) r.get("content");
-            List<String> terms = CnTokenizer.indexTerms(content);
-            Map<String, Integer> tf = new LinkedHashMap<>();
-            for (String t : terms) tf.merge(t, 1, Integer::sum);
-            docArgs.add(new Object[]{id, r.get("src"), r.get("fname"), r.get("ci"), terms.size()});
-            for (Map.Entry<String, Integer> e : tf.entrySet()) {
-                postingArgs.add(new Object[]{e.getKey(), id, e.getValue()});
-            }
-            termPairs += tf.size();
+            // 行构造只此一份实现：增量刷新走的是同一个方法，两条路算出的倒排行必须逐字节相同
+            Bm25RowBuilder.ChunkRow row = Bm25RowBuilder.of(
+                    r.get("id"), (String) r.get("src"), (String) r.get("fname"),
+                    (Integer) r.get("ci"), (String) r.get("content"));
+            docArgs.add(row.docRow());
+            postingArgs.addAll(row.postingRows());
+            termPairs += row.termFrequencies().size();
         }
 
         batch("INSERT INTO bm25_docs (id, source, file_name, chunk_index, dl) VALUES ", docArgs, 5);
@@ -100,6 +97,97 @@ public class Bm25IndexService {
         return "BM25 重建完成：文档块=" + docs + "  倒排条目=" + termPairs
                 + "  词表=" + vocab + "  平均块长度(词)=" + String.format("%.1f", avgdl)
                 + "  耗时=" + ms + "ms";
+    }
+
+    /**
+     * 按份增量刷新：只清这一份文件的倒排行，再按它现在的块重算写回。
+     * 代价跟**这份文件**的块数成正比，而不是跟全库成正比——这是 {@code rebuildAll} 每次入库
+     * 都要 TRUNCATE 重插一遍整张表的那个规模化瓶颈。
+     * <p>
+     * posting 不用单独删：{@code bm25_postings.doc_id} 外键带 {@code ON DELETE CASCADE}。
+     * <p>
+     * ⚠️ 这里**刻意不统计全库**（{@code count(*) FROM bm25_docs} /
+     * {@code count(DISTINCT term) FROM bm25_postings}）。第一版为了能「在日志里看出增量后总数对不对得上」
+     * 把这两条放进了返回值，实测 501 块时它们只占 16~42ms（{@code scratch/g2_bm25_refresh2.out}），
+     * 看着无害——但两条都是扫全表，是 O(全库)，留在每份文件都走一次的按份路径里，等于自己给自己
+     * 埋回 rebuildAll 那根随库增长的曲线。全库对账交回 {@code rebuildAll}（启动那次）和 {@code /rag/diag}。
+     */
+    public String refreshSource(String[] sourceKeys) {
+        requirePg();
+        ensureSchema();
+        if (sourceKeys == null || sourceKeys.length == 0) {
+            return "BM25 增量刷新跳过：没有给出 source 键";
+        }
+        long t0 = System.currentTimeMillis();
+        String in = placeholders(sourceKeys.length);
+        int removedDocs = pg.update("DELETE FROM bm25_docs WHERE source IN " + in, (Object[]) sourceKeys);
+
+        List<Map<String, Object>> rows = pg.queryForList(
+                "SELECT id, content, metadata->>'source' AS src, metadata->>'file_name' AS fname, "
+                        + "(metadata->>'chunk_index')::int AS ci FROM " + vectorTable()
+                        + " WHERE metadata->>'source' IN " + in, (Object[]) sourceKeys);
+
+        long termPairs = 0;
+        List<Object[]> docArgs = new ArrayList<>();
+        List<Object[]> postingArgs = new ArrayList<>();
+        for (Map<String, Object> r : rows) {
+            Bm25RowBuilder.ChunkRow row = Bm25RowBuilder.of(
+                    r.get("id"), (String) r.get("src"), (String) r.get("fname"),
+                    (Integer) r.get("ci"), (String) r.get("content"));
+            docArgs.add(row.docRow());
+            postingArgs.addAll(row.postingRows());
+            termPairs += row.termFrequencies().size();
+        }
+        batch("INSERT INTO bm25_docs (id, source, file_name, chunk_index, dl) VALUES ", docArgs, 5);
+        batch("INSERT INTO bm25_postings (term, doc_id, tf) VALUES ", postingArgs, 3);
+
+        long ms = System.currentTimeMillis() - t0;
+        return "BM25 增量刷新：本次块=" + rows.size() + "（清掉旧行 " + removedDocs
+                + "）  倒排条目=" + termPairs + "  写入 posting 行=" + postingArgs.size()
+                + "  耗时=" + ms + "ms";
+    }
+
+    private static String placeholders(int n) {
+        StringBuilder sb = new StringBuilder("(");
+        for (int i = 0; i < n; i++) sb.append(i == 0 ? "?" : ", ?");
+        return sb.append(')').toString();
+    }
+
+    /**
+     * 全库对账计数，给 {@code /rag/diag} 这个手动口子用。
+     * ⚠️ 下面每一条都是扫全表的 O(全库) 查询，**绝不能挪进 {@code refreshSource}**——
+     * 那条是每份文件入库都走一次的按份路径，放进去等于把 #48 省下来的随库增长曲线又埋回去。
+     */
+    public Map<String, Object> diagnose() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        if (pg == null) {
+            m.put("available", false);
+            m.put("why", "pgVectorJdbcTemplate 未注入（PG 数据源不可用），BM25 关键词通道整条关闭");
+            return m;
+        }
+        m.put("available", true);
+        try {
+            ensureSchema();   // 幂等：表没建时顺手建上，diag 才不会把「还没建」报成错误
+            m.put("docs", pg.queryForObject("SELECT count(*) FROM bm25_docs", Integer.class));
+            m.put("postings", pg.queryForObject("SELECT count(*) FROM bm25_postings", Integer.class));
+            m.put("vocab", pg.queryForObject("SELECT count(DISTINCT term) FROM bm25_postings", Integer.class));
+            m.put("avgdl", pg.queryForObject("SELECT coalesce(round(avg(dl)::numeric,1),0)::float8 FROM bm25_docs",
+                    Double.class));
+            m.put("sources", pg.queryForObject("SELECT count(DISTINCT source) FROM bm25_docs", Integer.class));
+            m.put("orphan_postings", pg.queryForObject(
+                    "SELECT count(*) FROM bm25_postings p WHERE NOT EXISTS "
+                            + "(SELECT 1 FROM bm25_docs d WHERE d.id = p.doc_id)", Integer.class));
+            m.put("residue_docs_of_missing_files", pg.queryForObject(
+                    "SELECT count(*) FROM bm25_docs d WHERE d.source IS NOT NULL AND NOT EXISTS "
+                            + "(SELECT 1 FROM " + vectorTable() + " v WHERE v.metadata->>'source' = d.source)",
+                    Integer.class));
+            m.put("vector_chunks_without_bm25_row", pg.queryForObject(
+                    "SELECT count(*) FROM " + vectorTable() + " v WHERE NOT EXISTS "
+                            + "(SELECT 1 FROM bm25_docs d WHERE d.id = v.id)", Integer.class));
+        } catch (Exception e) {
+            m.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
+        }
+        return m;
     }
 
     private void batch(String prefix, List<Object[]> args, int arity) {

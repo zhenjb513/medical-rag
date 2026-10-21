@@ -238,7 +238,7 @@ mvn spring-boot:run -Dfile.encoding=UTF-8 "-Dspring-boot.run.jvmArguments=-Dfile
 mvn -DskipTests package
 java -Dfile.encoding=UTF-8 -jar target/demoAI-1.0-SNAPSHOT.jar
 
-# 判分口径 + 检索模式收口 + 块级引用溯源 + 块号→页码定位（含页脚印码） + 块号→章节号 + 工具返回值 + PHI 审计行回归：115 条纯逻辑单测，不连库、不打模型、几秒钟跑完
+# 判分口径 + 检索模式收口 + 块级引用溯源 + 块号→页码定位（含页脚印码） + 块号→章节号 + 工具返回值 + PHI 审计行 + BM25 行构造回归：122 条纯逻辑单测，不连库、不打模型、几秒钟跑完
 # （口径改动最容易「改了判分器没改提示词」这类两边漂移，靠这组测试兜住；见下面「📊 评测口径」）
 mvn test
 ```
@@ -393,6 +393,14 @@ mvn test
 ⚠️ **闸门只认余弦，所以纯关键词通道不能当生产模式用**：`app.retrieval.mode` 配成 `bm25` 时启动会打 `[检索模式] ⚠️` 警告并自动降级成 `hybrid`（BM25 索引不可用则降成 `vector`），`/chat` 与 `/evaluation/retrieve` 的日志会把「配置值」和「实际执行值」两个都打出来。原因：BM25 命中不带 score，`hasEvidence()` 在它上面恒等于全放行；用关键词覆盖率替代也分不开（火星题 60% vs 口语题 25~50%，`scratch/termcoverage.out`）。要看纯关键词的效果，用零调用的评测口子 `/evaluation/recall?mode=bm25`，那条路不经过 `search()`、不受影响。降级表由 `src/test` 的 `RetrievalModeGuardTest` 钉住。
 
 ⚠️ **模式名拼错/写成评测专用的 `rerank` 也会喊出来**（2026-10-19 加）：`search()` 的 switch 只有 `hybrid` 一个 case，认不出来的写法全落 default＝向量通道，以前是**一声不吭地按 `vector` 跑**，日志还把配置值原样打出来看着像生效了。现在启动打 `[检索模式] ⚠️ app.retrieval.mode=xxx 不是可识别的模式…本次实际按 vector 执行，这份配置等于没生效`，`describeMode()` 也改成如实的 `vector（配置=xxx，模式名不认识）`。执行路径本身一个字节没动，所以 98.4% 基线不受影响。
+
+⚠️ **BM25 关键词索引：热监听入库改成「按份增量刷新」，不再每份全表重建**（2026-10-21，任务 #48）。倒排是自建的两张表（`bm25_docs` / `bm25_postings`），向量库写入不会自动带上它，所以入库后必须刷一次。以前的刷法是 `rebuildAll()`：TRUNCATE 全表 → 读完整 `vector_store` → 全部重新分词 → 全部重插，**代价跟库里总块数成正比**，而不是跟这次新增的量成正比。**501 块 / 4 份指南 / 倒排条目 89207** 那批 13 次启动日志实测 **1544~1796ms** 一次（`scratch/app_*.log` 里「BM25 重建完成…耗时=」；另有几次 1604~1879ms，那是库里还是 507 块时留下的）。现在热监听那条走 `Bm25IndexService.refreshSource(sourceKeys)`：只 `DELETE ... WHERE source IN (这一份的路径键)`（`bm25_postings.doc_id` 外键带 `ON DELETE CASCADE`，posting 跟着走），再只读这一份的块重算写回，代价变成跟**这份文件的块数**成正比（同一份刷两次实测 643ms / 737ms，对比上面全量 1544~1796ms）。启动那次仍然走全量对账，由它兜住历史遗留和 `/bm25/rebuild` 这个手动兜底口子。
+
+- 两条路共用同一个行构造函数 `Bm25RowBuilder.of(...)`，所以「全量重建」和「增量刷新」不可能算出两套行。这条由 `Bm25RowBuilderTest` 7 条断言钉住：dl 等于分词后的 term 总数、同一个 term 只能出一行 posting（主键是 `(term, doc_id)`，重复行会被 `ON CONFLICT DO NOTHING` 静默吃掉）、零 term 的块也要落 doc 行（搜索 SQL 的 `ndocs`/`avgdl` 是从 `bm25_docs` 现算的，少一行就 idf 整体偏移）、`source` 必须原样带上（增量靠它删旧行，这里加工了就删不回来）。
+- **零模型调用的等价性证明**（只 SELECT、不写库）：`bash scratch/run_bm25_equiv.sh` → `scratch/g2_bm25_equiv.out`。库里现状是**改版前**的 `rebuildAll` 写进去的，用新构造函数把 501 块逐块重算比对：**dl 不一致 0 块、posting 不一致 0 块**；四份文件的 canonical/absolute 路径键各自都精确命中同一批行（77/184/73/167），无已删文件残留、无缺倒排行。
+- **真实增量刷新的写库验证已跑**（2026-10-21，`bash scratch/run_bm25_refresh.sh` → `scratch/g2_bm25_refresh.out`）：挑库里块数最少的那份（`国家基层高血压防治管理指南2025版.pdf`，73 块）离线调一次 `refreshSource`，写之前/写之后各做一次全表快照。结果：**这一份写回的 73 块 doc 行与 posting 多重集跟写之前逐字节相同**（写之前是改版前 `rebuildAll` 落的，所以「增量写回 == 全量写回」这条是当场证掉的，不是只靠只读重算）；**其他三份文件的 doc/posting md5 校验和前后相同**（没被误伤）；全库 doc=501 / posting=89207 / 向量块=501 三项不变；`清掉旧行 73` == 命中向量块 73（路径键对得上）；孤儿 posting=0（`ON DELETE CASCADE` 真生效）、已删文件残留=0、缺倒排行的块=0。写完之后再用新构造函数对这一份重算一遍：dl 不一致 0、posting 不一致 0。诚实边界：只真跑了这一份，另外三份没重复跑写库，它们的等价性靠上面那条只读探针覆盖。
+- ⚠️ **测耗时的坑（第一版踩了）**：探针最初用 `DriverManagerDataSource`，**每次 JDBC 调用都新建一条连接**，于是同一份刷出 2565ms，看着像「增量比全量还贵」。`refreshSource` 一次要发 40 条语句（3 DDL + 1 DELETE + 1 SELECT + 33 条批量 INSERT + 2 条统计），本地 PG 握手约 46ms/次 ≈ 1.85s，全花在这。换成 `SingleConnectionDataSource`（与应用侧 Hikari 同口径：连接只建一次）后是 643ms。拆项见 `bash scratch/run_bm25_timing.sh` → `scratch/g2_bm25_refresh2.out`：SELECT 这一份 31ms、分词构造行 245ms、DELETE 这一份连级联 244ms（这笔是 `rebuildAll` 用 TRUNCATE 时不付的）、插 doc 10ms、插 posting 189ms、两条全库统计 42ms。注意这些分项来自另一个 JVM 进程（冷 JIT），跟应用日志那条总数不完全可比，只用来看占比。另外：加载新类后重启那次，启动全量对账打出 **3415ms**，比 13 次样本高一倍——单次观测、原因没查（`rebuildAll` 本体这次一行没动，所以不像代码引起，更可能是磁盘/缓存竞争，但这是**推测**）。
+- ⚠️ **按份路径里不留 O(全库) 的语句**（同一轮量出来的）：`refreshSource` 最初为了「日志里能看出增量后总数对不对得上」，结尾跑了 `count(*) FROM bm25_docs` + `count(DISTINCT term) FROM bm25_postings`。501 块时它俩只 16~42ms（第一次 42ms，同一连接复跑 16ms），看着无害——但两条都是扫全表，正是 #48 要消灭的那种「每份文件付一次全库的钱」，库一大就变回随库增长的曲线。**已删掉**，返回值只报本次块数/清掉旧行数/倒排条目数/posting 行数/耗时。全库对账改由两处负责：`rebuildAll`（启动那次，日志里带文档块/倒排条目/词表/平均块长度）和 `/rag/diag` 的 `bm25_index` 段——**这一段以前没有，是这次补的**，现在报 `docs`/`postings`/`vocab`/`avgdl`/`sources` 五个数加三项对账（`orphan_postings`、`residue_docs_of_missing_files`、`vector_chunks_without_bm25_row`），当前实测 `501 / 89207 / 25489 / 302.9 / 4` 与 `0 / 0 / 0`。这些计数同样全是扫全表的 O(全库)，所以只放在手动诊断口，不参与每份文件的流程。
 
 ⚠️ **已知拦不住的一类**：超纲但字面蹭得到医学词的题。火星题「火星上有没有心血管病防治指南」向量 top1 = 0.657 > 0.60（`scratch/g9_fix_noexp.txt` 域外对照段；`application.yml` 注释记的是另一轮的 0.660），照样放行，检索侧没有任何区分信号——只能在生成期加校验，属未解项。
 
@@ -553,6 +561,7 @@ WHO 的「起算之前」是这么处理的：那份小册子正文之前另起�
 | **`PdfPageLocator.java`** | 块号 → 第几页（2026-10-19 加）。按页抽正文 → 同一套清洗 → 压掉空白拼成整篇，再拿库里那块文字子串定位它跨了哪几页；同一批按页原文顺手认页眉页脚的印码，**整份文件的（印码 − 物理页）一致才换算**，不一致/样本太少/歧义就只给物理页并说明原因。`spanOf`、`printedCandidates`、`printedOffsetOf` 是纯逻辑（单测直接喂页文本和候选列表），`locate`/`load` 才碰磁盘。不写库、不重灌、不调模型；对不上就返回「定位不到 + 原因」，不猜页。2026-10-20 起同一次按页扫描顺手把章节标题的下标也收进 `Pages`，`locateSection` 复用同一份缓存给 `SectionIndex` 用——读盘次数没变多 |
 | **`SectionIndex.java`** | 块号 → 第几节（2026-10-20 加）。从按页正文里认「行首带编号 + 短标题」的章节标题，三种编号体系（`5.4.3.2`／`一、``（二）`／`6.1`）都收；两道闸门把关：**形状**（剂量 `4.9 mmol/L`、`12.5 mg`、血压 `6.0 mmHg时`、`1.8 g EPA` 这类正文数字必须被拒，标题前 8 个字符带标点也拒）和**大纲单调性**（同层递增、下一层接得住上一条、往回卷要祖先层递增；`4.1→4.2.1` 这种跳号拒掉）。全量起点跑一遍取「收进标题最多」的那条链（双栏/表格会让抽取顺序 ≠ 阅读顺序）。块归最近一个已认标题底下；跨节给「`4.1 → 4.2`（这块跨了两节）」；标题被拒的位置正好落在某块里 → 那块**直接不给章节号**，写「章节号不给 + 原因」，不给一个可能错的号。`headingShapeOk`、`chain`、`sectionOf` 是纯逻辑（22 条单测直接喂页文本），`PdfPageLocator.locateSection` 才碰磁盘。不写库、不重灌、不调模型 |
 | **`HybridRetrievalService.java`** | **`/chat` 实际走的检索链路**：向量通道（floor 0.45）+ BM25 加权 RRF 融合 → 取 20 候选送 gte-rerank-v2 重排 → 截 8 → 同名相邻块扩展至 16；`mode`、`rerank-enabled` 等开关全在 `application.yml`。`search()` 只走「闸门判得动」的通道，`mode=bm25` 在这里降级成 `hybrid`（`enforceGateCapable`）；`searchFused` / `searchReranked` / `fuseCandidates` 三个评测口子不受降级影响，照旧给单边对照 |
+| **`Bm25RowBuilder.java`** | 一块正文 → BM25 倒排行（`bm25_docs` 一行 + 它的 `(term, tf)` posting 行），**纯函数、不碰数据库**。全量重建 `rebuildAll` 和按份增量刷新 `refreshSource` 都调它，两条路不可能算出两套行——分数在查询时的 SQL CTE 里现算，`dl`/`tf` 一漂就表现为「某次重建之后分数变了」，那种 bug 只能靠重灌库复现。7 条单测见 `Bm25RowBuilderTest`（含「零 term 的块也要落 doc 行」和「source 原样带上，否则增量删不回旧行」） |
 | **`RagReferenceService.java`** | 向量检索的底层封装（DB 层 + Java 层二次过滤，阈值由 `vector-floor` 传入）、上下文组装、System Prompt 构建（医疗合规约束）、引用来源提取与格式化（`groupCitations` 按文件聚合 `chunk_index`，一行给到「文件名 + 本次送入模型的块号」；文件名永远排在最前，因为评测的引用判据是「预期文档名是否为答案文本的子串」，块号只能跟在后面。查不到块号时写「本批块未记录块号」，不编造） |
 | **`PhiDesensitizationService.java`** | PHI 隐私脱敏，覆盖身份证 / 手机号 / 病历号 / 出生日期 / 银行卡号；`countHits()` 按正则在**原文**上数命中条数，供审计用。计数口径刻意保留重叠：18 位身份证同时命中「身份证」和「银行卡」两条，是设计不是 bug（见类注释） |
 | **`PhiAuditService.java`** | PHI 命中审计落库（MySQL `demoAI.phi_audit_log`）。启动 `@PostConstruct` 自动 `CREATE TABLE IF NOT EXISTS`；一行只写 `message_hash`（原文 SHA-256 前 12 位）、`endpoint`、`hit_types`（`类型:条数`）、`hit_count` 四列，**原文和脱敏后文本都不进库**；建表或写库失败只打警告，不阻断问答 |
@@ -742,7 +751,7 @@ A：System Prompt 已加入约束"使用纯文本回答，不要使用 Markdown 
 | 多轮对话上下文 | 引入对话历史管理，支持追问、澄清和多轮上下文连贯对话 |
 | 流式响应（SSE） | 将 `/chat` 接口改造为 Server-Sent Events 流式输出，提升用户等待体验 |
 | Java 层 Markdown 清洗 | 在答案返回前加正则，彻底去除 `**` / `*` / `#` 等 Markdown 残留 |
-| 单元测试与集成测试 | 判分口径 + 检索模式收口 + 块级引用溯源 + 块号→页码的定位算法与印码规律 + 块号→章节号（标题形状闸门、大纲单调性、跨节给范围、顺序存疑就不给号）+ 库存工具返回值 + PHI 审计行（含「四列都不许出现原文」的守门断言、引用行「文件名必须排在最前」的守门断言、「页码对不上就明说、不许猜页」的守门断言、「印码偏移不一致就不给、歧义页跳过、正文数字不许当候选」的守门断言、「剂量/单位/血压值不许当章节标题」「认不进大纲的编号附近那块一律不给号」的守门断言）已有 115 条纯逻辑单测（`src/test/java/org/example/`，不连库不打模型）；核心链路（OCR 兜底、Tool Call 路由本身、向量检索、脱敏方法本身）仍缺 |
+| 单元测试与集成测试 | 判分口径 + 检索模式收口 + 块级引用溯源 + 块号→页码的定位算法与印码规律 + 块号→章节号（标题形状闸门、大纲单调性、跨节给范围、顺序存疑就不给号）+ 库存工具返回值 + PHI 审计行（含「四列都不许出现原文」的守门断言、引用行「文件名必须排在最前」的守门断言、「页码对不上就明说、不许猜页」的守门断言、「印码偏移不一致就不给、歧义页跳过、正文数字不许当候选」的守门断言、「剂量/单位/血压值不许当章节标题」「认不进大纲的编号附近那块一律不给号」的守门断言）已有 122 条纯逻辑单测（`src/test/java/org/example/`，不连库不打模型；含 BM25 行构造 7 条，钉住「全量重建与按份增量共用同一套行、零 term 的块也要落 doc 行、source 原样带上否则增量删不回旧行」）；核心链路（OCR 兜底、Tool Call 路由本身、向量检索、脱敏方法本身）仍缺 |
 | 多格式文档支持 | 扩展对 Word、Markdown、Excel 等非 PDF 格式的解析与入库 |
 | 多模型路由 | 根据问题类型自动选择最优大模型（简单问答用 qwen-turbo，复杂推理用 qwen-max） |
 | 权限与审计 | 接入企业级 RBAC 权限控制，记录所有问答操作的审计日志 |

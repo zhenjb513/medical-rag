@@ -156,6 +156,20 @@ public class RagInitializer {
                 + bm25IndexService.rebuildAll());
     }
 
+    /**
+     * 只重建这一份文件的倒排行，代价跟它的块数成正比。
+     * 热监听走这条：以前每份 PDF 入库都 TRUNCATE 整张表重插一遍，两个毛病——
+     * ① 代价跟**全库块数**成正比（501 块 1.6~1.8s 无感，库堆大就成了每次入库的固定重税）；
+     * ② TRUNCATE 让**所有**文件的关键词行在重插完成前都不在表里，这个空窗同样跟全库长度一起涨；
+     *    按份刷只让**这一份**短暂缺行。
+     * 启动时那次仍然走 {@code rebuildAll} 全量对账，由它负责把历史遗留的缺口补齐。
+     */
+    private void refreshKeywordIndexForSource(File pdf, String why) {
+        if (bm25IndexService == null || !bm25IndexService.isAvailable()) return;
+        System.out.println("[RagInitializer] 刷新 BM25 关键词索引（" + why + "）："
+                + bm25IndexService.refreshSource(sourceKeys(pdf)));
+    }
+
     // 子进程注册表接口 + AutoCloseable 包装，用于超时时终止遗留的 tesseract.exe 子进程
     @FunctionalInterface
     private interface ProcessRegistrar {
@@ -1279,8 +1293,9 @@ public class RagInitializer {
         System.out.println();
         System.out.println("🔔 [热监听] 检测到新/变更 PDF：" + fileName);
         IngestResult r = ingestOnePdf(pdfFile, "  [热监听] ");
-        // 内容真变过才重建：判重跳过的文件（hash 相同）关键词索引本来就是对的，1.8s 白花时间
-        if (r.ok && !r.skipped && r.chunks > 0) refreshKeywordIndex("热监听入库 " + fileName);
+        // 内容真变过才刷新：判重跳过的文件（hash 相同）关键词索引本来就是对的，白花时间
+        // 按份增量刷，不再全表重建
+        if (r.ok && !r.skipped && r.chunks > 0) refreshKeywordIndexForSource(pdfFile, "热监听入库 " + fileName);
         System.out.println();
     }
 

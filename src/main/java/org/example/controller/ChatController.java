@@ -224,6 +224,11 @@ public class ChatController {
         // PG 侧 relation "consumables" does not exist、MySQL 侧 行数=3，见 InventoryService 构造器注释。
         out.put("inventory_db_probe", inventoryService.probeConsumablesForDiag());
 
+        // BM25 倒排的全库对账计数。按份增量刷新（refreshSource）里刻意不统计这些，总数就靠这个手动口子。
+        if (applicationContext.containsBean("bm25IndexService")) {
+            out.put("bm25_index", applicationContext.getBean(org.example.service.Bm25IndexService.class).diagnose());
+        }
+
         if (ragInitializer != null) {
             out.put("rag_initializer", ragInitializer.diagnose(deep));
         } else {
