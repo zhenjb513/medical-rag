@@ -58,7 +58,14 @@ public class EvaluationController {
         return sb.toString();
     }
 
-    /** 只测检索不测生成：召回率基线，mode=vector|bm25|hybrid 零成本，mode=rerank 每题调一次重排接口。expand=true 时叠加相邻块扩展 */
+    /**
+     * 只测检索不测生成：召回率基线。expand=true 时叠加相邻块扩展。
+     * <p>
+     * ⚠️ 调用量按 mode 分档，别当成一律免费：只有 {@code mode=bm25} 零模型调用（走
+     * {@code RecallEvaluationService.bm25Probe}，绕开向量通道）；{@code vector} 与 {@code hybrid}／{@code rerank}
+     * 都要过检索器，每题打一次 text-embedding-v3；{@code rerank} 在此之上每题再加一次 gte-rerank-v2。
+     * 分档依据见 RecallEvaluationService 的 probe 分派与类头说明。
+     */
     @GetMapping(value = "/recall", produces = "text/plain; charset=utf-8")
     public String recallBaseline(@RequestParam(defaultValue = "20") int probeK,
                                  @RequestParam(defaultValue = "vector") String mode,
