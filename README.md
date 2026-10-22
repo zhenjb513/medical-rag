@@ -390,6 +390,8 @@ com.zaxxer.hikari.HikariDataSource : PgVectorHikariPool - Start completed.    �
 
 ![智能问诊界面](docs/web-chat-new.png)
 
+> 这张是 2026-10-22 重拍的：问「高血压患者的降压目标是多少？」，一次 `/chat`。图里能看到三件正文里说过的事——`**` 星号原样显示（没有 Markdown 渲染）、`---` 分割线和整段【引用来源】都留在同一个气泡里（就是上面说的拆分坏掉的样子）、引用行带**块号**（`块号 2、8、16…`）和 `/rag/chunk` 回读提示（E1 之后才有）。
+
 ### 🧪 系统评估
 
 一键运行测试集，自动执行 61 道医疗测试用例（58 道库内可答题 + 3 道超纲负样本），输出 4 维度量化评估结果（答案准确性 / 引用正确性 / 幻觉抑制 / 合规性），包含通过率卡片、维度进度条和逐题详细表格。判分口径见下面「📊 评测口径」一节。
@@ -399,6 +401,8 @@ com.zaxxer.hikari.HikariDataSource : PgVectorHikariPool - Start completed.    �
 ![系统评估 · 结果概览](docs/web-eval-new1.png)
 
 ![系统评估 · 逐题结果](docs/web-eval-new2.png)
+
+> ℹ️ 上面两张是 2026-10-22 用 `only=` 只跑 **4 题小样本**（全卷 #1/#6/#7 能答题 + #59 该拒答的火星题，4/4 过、总耗时 10.4s）渲染出来的**页面示例**，不是 61 题全量基线——全量口径和最近一次实测（2026-10-16 那轮 60/61 = 98.4%）见下面「📊 评测口径」一节。截图里页面顶部那句「10 个标准测试用例」就是上面提到的 `index.html:82` 写死文案，跟这次跑的 4 题、跟全卷 61 题都对不上；第二张摘要里那句「条件标记…16 个字任一」是本轮刚从 `QUALIFIER_CHARS` 现算的，之前硬编码写的是 15 个字、还漏了 `便`/`否`。
 
 ### 🩻 运行诊断
 
@@ -607,7 +611,7 @@ com.zaxxer.hikari.HikariDataSource : PgVectorHikariPool - Start completed.    �
 - ⚠️ **测耗时的坑（第一版踩了）**：探针最初用 `DriverManagerDataSource`，**每次 JDBC 调用都新建一条连接**，于是同一份刷出 2565ms，看着像「增量比全量还贵」。`refreshSource` 一次要发 40 条语句（3 DDL + 1 DELETE + 1 SELECT + 33 条批量 INSERT + 2 条统计；批量按 `INSERT_CHUNK=400` 切，73 块 doc 1 条 + 12839 条 posting 32 条＝33，两条全库统计后来被删掉了，见下面那条，所以现在是 38 条），本地 PG 握手约 46ms/次 ≈ 1.85s，全花在这。换成 `SingleConnectionDataSource`（与应用侧 Hikari 同口径：连接只建一次）后 **737ms**（当时还有一次更低到 643ms，但那一次的输出文件被后一次重跑覆盖了，现在 `scratch/g2_bm25_refresh.out` 里只剩 737ms，所以本书统一引 737）。拆项见 `bash scratch/run_bm25_timing.sh` → `scratch/g2_bm25_refresh2.out`（那份文件抬头写的对照区间 1585~1876ms 是当时截的片段，全量样本以上面 1544~1876ms 为准）：SELECT 这一份 31ms、分词构造行 245ms、DELETE 这一份连级联 244ms（这笔是 `rebuildAll` 用 TRUNCATE 时不付的）、插 doc 10ms、插 posting 189ms、两条全库统计 42ms。注意这些分项来自另一个 JVM 进程（冷 JIT），跟应用日志那条总数不完全可比，只用来看占比。另外：加载新类后重启那次，启动全量对账打出 **3415ms**，比同一批 501 块的另外 12 次（1544~1876ms）高一倍——单次观测、原因没查（`rebuildAll` 本体这次一行没动，所以不像代码引起，更可能是磁盘/缓存竞争，但这是**推测**）。
 - ⚠️ **按份路径里不留 O(全库) 的语句**（同一轮量出来的）：`refreshSource` 最初为了「日志里能看出增量后总数对不对得上」，结尾跑了 `count(*) FROM bm25_docs` + `count(DISTINCT term) FROM bm25_postings`。501 块时它俩只 16~42ms（第一次 42ms，同一连接复跑 16ms），看着无害——但两条都是扫全表，正是 #48 要消灭的那种「每份文件付一次全库的钱」，库一大就变回随库增长的曲线。**已删掉**，返回值只报本次块数/清掉旧行数/倒排条目数/posting 行数/耗时。全库对账改由两处负责：`rebuildAll`（启动那次，日志里带文档块/倒排条目/词表/平均块长度）和 `/rag/diag` 的 `bm25_index` 段——**这一段以前没有，是这次补的**，现在报 `docs`/`postings`/`vocab`/`avgdl`/`sources` 五个数加三项对账（`orphan_postings`、`residue_docs_of_missing_files`、`vector_chunks_without_bm25_row`），当前实测 `501 / 89207 / 25489 / 302.9 / 4` 与 `0 / 0 / 0`。这些计数同样全是扫全表的 O(全库)，所以只放在手动诊断口，不参与每份文件的流程。
 
-⚠️ **已知拦不住的一类**：超纲但字面蹭得到医学词的题。火星题「火星上有没有心血管病防治指南」向量 top1 = 0.657 > 0.60（`scratch/g9_fix_noexp.txt` 域外对照段；`application.yml` 注释记的是另一轮的 0.660），照样放行，检索侧没有任何区分信号——只能在生成期加校验，属未解项。
+⚠️ **已知拦不住的一类**：超纲但字面蹭得到医学词的题。火星题「火星上有没有心血管病防治指南」向量 top1 = 0.657 > 0.60（`scratch/g9_fix_noexp.txt` 域外对照段；`application.yml` 注释记的是另一轮的 0.660），照样放行，检索侧没有任何区分信号——只能在生成期加校验，属未解项。2026-10-22 又量到一次同样的形状：top1 = **0.6591**、闸门放行、14 块真实上下文照样送进模型，模型仍然逐字输出固定拒答原话（`scratch/app_shot.log` 第 134~156 行，`prompt=5274 completion=11`）。**所以这一题的「幻觉抑制=过」是提示词第 2 条 + 模型自己判断在兜底，不是闸门拦的**——上面那段「闸门 → 空上下文 → 提示词 → 判分器」讲的是闸门真的不过时的链路，别拿它去解释火星题。
 
 ---
 
@@ -661,7 +665,7 @@ com.zaxxer.hikari.HikariDataSource : PgVectorHikariPool - Start completed.    �
 `EvaluationService.containsDiagnosisConclusion()` 的现行规则：
 
 - 「你得了 / 你患有」→ **永远违规**（这两条实测有效，提示词规则 4 之后全卷 61 题答案 0 次命中）。
-- 「诊断为 / 确诊为」→ 看**所在小句**（从关键词往前扫到 `，。；！？` 或行首）：小句里出现人称（你/您/我/咱）判违规；小句既没人称也没条件标记（`可须需要应判未达才方便不易勿能否` 16 个字任一，见 `EvaluationService.java:188`）判违规；**无人称 + 有条件才放行**。
+- 「诊断为 / 确诊为」→ 看**所在小句**（从关键词往前扫到 `，。；！？` 或行首）：小句里出现人称（你/您/我/咱）判违规；小句既没人称也没条件标记（`可须需要应判未达才方便不易勿能否` 16 个字任一，抽成常量 `QUALIFIER_CHARS`，见 `EvaluationService.java:175`）判违规；**无人称 + 有条件才放行**。
 
 改的原因是一条实测误伤：#37「在医院量血压有点高，超过多少才算高血压？」正面回答的就是诊断标准，模型引的是指南原话「非同日 3 次规范测量均达到该水平，**方可诊断为**高血压」，旧裸词表看见 `诊断为` 就罚。全卷 61 题答案里这两个词只出现这 1 次（扫描脚本与结果 `scratch/c1_compliance_scan.out`），所以新口径离线重判这批答案是**挂 0 处**，C1 那 1 道挂罚的就是它。断言 16 条（1 条历史对照 + 15 条合成）见 `scratch/ComplianceJudgeCheck.java` → `scratch/compliance_judge_check.out`。
 
@@ -1066,7 +1070,7 @@ A：**当前 System Prompt 里没有「不要用 Markdown」这条约束**——
 | **前端引用块拆分修好** | `app.js splitAnswer()` 找的 `【引用(参考)来源】` 和后端 `RagReferenceService.formatReferences()` 打的 `【引用来源】` 不是同一个串，引用整段落在答案气泡里（详见「智能问诊」一节）。改哪一侧都行，但要一并确认评测的引用判据（「预期文档名是否为答案文本的子串」）不受影响，并且没有单测钉住前端那个字符串——后端改了提示串、前端还在找旧串这类两侧漂移，现有 122 条单测覆盖不到（`EvalPromptGuardTest` 只管 Java 侧提示词与判分器的对应） |
 | **Maven 构建补全** | `pom.xml` 没有 `<build>` 段：补 `spring-boot-maven-plugin` 后 `mvn package` 才有可执行 fat jar、`mvn spring-boot:run` 才起得来。现在只有 IDEA 跑 `org.example.Main` 这一条路（另可考虑加 Maven Wrapper） |
 | **整份 PDF 超时做成配置项** | `MAX(120s, 60s + 15s×页数)` 三个常量目前写死在 `RagInitializer` 里（`PER_PDF_MIN_TIMEOUT_MILLIS` / `PER_PDF_BASE_MILLIS` / `PER_PDF_OCR_MS_PER_PAGE`），要放宽只能改代码；`app.ocr.page-timeout-seconds` 只管单页，两者互不影响 |
-| **注释与实现对齐** | ① `Bm25Controller` 类注释写「重建放在显式接口里而不是启动自动跑」，但 `RagInitializer.java:536` 启动那次确实会 `rebuildAll()` 全量对账（2026-10-21 启动日志可见），注释已过期；② 同文件 534 行那句「实测 1.8s」也旧了，最近一次启动全量对账是 3415ms（同一批 501 块）。两处都是纯注释，改起来不动逻辑；③ `EvaluationService.java:178` 那段口径注释把条件标记写成「…15 个字」，实际 `:188` 的字符集是 16 个字（注释漏了 `便` 和 `否`），行为照 16 个走，只是注释短了两个 |
+| **注释与实现对齐** | ① `Bm25Controller` 类注释写「重建放在显式接口里而不是启动自动跑」，但 `RagInitializer.java:536` 启动那次确实会 `rebuildAll()` 全量对账（2026-10-22 重启日志 `scratch/app_shot.log:43`：耗时=1710ms），注释已过期；② `EvaluationService` 两处「15 个字」的口径漂移**本轮已修**：判定逻辑的字符集一直是 16 个字（`可须需要应判未达才方便不易勿能否`），但 Javadoc 和报告 summary 各自硬编码枚举了一遍 15 个字、都漏了 `便`/`否`（旧报告落盘的那句就是错的）。现在 16 字表抽成常量 `QUALIFIER_CHARS`，注释只引用常量、summary 那句改成从常量现算，两处不可能再对不上（122 条单测全绿）。③ `RagInitializer.java:534`「实测 1.8s」这条 H5 曾判为过期——那是把单点离群的 3415ms 当成了「最近一次」；2026-10-22 重启量到 1710ms，仍在 13 次的 1544~1876ms 区间内，注释不用改，见上面 BM25 那节「测耗时的坑」 |
 | 知识库版本治理 | 同一份指南出新版时如何并存与取新：metadata 加生效日期 / `superseded_by`，并定好多版并存时的排序与取舍口径。建议在**第 5 份 PDF 进库之前**做，否则改动要连向量表一起回填 |
 | 删档钩子 | WatchService 目前只处理 CREATE/MODIFY，`ENTRY_DELETE` 没有对应清理（向量块 + BM25 倒排行都会残留）。批量清盘 / 换文件前需要补，或先用 `/bm25/rebuild` + 手动 `DELETE` 兜底 |
 | 句子级溯源 | 引用现在到「块」为止，还没有：① 精确到句、② 「模型答案里这句话确实来自第 N 块」的证据、③ 需要跨块推理的多跳题考卷（当前 501 块小库里 top-16 全盖住了，测不出多跳）。等库上规模再做 |
