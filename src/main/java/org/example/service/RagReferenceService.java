@@ -17,8 +17,11 @@ import java.util.*;
 @Service
 public class RagReferenceService {
 
-    /** 拒答题的判分锚点：提示词规则 2 和 EvaluationService 的幻觉抑制判据共用这一个常量。 */
-    static final String REFUSAL_PHRASE = "根据现有知识库资料，无法回答该问题";
+    /**
+     * 超纲题的固定拒答原话：提示词规则 2、判分器（{@code EvaluationService}）的幻觉抑制判据、
+     * demo 档的假生成模型三处都逐字认它，所以放成 public 常量而不是各写一遍。
+     */
+    public static final String REFUSAL_PHRASE = "根据现有知识库资料，无法回答该问题";
 
     private final VectorStore vectorStore;
 

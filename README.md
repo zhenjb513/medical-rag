@@ -47,6 +47,7 @@ blockquote { font-size: 1.05em; }
 | 🔍 **BM25 运维口子** | `/bm25/search?q&topN`（试查、看 bm25 分和命中块号）、`/bm25/df?term`（df=0 说明语料里就没这个写法，不是检索器坏了）、`/bm25/locate?phrase&limit`（**原文逐字定位**，测试集 58 题的 `文件名#chunk_index` 标注全靠它标出来的）、`/bm25/rebuild`（手动全量重建兜底） |
 | 🧬 **LangChain4j 并存实验接口（`/lc/*`）** | 与 Spring AI 主链路并存的一套 LangChain4j 演示：4 种纯对话角色（耗材助手 / 心内科医生 / Prompt Injection 防御 / 结构化 JSON 输出）+ 3 种工具调用组合。走的是 `@Tool` + `AiServices`，**不接 RAG 检索链路**（不查向量库、没有引用来源）。前端聊天页输入框上方那个「🤖 框架 / 场景」下拉共 8 个选项，除默认那条 Spring AI 外，其余 **7 个**都指向 LC4J（`index.html:56-64`），选中 LC4J 时气泡带紫色左边框以示区别 |
 | 🖥️ **零构建 Web 前端** | 纯 HTML + CSS + 原生 JS（`static/` 三件套），三个 Tab：💬 智能问诊 / 🧪 系统评估 / 🩻 运行诊断 |
+| 🧪 **离线可跑的 `demo` 档** | `docker compose up --build` 一条命令起整套环境，**不需要百炼 API key**：向量化换成字符 2-gram 哈希、生成换成抽取式，检索 / 闸门 / 引用溯源 / PHI 脱敏审计 / 判分器全部还是真代码；知识库用仓库自带的两份合成示例指南。假的那两层明写在答案下面，分数不和 98.4% 基线混看（详见「快速开始」第一节） |
 
 ---
 
@@ -64,13 +65,96 @@ blockquote { font-size: 1.05em; }
 | Tesseract OCR | 5.x（`chi_sim`） | 扫描件逐页识别（外部进程调用）。⚠️ 「5.x」按安装现场写的，仓库里没有版本留痕 |
 | Apache PDFBox | 3.0.5（由 `spring-ai-pdf-document-reader` 1.1.2 传递引入，见 `scratch/cp_full.txt`） | PDF 原生文本提取、按页重抽（页码/章节定位） |
 | HanLP | portable-1.8.4 | BM25 中文分词（`CnTokenizer`，portable 版词典打进 jar，无需外部数据） |
-| JUnit 5 | 由 Boot 父 POM 管版本 | 122 条纯逻辑单测（不连库、不打模型） |
+| JUnit 5 | 由 Boot 父 POM 管版本 | 130 条纯逻辑单测（不连库、不打模型） |
+| Docker Compose | pgvector/pgvector:pg17 + mysql:8.0 | 一键起「无 key 也能试」的 demo 档整套环境 |
 
-> JDK 21。**注意 `pom.xml` 里没有 `<build>` 段、也没引 `spring-boot-maven-plugin`**，所以 `mvn package` 打不出可执行 fat jar，`mvn spring-boot:run` 也没配——起法见「启动应用」一节。
+> JDK 21。`pom.xml` 里有 `<build>` 段并显式引了 `spring-boot-maven-plugin`（`mainClass=org.example.Main`），
+> 所以 `mvn package` 出的是可执行 fat jar、`mvn spring-boot:run` 也能起——**但仍然没有 Maven Wrapper**
+> （无 `mvnw`），要用本机 Maven 或 IDEA 自带的 Maven。起法见「启动应用」一节。
 
 ---
 
 # 🚀 快速开始
+
+## ⏩ 不想配 API key、不想装数据库：一键试跑（`demo` 档）
+
+这条链路（PDF 抽取 → 切块 → 向量化 → 检索 → 闸门 → 引用溯源 → PHI 脱敏审计 → 拒答）不需要
+百炼 key，也不需要本机有 MySQL / PostgreSQL：
+
+```bash
+docker compose up --build      # 然后打开 http://localhost:8080
+```
+
+compose 会起三个服务：`pgvector/pgvector:pg17`（向量库 + BM25 两张倒排表）、`mysql:8.0`（业务库，
+自动执行 `docker/mysql-init/01-demo-consumables.sql` 塞 3 行示例耗材），`app`（本仓库的 fat jar，
+`SPRING_PROFILES_ACTIVE=demo`，把 `data/pdfs/` 只读挂进去）。知识库用**仓库自带的两份示例指南**
+（`data/pdfs/示例*2026.pdf`，2 页文字版 PDF，正文是合成的示例数值，每份首页就写明「不是任何真实学会的
+出版物 · 数值为编造，不可用于临床」）。
+
+### `demo` 档换了什么、没换什么
+
+只替掉**两处外部调用**（`config/DemoModelConfig.java`，`@Profile("demo")` + `@Primary`）：
+
+| 环节 | demo 档实现 | 是真代码吗 |
+|---|---|---|
+| 向量化 | 字符 2-gram 哈希向量（1024 维，L2 归一化） | ❌ 假的，替代 text-embedding-v3 |
+| 生成 | 抽取式：从送进模型的上下文里按字面重叠（IDF 加权）挑 3 句原文拼起来 | ❌ 假的，替代 qwen-plus |
+| 重排 | 关掉（`gte-rerank-v2` 是百炼的，容器里没有） | — |
+| PDF 抽取 / 切块 / 判重 / 热监听 | `RagInitializer` 原样 | ✅ |
+| 检索、RRF 融合、BM25 通道、可答性闸门 | `HybridRetrievalService` 原样 | ✅ |
+| 引用溯源（文件名 + 块号 + 两套页码 + 章节号） | `RagReferenceService` 原样 | ✅ |
+| PHI 脱敏、审计落库（只存类型/条数/指纹） | 原样，`[PHI审计] 已落库 hash=…  病历号:1` 实测打出来 | ✅ |
+| 判分器、`/evaluation/*`、`/rag/diag` | 原样 | ✅ |
+| 块号回读 `/rag/chunk`（页码 / 章节那两行） | 代码原样，但它要读 PG 里的 `vector_store`：compose 里有 PG 就能用，本机临时关掉 PG 时会如实回「没连上 PgVector」 | ✅（依赖 PG） |
+| 库存工具（函数调用） | 假模型不发 tool call → 问库存得到拒答 | ⚠️ 演示不了 |
+| `/lc/*` LangChain4j 实验接口 | 占位 key，点进去报鉴权失败 | ⚠️ 演示不了 |
+
+### ⚠️ 这一档的五个诚实边界
+
+1. **分数和 98.4% 基线不可比**。假向量余弦量的是字面重叠，比语义余弦低一个量级，所以
+   `application-demo.yml` 里的 `vector-floor=0.01` / `answer-floor=0.05` 是按假向量**实测另定**的两个数，
+   跟生产那两条 0.45 / 0.60 没有任何对应关系。想看真数字请用默认档 + 百炼 key。
+2. **闸门在 demo 档仍然拦不住「字面蹭到医学词」的超纲题**。2026-10-22 用 24 题打 `/chat`
+   （15 道库内 + 7 道超纲 + 库存/PHI 两个 chip）：库内 top1 落在 **0.0641 ~ 0.4100**，超纲落在
+   **0.0478 ~ 0.1715**，两组**重叠**——「中医针灸治疗高血压有效吗」0.1715 比库内最低那道 0.0641 还高。
+   所以这条线只是「字面几乎不沾的题别浪费上下文」的下限：它拦得住 Java 冒泡 0.0480、帕金森 0.0478，
+   拦不住火星指南 0.1041。默认档同一个形状（火星题 top1=0.6591 > 0.60 照样过闸门，见下面「🎯 检索闸门」），
+   差别只在默认档最后由真模型自己判、能拒答，假生成没这个判断力。
+3. **样本只有 24 题、库只有 6 块**，那两个阈值不是通用值，别拿它当参数调优的起点。
+4. **验到哪一步，说清楚**。本机 2026-10-22 是用 fat jar 直接 `--spring.profiles.active=demo` 跑的
+   （PG 临时关掉、MySQL 用本机实例）：启动 3.5~4.3s（同机两次）、2 份示例 PDF 灌成 6 块、全程零百炼请求、
+   上面那 24 题的回答 / 拒答原话 / 引用行 / PHI 审计落库（`[PHI审计] 已落库 hash=33be719db79a  病历号:1`）
+   都看到了。**没看到的**是 `docker compose up` 本身——这台开发机没装 Docker，所以 `Dockerfile` 和
+   `docker-compose.yml` 是逐行对着配置项写的，没在真容器里跑起来过。还有一层没验到：本机那次是
+   `demo,local` 两个 profile 叠着跑、数据源用命令行显式指定的，而 compose 只激活 `demo` 一个 profile，
+   所以 `application-demo.yml` 里 `${DEMO_*:默认值}` 拼出来的那两条连接串、以及 compose 的
+   `healthcheck` + `depends_on` 启动顺序都没被真走过一遍。容器里第一次起如果报错，先查挂载路径、
+   `DEMO_*` 环境变量和依赖顺序这三处（这是推断，依据是 Java 侧的启动与问答逻辑本机已跑通）。
+5. **答案本身读起来糙，这是假生成的本性**。它只按字面重叠挑 3 句，仍会把章节标题行、表头这类句子挑进来，
+   也可能把两份文件的句子拼进一段。排序口径这次量了四档再定（同一 jar 换 `-D` 重启、24 题探针，
+   判据写在 `scratch/demo_e2e.py`：每题标了「答到点上」要的原文数值片段，噪声句指标题行/表头/示例页脚）：
+   **IDF 加权总量 10/15 命中、45 句里 10 句噪声**，`idf÷√句长` 和 `idf²÷句长` 各 9/15、15 句，
+   原先那版「命中数²÷句长」8/15、18 句（四档答案分别存 `scratch/variants/*.out`、`scratch/_c_answers.out`）。
+   留的是 IDF 那版：分母一带句长，短句「二、降压目标值」就总排在带数值的长句前面。
+   ⚠️ 订正：本节先前写「试过 IDF、24 题实测没有整体变好」——那次对照拿错了样本（两份输出其实是同一档），
+   这轮重跑四档才量准，结论反过来，以本条数字为准。
+   答案下面固定带的那行「（demo 档：…没有调用大模型）」就是防这层糙被误读成模型真实水平。
+
+复现上面那 24 题（零模型调用，服务端日志会逐题打 `[RAG原始分数] Top N score=[…]`）：
+
+```bash
+python scratch/demo_e2e.py          # 端口默认 8081，BASE=http://localhost:8080 可换；结果落 scratch/demo_*.out
+curl -G --data-urlencode "message=血压达标后多久随访一次？" http://localhost:8080/chat   # 单题手测（非 Windows）
+```
+
+> Windows 上别用上面这条：Git Bash 会把命令行里的中文按本地代码页重编码，服务端收到的是乱码串，
+> 分数会整体偏低（这个坑真踩过，早期那版阈值就是照乱码探针定的，已按正确编码重测）。
+> 要么用浏览器前端输入，要么显式百分号编码：`curl "http://localhost:8080/chat?message=%E8%A1%80%E5%8E%8B"`。
+
+想改示例内容（比如换个科室的界值）：编辑 `data/samples/示例*.html`，再跑 `data/samples/build-pdfs.sh`
+重新打印 PDF（要本机有 Chrome/Chromium；用浏览器打印而不是 PDFBox 直写，是因为仓库里找不到一份可随项目
+分发的中日韩字体，而打印出来的 PDF 会内嵌子集字体，`data/pdfs/` 里那两份因此能在任何机器上抽出中文）。
+文件名别改，`app.pdf-path` 只认目录；新打印出来的那份丢进 `data/pdfs/` 会被运行中的 WatchService 自动入库，不用重启。
 
 ## 1️⃣ 环境要求
 
@@ -78,8 +162,9 @@ blockquote { font-size: 1.05em; }
 |---|---|---|
 | **JDK** | 21 LTS | https://adoptium.net/ |
 | **Maven** | 3.9+ | ⚠️ 仓库里**没有 Maven Wrapper**（无 `mvnw` / `.mvn`），要用本机自己装的 Maven 或 IDEA 自带的 Maven |
-| **MySQL** | 8.0+ | 业务库（耗材库存 `consumables` 表 + PHI 审计 `phi_audit_log`） |
-| **PostgreSQL** | 17 + pgvector 扩展 | 向量库（vector 列类型），同时存放自建 BM25 倒排两张表 |
+| **MySQL** | 8.0+ | 业务库（耗材库存 `consumables` 表 + PHI 审计 `phi_audit_log`）；只想跑 `demo` 档的话用上面 compose 里那个容器，不用本机装 |
+| **PostgreSQL** | 17 + pgvector 扩展 | 向量库（vector 列类型），同时存放自建 BM25 倒排两张表；同上，`demo` 档可走容器 |
+| **Docker + Compose** | 可选 | 只有走上面「一键试跑」那条路才需要 |
 | **Tesseract-OCR** | 5.3.3+（chi_sim 语言包） | https://github.com/UB-Mannheim/tesseract/wiki |
 
 ---
@@ -199,6 +284,12 @@ CREATE TABLE IF NOT EXISTS bm25_postings (
 |---|---|---|
 | `src/main/resources/application.yml` | 主配置（公共、非敏感项） | ✅ 已提交 |
 | `src/main/resources/application-local.yml` | 本地覆盖（密码、API Key 等敏感项） | ❌ 已加入 `.gitignore` |
+| `src/main/resources/application-demo.yml` | `demo` 档覆盖：容器里的主机名/账号、假向量的两条阈值、关掉 OCR 与重排。每个值都能用同名环境变量覆盖 | ✅ 已提交（里面只有容器默认口令，没有真密钥） |
+
+> `application-demo.yml` 里 `spring.ai.dashscope.api-key` 和 LangChain4j 那行都是 **`demo-placeholder-not-sent`
+> 占位串**，不是可用 key：demo 档的 ChatModel / EmbeddingModel 两个 bean 被 `DemoModelConfig` 用 `@Primary`
+> 顶掉了，占位串只是让自动配置类和 `/lc/*` 控制器能构造出来、启动不炸。`.dockerignore` 另外显式排掉了
+> `application-local.yml`——不排除等于把真 key 打进镜像层分发出去。
 
 主 `application.yml` 已包含全部公共配置（MySQL URL、DashScope 模型参数、OCR 路径、PgVector 维度等），你只需要创建本地覆盖文件填入敏感信息：
 
@@ -305,31 +396,36 @@ app:
 
 ## 5️⃣ 启动应用
 
-⚠️ **先说清楚这个仓库不能怎么起**：`pom.xml` 里**没有 `<build>` 段，也没引 `spring-boot-maven-plugin`**。所以
-
-- `mvn -DskipTests package` 只会打出一个**普通 jar**（manifest 里没有 `Main-Class`，也不带依赖），`java -jar target/demoAI-1.0-SNAPSHOT.jar` 起不来；
-- `mvn spring-boot:run` 也**没有对应插件配置**（想用得先在 pom 里补 `spring-boot-maven-plugin`，属未做项）。
-
-真正能跑的两种起法：
-
 ```powershell
 # 方式 A（日常用的）：IDEA 里直接 Run 入口类 org.example.Main
 #   VM options 加：-Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8
 #   （JDK 21；Windows 控制台默认 GBK，不加这三个参数启动日志里的中文就糊了）
 
-# 方式 B：命令行编译 + 用依赖 classpath 直接跑 Main（不需要 fat jar）
+# 方式 B：打可执行 fat jar（pom.xml 里有 spring-boot-maven-plugin，mainClass=org.example.Main）
+mvn -DskipTests package
+java -Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 `
+     -jar target/demoAI-1.0-SNAPSHOT.jar
+#   2026-10-22 实测：产物 62,392,833 字节，demo 档下 java -jar 起得来（Started Main in 4.3s，本机另一次 3.5s）
+
+# 方式 C：不落 jar，直接由 Maven 起
+mvn spring-boot:run
+#   同一天实测过 demo 档能起（Tomcat started on port 8082，Started Main in 3.064s）
+
+# 方式 D：用依赖 classpath 直接跑 Main（原来日常那条路，仍然可用）
 mvn -DskipTests compile
-#   classpath = target/classes + 全部依赖 jar。依赖清单可以这样导出来：
 mvn dependency:build-classpath "-Dmdep.outputFile=target/cp.txt"
 java -Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 `
      -cp "target/classes;target/cp.txt的内容" org.example.Main
 ```
 
-> 方式 B 里 `dependency:build-classpath` 是标准 Maven 用法，但**本仓库日常没这么起过**：本机没有独立的 `mvn`，用的是 IDEA 自带 Maven + Microsoft JDK 21，重启用的是本地脚本（`scratch/` 已在 `.gitignore` 里，脚本内容就是「kill 掉 8080 上的 java，再用 `target/classes;<依赖清单>` 起 `org.example.Main`，日志落文件」）。新克隆仓库要照方式 B 自己拼一次 classpath。
+> 这一节 2026-10-22 改过：原来这里写的是「pom 里没有 `<build>` 段、`java -jar` 起不来」，那是补
+> `spring-boot-maven-plugin` 之前的事实，fat jar 现在能打了。方式 D 那段本地脚本（`scratch/` 已在
+> `.gitignore` 里）照旧可用：kill 掉端口上的 java，再用 `target/classes;<依赖清单>` 起 `org.example.Main`，
+> 日志落文件。
 
 ```powershell
 # 判分口径 + 检索模式收口 + 块级引用溯源 + 块号→页码定位（含页脚印码） + 块号→章节号 + 工具返回值 + PHI 审计行 + BM25 行构造回归
-# 122 条纯逻辑单测（按 @Test 方法数计），不连库、不打模型、几秒钟跑完
+# 130 条纯逻辑单测（按 @Test 方法数计），不连库、不打模型、几秒钟跑完
 # （口径改动最容易「改了判分器没改提示词」这类两边漂移，靠这组测试兜住；见下面「📊 评测口径」）
 mvn test
 ```
@@ -794,7 +890,7 @@ WHO 的「起算之前」是这么处理的：那份小册子正文之前另起�
 | `SimpleVectorStoreConfig.java` | 条件互斥备用方案（`app.pgvector.enabled: false` 时激活），内存向量库，重启清空 |
 | `SpringAiConfig.java` | 只做一件事：基于自动注入的 `ChatModel` 显式暴露一个 `ChatClient.Builder` bean（Spring AI 1.1.x 不保证把它自动配成 Bean）。ChatModel / EmbeddingModel / RerankModel 本身都由 DashScope starter 自动配置 |
 
-## 测试（`src/test/java/org/example/`，13 个类共 122 条 `@Test`）
+## 测试（`src/test/java/org/example/`，14 个类共 130 条 `@Test`）
 
 全部纯逻辑：不连库、不起 Spring 上下文、不打模型，`mvn test` 几秒跑完。它们守的是**口径**——判分器、提示词、考卷、检索模式、引用格式这几边最容易各改各的。
 
@@ -813,6 +909,7 @@ WHO 的「起算之前」是这么处理的：那份小册子正文之前另起�
 | `InventoryToolVerdictTest` | 5 | 库存工具三态返回值（有货 / 未登记 / 查询不可用），不再把异常吞成 0 |
 | `PhiAuditRowTest` | 7 | PHI 审计行只有那四列，**任何一列都不许出现原文** |
 | `Bm25RowBuilderTest` | 7 | 全量重建与按份增量共用同一套行；零 term 的块也落 doc 行；`source` 原样带上否则删不回旧行 |
+| `DemoExtractiveModelTest` | 8 | demo 档两个假模型：拒答逐字用 `REFUSAL_PHRASE`、假生成切上下文依赖的【知识库上下文】/【回答规则】标记必须和 `buildSystemPrompt()` 一致（改了标记=整档静默全拒答）、抽出来的每句必须是原文、假向量可复现且 L2 归一 |
 
 ## 前端（纯静态，零构建）
 
@@ -828,7 +925,7 @@ WHO 的「起算之前」是这么处理的：那份小册子正文之前另起�
 |---|---|
 | `src/main/resources/application.yml` | 公共配置：服务端口、MySQL URL、DashScope 模型、OCR 路径、PgVector 参数、日志级别，以及本项目最吃关的一整段 **`app.retrieval`**（`mode` / `vector-floor` / `answer-floor` / `probe-size` / `rerank-enabled` / `rerank-window` / `rerank-use-expanded-query` / `chat-top-k` / `max-context-chunks` / `vector-weight` / `bm25-weight` / `rrf-k`，每个数旁边写着实测依据） |
 | `src/main/resources/application-local.yml` | **（本地覆盖，gitignore）** 敏感配置：MySQL 密码、DashScope API Key、PG 密码 |
-| `pom.xml` | Maven 坐标与依赖清单（Boot 3.5.10 父 POM、Spring AI 1.1.2、Spring AI Alibaba 1.1.2.3、LangChain4j 1.0.0-beta3、HanLP portable、pgvector JDBC…）。⚠️ **没有 `<build>` 段、没引 `spring-boot-maven-plugin`，也没有 Maven Wrapper**（只有个空 `.mvn/` 目录），所以 `mvn package` / `mvn spring-boot:run` 两条路都不通，起法见「启动应用」 |
+| `pom.xml` | Maven 坐标与依赖清单（Boot 3.5.10 父 POM、Spring AI 1.1.2、Spring AI Alibaba 1.1.2.3、LangChain4j 1.0.0-beta3、HanLP portable、pgvector JDBC…）。`<build>` 段里显式引了 `spring-boot-maven-plugin`（`mainClass=org.example.Main`），2026-10-22 补的，所以 `mvn package` 出可执行 fat jar、`mvn spring-boot:run` 起得来。⚠️ **仍然没有 Maven Wrapper**（无 `mvnw`，只有个空 `.mvn/` 目录），要用本机 Maven 或 IDEA 自带 Maven |
 
 ---
 
@@ -1057,7 +1154,7 @@ A：**当前 System Prompt 里没有「不要用 Markdown」这条约束**——
 - `spring-ai-pdf-document-reader` ✓ （它传递引入的是 PDFBox 3.0.5，代码里按 3.x API 调用）
 - **TokenTextSplitter.Builder 可用方法**：`withChunkSize(int)` / `withMinChunkSizeChars(int)` / `withMinChunkLengthToEmbed(int)` / `withMaxNumChunks(int)` / `withKeepSeparator(boolean)` / `build()`。**无 `withChunkOverlap()`**，如需 overlap 效果请自行在后续版本升级。本项目实际只用了 `withChunkSize(512)`，其余全走默认。
 - **LangChain4j 1.0.0-beta3**（+ `langchain4j-community` 同版本 BOM）：代码里真正 import 的只有 `ChatLanguageModel`、`AiServices`、`@Tool`、`@SystemMessage` 四个类。`ChatLanguageModel` 这个 bean 由 `langchain4j-community-dashscope-spring-boot-starter` 自动配置提供，它的配置前缀是 **`langchain4j.community.dashscope.*`，和 Spring AI 那套的 `spring.ai.dashscope.*` 不是同一个**——所以两套框架并存时，密钥要在 `application-local.yml` 里各写一遍，`/lc/*` 才能起来。pom 里另外声明的 `langchain4j-pgvector` **确实一处都没用到**（`/lc/*` 不走向量检索）。
-- `pom.xml` **没有 `<build>` 段**：`spring-boot-maven-plugin` 只被父 POM 的 pluginManagement 认得，本仓库没显式引用，因此 `mvn package` 不出可执行 fat jar、`mvn spring-boot:run` 没有对应插件配置。要用 Maven 起服务，得先在 pom 里补该插件（已列入「后续优化方向」）。
+- `pom.xml` 的 `<build>` 段只放了 `spring-boot-maven-plugin`（`mainClass=org.example.Main`）这一件事，2026-10-22 补上的：`mvn -DskipTests package` 出可执行 fat jar，`mvn spring-boot:run` 也能起。**没有 Maven Wrapper**（无 `mvnw` / `.mvn/wrapper`），本机没装 Maven 时用 IDEA 自带的 Maven。
 
 > ⚠️ **不要**随意升级版本，Spring AI Alibaba 每个小版本对 Spring AI / Spring Boot 有**硬编码依赖**。
 
@@ -1067,10 +1164,10 @@ A：**当前 System Prompt 里没有「不要用 Markdown」这条约束**——
 
 | 方向 | 说明 |
 |---|---|
-| **前端引用块拆分修好** | `app.js splitAnswer()` 找的 `【引用(参考)来源】` 和后端 `RagReferenceService.formatReferences()` 打的 `【引用来源】` 不是同一个串，引用整段落在答案气泡里（详见「智能问诊」一节）。改哪一侧都行，但要一并确认评测的引用判据（「预期文档名是否为答案文本的子串」）不受影响，并且没有单测钉住前端那个字符串——后端改了提示串、前端还在找旧串这类两侧漂移，现有 122 条单测覆盖不到（`EvalPromptGuardTest` 只管 Java 侧提示词与判分器的对应） |
-| **Maven 构建补全** | `pom.xml` 没有 `<build>` 段：补 `spring-boot-maven-plugin` 后 `mvn package` 才有可执行 fat jar、`mvn spring-boot:run` 才起得来。现在只有 IDEA 跑 `org.example.Main` 这一条路（另可考虑加 Maven Wrapper） |
+| **前端引用块拆分修好** | `app.js splitAnswer()` 找的 `【引用(参考)来源】` 和后端 `RagReferenceService.formatReferences()` 打的 `【引用来源】` 不是同一个串，引用整段落在答案气泡里（详见「智能问诊」一节）。改哪一侧都行，但要一并确认评测的引用判据（「预期文档名是否为答案文本的子串」）不受影响，并且没有单测钉住前端那个字符串——后端改了提示串、前端还在找旧串这类两侧漂移，现有 130 条单测覆盖不到（`EvalPromptGuardTest` 只管 Java 侧提示词与判分器的对应） |
+| **Maven Wrapper + CI** | `spring-boot-maven-plugin` 已经在 2026-10-22 补上（`mvn package` 出 fat jar、`mvn spring-boot:run` 能起，两条都实测过）。还缺的是：① 仓库里没有 `mvnw` / `.mvn/wrapper`，新克隆的人得自己装 Maven 或用 IDEA 自带的；② 没有 CI 配置文件，那 130 条单测目前只能靠人记得跑 |
 | **整份 PDF 超时做成配置项** | `MAX(120s, 60s + 15s×页数)` 三个常量目前写死在 `RagInitializer` 里（`PER_PDF_MIN_TIMEOUT_MILLIS` / `PER_PDF_BASE_MILLIS` / `PER_PDF_OCR_MS_PER_PAGE`），要放宽只能改代码；`app.ocr.page-timeout-seconds` 只管单页，两者互不影响 |
-| **注释与实现对齐** | ① `Bm25Controller` 类注释写「重建放在显式接口里而不是启动自动跑」，但 `RagInitializer.java:536` 启动那次确实会 `rebuildAll()` 全量对账（2026-10-22 重启日志 `scratch/app_shot.log:43`：耗时=1710ms），注释已过期；② `EvaluationService` 两处「15 个字」的口径漂移**本轮已修**：判定逻辑的字符集一直是 16 个字（`可须需要应判未达才方便不易勿能否`），但 Javadoc 和报告 summary 各自硬编码枚举了一遍 15 个字、都漏了 `便`/`否`（旧报告落盘的那句就是错的）。现在 16 字表抽成常量 `QUALIFIER_CHARS`，注释只引用常量、summary 那句改成从常量现算，两处不可能再对不上（122 条单测全绿）。③ `RagInitializer.java:534`「实测 1.8s」这条 H5 曾判为过期——那是把单点离群的 3415ms 当成了「最近一次」；2026-10-22 重启量到 1710ms，仍在 13 次的 1544~1876ms 区间内，注释不用改，见上面 BM25 那节「测耗时的坑」 |
+| **注释与实现对齐** | ① `Bm25Controller` 类注释写「重建放在显式接口里而不是启动自动跑」，但 `RagInitializer.java:536` 启动那次确实会 `rebuildAll()` 全量对账（2026-10-22 重启日志 `scratch/app_shot.log:43`：耗时=1710ms），注释已过期；② `EvaluationService` 两处「15 个字」的口径漂移**本轮已修**：判定逻辑的字符集一直是 16 个字（`可须需要应判未达才方便不易勿能否`），但 Javadoc 和报告 summary 各自硬编码枚举了一遍 15 个字、都漏了 `便`/`否`（旧报告落盘的那句就是错的）。现在 16 字表抽成常量 `QUALIFIER_CHARS`，注释只引用常量、summary 那句改成从常量现算，两处不可能再对不上（当时 122 条单测全绿，补上 demo 档守门测试后现在 130 条）。③ `RagInitializer.java:534`「实测 1.8s」这条 H5 曾判为过期——那是把单点离群的 3415ms 当成了「最近一次」；2026-10-22 重启量到 1710ms，仍在 13 次的 1544~1876ms 区间内，注释不用改，见上面 BM25 那节「测耗时的坑」 |
 | 知识库版本治理 | 同一份指南出新版时如何并存与取新：metadata 加生效日期 / `superseded_by`，并定好多版并存时的排序与取舍口径。建议在**第 5 份 PDF 进库之前**做，否则改动要连向量表一起回填 |
 | 删档钩子 | WatchService 目前只处理 CREATE/MODIFY，`ENTRY_DELETE` 没有对应清理（向量块 + BM25 倒排行都会残留）。批量清盘 / 换文件前需要补，或先用 `/bm25/rebuild` + 手动 `DELETE` 兜底 |
 | 句子级溯源 | 引用现在到「块」为止，还没有：① 精确到句、② 「模型答案里这句话确实来自第 N 块」的证据、③ 需要跨块推理的多跳题考卷（当前 501 块小库里 top-16 全盖住了，测不出多跳）。等库上规模再做 |
@@ -1078,7 +1175,7 @@ A：**当前 System Prompt 里没有「不要用 Markdown」这条约束**——
 | 多轮对话上下文 | 引入对话历史管理，支持追问、澄清和多轮上下文连贯对话 |
 | 流式响应（SSE） | 将 `/chat` 接口改造为 Server-Sent Events 流式输出，提升用户等待体验（现在是 `GET` 一次性返回全文，前端 `res.text()` 等整段） |
 | Markdown 星号处理 | 提示词里**没有**「不要用 Markdown」这条约束（现有 5 条规则见 Q8），前端也不渲染，所以 `**` 原样显示。两条路子：答案返回前加正则清洗，或在【回答规则】加一条纯文本约束（改提示词要先过 `EvalPromptGuardTest`） |
-| 核心链路的集成测试 | 判分口径、检索模式、引用行形状、块号→两套页码、块号→章节号、库存工具三态、PHI 审计行、BM25 行构造已有 **122 条纯逻辑单测**（`src/test/java/org/example/`，不连库不打模型，见「测试」一节）；仍缺的是需要真实依赖的链路：OCR 兜底、Tool Call 路由本身、向量检索、脱敏方法本身 |
+| 核心链路的集成测试 | 判分口径、检索模式、引用行形状、块号→两套页码、块号→章节号、库存工具三态、PHI 审计行、BM25 行构造已有 **130 条纯逻辑单测**（`src/test/java/org/example/`，不连库不打模型，见「测试」一节）；仍缺的是需要真实依赖的链路：OCR 兜底、Tool Call 路由本身、向量检索、脱敏方法本身 |
 | 多格式文档支持 | 扩展对 Word、Markdown、Excel 等非 PDF 格式的解析与入库 |
 | 多模型路由 | 根据问题类型自动选择最优大模型（简单问答用 qwen-turbo，复杂推理用 qwen-max） |
 | 权限与鉴权 | 现在全部接口都是 `GET`、无鉴权，`/evaluation/run` 一点就是付费全量。接入企业级 RBAC 之前，至少别把它暴露到公网 |

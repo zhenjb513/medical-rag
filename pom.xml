@@ -245,6 +245,23 @@
         </dependency>
     </dependencies>
 
+    <!--
+      没有这一段时 mvn package 只出普通 thin jar（依赖不在里面），既不能 java -jar 也做不了镜像，
+      唯一能跑的方式是 IDEA 里执行 org.example.Main —— 别人 clone 完是跑不起来的（2026-10-22 补）。
+      版本和 repackage 执行都由 spring-boot-starter-parent 托管，这里只点名主类。
+    -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <mainClass>org.example.Main</mainClass>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
     <repositories>
         <repository>
             <id>central</id>

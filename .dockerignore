@@ -1,0 +1,15 @@
+# 构建上下文里不该出现的东西。
+#
+# ⚠️ 最关键的一行是 application-local.yml：里面是百炼 API key 和本机库口令，
+#    Dockerfile 的 COPY src src 会把整个 src 打进镜像层，不排除就等于把密钥分发出去。
+target/
+scratch/
+docs/
+.idea/
+.git/
+.gitignore
+README.md
+Dockerfile
+docker-compose.yml
+**/application-local.yml
+**/application-local.properties
