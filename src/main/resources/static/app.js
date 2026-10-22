@@ -311,22 +311,39 @@ refreshDiagBtn.addEventListener('click', async () => {
 
 function renderDiag(d) {
   const ri = d.rag_initializer || {};
-  const ocr = ri.ocr_ready;
-  const totalPdf = ri.pdfs_total ?? '-';
-  const okPdf = ri.pdfs_ingested_ok ?? '-';
-  const pgReady = d.pg_vector_initializer_ready;
+  const ocr = (ri.ocr || {}).ocr_ready;
+  const so = ri.stored_overview || {};
+  const boot = typeof ri.last_boot_ingest === 'object' ? ri.last_boot_ingest : null;
+  const scanned = ri.scanned_pdf_count ?? '-';
+  const stored = so.files_in_store;
+  const chunks = so.chunks_in_store;
+  const bm25 = d.bm25_index || {};
 
-  const recent = (ri.recent_processed || []).map(p =>
-    `  · ${p.name} — ${p.chunks} chunks (${p.source})`
-  ).join('\n') || '  （暂无）';
+  // pdfs[] 是逐份体检（磁盘文件 + 库内指纹），per_file 是按 source 聚合的库内清单，只在前者空着时兜底。
+  const list = (ri.pdfs && ri.pdfs.length) ? ri.pdfs : (so.per_file || []);
+  let recent = list.map(p => {
+    const name = p.name || p.source;
+    const got = p.stored_chunks ?? p.chunks ?? '?';
+    const want = p.stored_total_chunks ?? p.total_chunks;
+    const flags = [
+      (p.complete === false || p.incomplete) ? '块数不全' : '',
+      p.stale_extract_version ? '旧抽取版本' : '',
+      (p.file_missing_on_disk || p.in_store === false) ? '不在库/磁盘缺失' : '',
+    ].filter(Boolean).join('、');
+    return `  · ${name} — ${got}${want ? '/' + want : ''} chunks${flags ? ' ⚠ ' + flags : ''}`;
+  }).join('\n') || '  （暂无）';
+  if (ri.pdfs_truncated || so.per_file_truncated) recent += '\n  …（列表已按上限截断）';
 
   const dimCards = [
     { title: '向量库类型', val: d.vector_store_type ? d.vector_store_type.split('.').pop() : '-', cls: 'info' },
     { title: '向量库就绪', val: d.vector_store_is_null ? '❌ 未就绪' : '✅ 就绪', cls: d.vector_store_is_null ? 'err' : 'ok' },
-    { title: 'PgVector 扩展', val: pgReady === undefined ? '-' : (pgReady ? '✅ 已安装' : '❌ 缺失'), cls: pgReady ? 'ok' : 'err' },
+    { title: 'PgVector 扩展', val: d.pg_vector_initializer_ready === undefined ? '-' : (d.pg_vector_initializer_ready ? '✅ 已安装' : '❌ 缺失'), cls: d.pg_vector_initializer_ready ? 'ok' : 'err' },
     { title: 'OCR 引擎', val: ocr === undefined ? '-' : (ocr ? '✅ Tesseract OK' : '❌ 不可用'), cls: ocr ? 'ok' : 'err' },
-    { title: 'PDF 总数', val: totalPdf, cls: 'info' },
-    { title: '已入库成功', val: okPdf, cls: okPdf === totalPdf ? 'ok' : 'info' },
+    { title: 'PDF 总数（磁盘）', val: scanned, cls: 'info' },
+    { title: '已入库（份 / 块）', val: stored == null ? '-' : `${stored} 份 / ${chunks} 块`,
+      cls: boot && boot.failed > 0 ? 'err' : 'ok' },
+    { title: 'BM25 关键词索引', val: bm25.available ? `${bm25.docs} docs / ${bm25.sources} 份` : '❌ 不可用',
+      cls: bm25.available ? 'ok' : 'err' },
   ];
 
   let html = '<div class="diag-grid">';
@@ -335,7 +352,7 @@ function renderDiag(d) {
   });
   html += '</div>';
 
-  html += '<div class="diag-card" style="margin-top:16px"><h4>📚 最近入库记录</h4><div class="diag-detail">' + recent + '</div></div>';
+  html += '<div class="diag-card" style="margin-top:16px"><h4>📚 库内文件逐份体检</h4><div class="diag-detail">' + recent + '</div></div>';
 
   diagBody.innerHTML = html;
 }
