@@ -211,7 +211,7 @@ public class RagInitializer {
                 List<File> candidateDirs = new ArrayList<>();
                 File configuredDir = new File(ocrTessdataDir);
                 candidateDirs.add(configuredDir);
-                candidateDirs.add(new File("D:/AI/demoAI/.diag-tmp/dl"));
+                candidateDirs.add(new File("D:/AI/mkbAI/.diag-tmp/dl"));
                 candidateDirs.add(new File(System.getProperty("user.home"), "tessdata"));
 
                 File bestDir = null;
@@ -234,7 +234,7 @@ public class RagInitializer {
 
                 // 最后兜底：把项目里的 chi_sim.traineddata 复制到 D:/tessdata
                 if (bestDir == null) {
-                    File srcTd = new File("D:/AI/demoAI/.diag-tmp/dl/chi_sim.traineddata");
+                    File srcTd = new File("D:/AI/mkbAI/.diag-tmp/dl/chi_sim.traineddata");
                     if (srcTd.exists()) {
                         File dstDir = new File("D:/tessdata");
                         try {

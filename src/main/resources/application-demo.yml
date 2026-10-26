@@ -1,7 +1,7 @@
 # =====================================================================================
 # demo 档：不配 API key、不联网也能把整条链路点开看。
 #   起法一（Docker，推荐）：docker compose up --build   →  http://localhost:8080
-#   起法二（本机已有 PG+MySQL）：mvn package && java -jar target/demoAI-1.0-SNAPSHOT.jar \
+#   起法二（本机已有 PG+MySQL）：mvn package && java -jar target/mkbAI-1.0-SNAPSHOT.jar \
 #                                  --spring.profiles.active=demo
 # 下面每个值都能用同名环境变量覆盖，改 compose 里的 environment 即可，不用动这个文件。
 #
@@ -12,7 +12,7 @@
 spring:
   datasource:
     # 业务库（MySQL）：consumables 库存表 + phi_audit_log 审计表，compose 里的 mysql 服务建好并塞了 3 行示例库存
-    url: jdbc:mysql://${DEMO_MYSQL_HOST:mysql}:${DEMO_MYSQL_PORT:3306}/${DEMO_MYSQL_DB:demoAI}?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://${DEMO_MYSQL_HOST:mysql}:${DEMO_MYSQL_PORT:3306}/${DEMO_MYSQL_DB:mkbAI}?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: ${DEMO_MYSQL_USER:demo}
     password: ${DEMO_MYSQL_PASSWORD:demo123}
 

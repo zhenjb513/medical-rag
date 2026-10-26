@@ -213,7 +213,7 @@ public class ChatController {
 
         Map<String, Object> phiAudit = new LinkedHashMap<>();
         phiAudit.put("table_ready", phiAuditService.isTableReady());
-        phiAudit.put("table", "MySQL demoAI.phi_audit_log");
+        phiAudit.put("table", "MySQL mkbAI.phi_audit_log");
         phiAudit.put("columns", List.of("message_hash", "endpoint", "hit_types", "hit_count"));
         phiAudit.put("stores_raw_text", false);
         // 零模型调用的探针：不打通问答就能确认业务库连上了、表建出来了

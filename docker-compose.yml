@@ -26,7 +26,7 @@ services:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
     environment:
-      MYSQL_DATABASE: demoAI
+      MYSQL_DATABASE: mkbAI
       MYSQL_USER: demo
       MYSQL_PASSWORD: demo123
       MYSQL_ROOT_PASSWORD: demo123
@@ -51,7 +51,7 @@ services:
       DEMO_PG_USER: demo
       DEMO_PG_PASSWORD: demo123
       DEMO_MYSQL_HOST: mysql
-      DEMO_MYSQL_DB: demoAI
+      DEMO_MYSQL_DB: mkbAI
       DEMO_MYSQL_USER: demo
       DEMO_MYSQL_PASSWORD: demo123
       DEMO_PDF_PATH: /app/data/pdfs

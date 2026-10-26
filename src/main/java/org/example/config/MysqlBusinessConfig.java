@@ -10,7 +10,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import javax.sql.DataSource;
 
 /**
- * 业务库（MySQL {@code demoAI}）的 DataSource / JdbcTemplate。
+ * 业务库（MySQL {@code mkbAI}）的 DataSource / JdbcTemplate。
  * <p>
  * <b>为什么必须显式声明：</b>本项目里 {@link PgVectorConfig} 自己注册了
  * {@code pgVectorDataSource}（DataSource）和 {@code pgVectorJdbcTemplate}（JdbcTemplate）。

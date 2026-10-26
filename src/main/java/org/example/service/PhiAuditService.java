@@ -11,7 +11,7 @@ import java.security.MessageDigest;
 import java.util.List;
 
 /**
- * PHI 命中审计落库（MySQL 业务库 {@code demoAI}，表 {@code phi_audit_log}）。
+ * PHI 命中审计落库（MySQL 业务库 {@code mkbAI}，表 {@code phi_audit_log}）。
  * <p>
  * 为什么原来那行日志不算审计：{@code ChatController} 以前把**含身份证/手机号的原始问句整条打进控制台**，
  * 既没留痕可查、又自己构成一次泄露。现在改成只落一行「命中了什么类型、各几条、原句指纹」，

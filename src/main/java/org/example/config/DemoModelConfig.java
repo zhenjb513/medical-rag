@@ -152,7 +152,9 @@ public class DemoModelConfig {
                 }
                 // 2026-10-22 四档对照（同一 jar 换 -D 重启，24 题探针，判据见 scratch/demo_e2e.py）：
                 // 命中题数 / 挑进答案的噪声句数 —— idf 总量 10/15、10/45 最好；idf÷√句长 和 idf²÷句长
-                // 各 9/15、15 句；原先的「命中数²÷句长」8/15、18 句（四档答案见 scratch/variants/）。
+                // 各 9/15、15 句；原先的「命中数²÷句长」8/15、18 句。三档在 scratch/variants/*.out，
+                // 原公式那档的答案在 scratch/_c_answers.out，那几个数是用 scratch/rescore_answers.py
+                // 按现行判据从存档答案重算的（同一把尺子，不调服务）。
                 // 分母一带句长，短句「二、降压目标值」就总排在带数值的长句前面；按总量排，
                 // 「65~79 岁老年人 低于 140/90 mmHg…」这种长句才排得进去。
                 if (hit > 0) {

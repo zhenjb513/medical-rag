@@ -19,7 +19,7 @@ spring:
 
   # ====== 主数据源：本地 MySQL（业务数据：耗材库存 consumables 表） ======
   datasource:
-    url: jdbc:mysql://localhost:3306/demoAI?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://localhost:3306/mkbAI?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     driver-class-name: com.mysql.cj.jdbc.Driver
 
   # ====== 阿里云百炼 DashScope AI 配置 ======
@@ -133,7 +133,7 @@ app:
     jdbc-url: jdbc:postgresql://localhost:5432/postgres?charSet=UTF8&stringtype=unspecified&prepareThreshold=0
       # 参数说明：
       #   charSet=UTF8             → PostgreSQL JDBC 驱动强制 UTF-8（和 MySQL 的 characterEncoding 参数名不同！）
-      #   stringtype=unspecified   → 传 String 给 setString 不声明 varchar 类型，让 PG 按目标列类型隐式转换，避免一次多余的编码转换
+    #   stringtype=unspecified   → 传 String 给 setString 不声明 varchar 类型，让 PG 按目标列类型隐式转换，避免一次多余的编码转换
     #   prepareThreshold=0       → 关闭服务器端预编译语句缓存，避免一些旧版 PG JDBC 驱动和 pgvector 扩展的缓存串话问题
     driver-class-name: org.postgresql.Driver
     schema-name: public
@@ -146,3 +146,17 @@ app:
     schema-validation: false
     # 重建 vector_store 表开关：true=启动时先清空并重建表（重新入库所有 PDF），false=保留现有数据增量入库
     reset-table: false
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when-authorized
+
+  api-keys: ""
+  rate-limit:
+    enabled: true
+    rpm: 60

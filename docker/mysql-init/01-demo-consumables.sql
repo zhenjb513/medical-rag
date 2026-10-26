@@ -10,7 +10,7 @@
 -- 数据是合成的示例库存，跟真实医院无关。
 
 -- 显式 USE：官方 mysql 镜像的 init 脚本默认库取 MYSQL_DATABASE，写死一次免得哪天改环境变量就建到别处去。
-USE `demoAI`;
+USE `mkbAI`;
 
 CREATE TABLE IF NOT EXISTS consumables (
     name  VARCHAR(128) NOT NULL PRIMARY KEY,
