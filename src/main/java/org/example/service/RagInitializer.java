@@ -326,6 +326,184 @@ public class RagInitializer {
      * @param pdf 目标 PDF 文件
      * @param logPrefix 日志前缀（启动时用 "  "，热监听用 "  [热监听]"）
      */
+    private IngestResult ingestOneFile(File file, String logPrefix) {
+        String name = file.getName().toLowerCase();
+        if (name.endsWith(".pdf")) {
+            return ingestOnePdf(file, logPrefix);
+        }
+        return ingestOneLightweight(file, logPrefix);
+    }
+
+    /**
+     * 非 PDF 文档的轻量入库：Markdown / Word / Excel。
+     * 不需要 OCR，直接读文本 → 切片 → 写入。版本号解析、metadata 与 PDF 分支保持一致。
+     */
+    private IngestResult ingestOneLightweight(File file, String logPrefix) {
+        String currentFileHash = hashFileQuietly(file);
+        StoredVersion stored;
+        try {
+            stored = probeStoredVersion(file);
+        } catch (RuntimeException ex) {
+            System.out.println(logPrefix + "⛔ " + file.getName() + " 无法确认库内已入库版本（" + ex.getMessage()
+                    + "），本次不写入 —— 盲目追加会让同一文件出现两套 chunk_index");
+            return IngestResult.fail();
+        }
+        if (stored != null && stored.sameFile(currentFileHash)) {
+            System.out.println(logPrefix + "⏭️  跳过：" + file.getName()
+                    + "（文件字节未变化，已完整入库 " + stored.chunkCount + " chunks）");
+            return IngestResult.skipped(stored.chunkCount);
+        }
+
+        System.out.println(logPrefix + "📥 开始处理：" + file.getName() + " (" + formatSize(file.length()) + ") ...");
+        long startMs = System.currentTimeMillis();
+
+        String fullText;
+        try {
+            fullText = extractLightweightText(file);
+        } catch (Throwable t) {
+            System.err.println(logPrefix + "❌ 文本抽取失败：" + t.getMessage());
+            return IngestResult.fail();
+        }
+
+        if (fullText == null || fullText.isBlank()) {
+            System.out.println(logPrefix + "    ↪ [内容QC] ⚠️ 抽取结果为空，跳过");
+            return IngestResult.fail();
+        }
+
+        String cleaned = sanitizeExtractedText(fullText);
+        int len = len(cleaned);
+        long nonBlank = 0;
+        if (cleaned != null) {
+            for (int i = 0; i < cleaned.length(); i++) {
+                if (!Character.isWhitespace(cleaned.charAt(i))) nonBlank++;
+            }
+        }
+        if (nonBlank < 20) {
+            System.out.println(logPrefix + "    ↪ [内容QC] ⚠️ 有效字数仅 " + nonBlank + "，跳过");
+            return IngestResult.fail();
+        }
+
+        String metaSource;
+        try { metaSource = file.getCanonicalPath(); } catch (IOException ignore) { metaSource = file.getAbsolutePath(); }
+        Map<String, Object> meta = new HashMap<>();
+        meta.put("source", metaSource);
+        meta.put("file_name", file.getName());
+        meta.put("page_count", 0);
+        meta.put("text_length", len);
+        meta.put("non_blank_length", nonBlank);
+        meta.put("file_hash", nullToEmpty(currentFileHash));
+        meta.put("content_hash", nullToEmpty(sha256Hex(cleaned)));
+        meta.put("extract_version", EXTRACT_PIPELINE_VERSION);
+        meta.put("format", extensionOf(file));
+        String[] verInfo = parseVersionFromFileName(file.getName());
+        meta.put("version", verInfo[0]);
+        meta.put("version_raw", verInfo[1]);
+
+        Document doc = new Document(cleaned, meta);
+        List<Document> chunks = splitter.apply(Collections.singletonList(doc));
+        if (chunks == null) chunks = Collections.emptyList();
+
+        int batches = 0;
+        if (!chunks.isEmpty()) {
+            try {
+                writeChunksInBatches(chunks);
+                batches = (chunks.size() + DASHSCOPE_EMBEDDING_MAX_BATCH - 1) / DASHSCOPE_EMBEDDING_MAX_BATCH;
+                bm25IndexService.refreshSource(sourceKeys(file));
+            } catch (Throwable t) {
+                System.err.println(logPrefix + "❌ 向量化写入失败：" + t.getMessage());
+                return IngestResult.fail();
+            }
+        }
+
+        long elapsed = System.currentTimeMillis() - startMs;
+        System.out.println(logPrefix + "✅ " + file.getName() + " → " + chunks.size() + " chunks, "
+                + batches + " batches, " + elapsed + "ms");
+        return IngestResult.ok(chunks.size(), batches);
+    }
+
+    private static String extensionOf(File f) {
+        String name = f.getName().toLowerCase();
+        int dot = name.lastIndexOf('.');
+        return dot > 0 ? name.substring(dot + 1) : "";
+    }
+
+    /** 轻量格式文本抽取：Markdown / Word(docx) / Excel(xlsx/xls)。 */
+    private String extractLightweightText(File file) throws IOException {
+        String ext = extensionOf(file);
+        return switch (ext) {
+            case "md", "markdown" -> extractMarkdown(file);
+            case "docx" -> extractDocx(file);
+            case "xlsx", "xls" -> extractExcel(file);
+            default -> throw new IOException("不支持的格式：." + ext);
+        };
+    }
+
+    private String extractMarkdown(File file) throws IOException {
+        String raw = Files.readString(file.toPath(), StandardCharsets.UTF_8);
+        try {
+            com.vladsch.flexmark.parser.Parser parser = com.vladsch.flexmark.parser.Parser.builder().build();
+            com.vladsch.flexmark.ast.Document doc = parser.parse(raw);
+            com.vladsch.flexmark.html.HtmlRenderer renderer = com.vladsch.flexmark.html.HtmlRenderer.builder().build();
+            String html = renderer.render(doc);
+            return html.replaceAll("<[^>]+>", " ").replace("&nbsp;", " ")
+                    .replaceAll("\\s+", " ").trim();
+        } catch (Throwable t) {
+            return raw.replaceAll("[#*_`>\\-]", " ").replaceAll("\\s+", " ").trim();
+        }
+    }
+
+    private String extractDocx(File file) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        try (org.apache.poi.xwpf.usermodel.XWPFDocument doc = new org.apache.poi.xwpf.usermodel.XWPFDocument(new FileInputStream(file))) {
+            for (org.apache.poi.xwpf.usermodel.IBodyElement el : doc.getBodyElements()) {
+                if (el instanceof org.apache.poi.xwpf.usermodel.XWPFParagraph p) {
+                    sb.append(p.getText()).append("\n");
+                } else if (el instanceof org.apache.poi.xwpf.usermodel.XWPFTable t) {
+                    for (org.apache.poi.xwpf.usermodel.XWPFTableRow row : t.getRows()) {
+                        for (org.apache.poi.xwpf.usermodel.XWPFTableCell cell : row.getTableCells()) {
+                            sb.append(cell.getText()).append(" | ");
+                        }
+                        sb.append("\n");
+                    }
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    private String extractExcel(File file) throws IOException {
+        StringBuilder sb = new StringBuilder();
+        try (org.apache.poi.ss.usermodel.Workbook wb = org.apache.poi.ss.usermodel.WorkbookFactory.create(file)) {
+            for (int si = 0; si < wb.getNumberOfSheets(); si++) {
+                org.apache.poi.ss.usermodel.Sheet sheet = wb.getSheetAt(si);
+                if (sheet == null) continue;
+                sb.append("[").append(sheet.getSheetName()).append("]\n");
+                for (org.apache.poi.ss.usermodel.Row row : sheet) {
+                    boolean hasAny = false;
+                    StringBuilder line = new StringBuilder();
+                    for (org.apache.poi.ss.usermodel.Cell cell : row) {
+                        String v = "";
+                        if (cell != null) {
+                            switch (cell.getCellType()) {
+                                case STRING -> v = cell.getStringCellValue();
+                                case NUMERIC -> v = String.valueOf(cell.getNumericCellValue());
+                                case BOOLEAN -> v = String.valueOf(cell.getBooleanCellValue());
+                                case FORMULA -> {
+                                    try { v = cell.getStringCellValue(); }
+                                    catch (Throwable t2) { v = String.valueOf(cell.getNumericCellValue()); }
+                                }
+                                default -> {}
+                            }
+                        }
+                        if (!v.isBlank()) { hasAny = true; line.append(v).append(" | "); }
+                    }
+                    if (hasAny) sb.append(line).append("\n");
+                }
+            }
+        }
+        return sb.toString();
+    }
+
     private IngestResult ingestOnePdf(File pdf, String logPrefix) {
         String currentFileHash = hashFileQuietly(pdf);
         StoredVersion stored;
@@ -488,28 +666,28 @@ public class RagInitializer {
             return;
         }
 
-        List<File> pdfs;
+        List<File> files;
         try {
-            pdfs = collectPdfs(pdfPath);
+            files = collectSupportedFiles(pdfPath);
         } catch (Exception ex) {
-            System.err.println("[RagInitializer] 收集 PDF 列表异常，全部跳过: " + ex.getMessage());
+            System.err.println("[RagInitializer] 收集文档列表异常，全部跳过: " + ex.getMessage());
             startDirectoryWatcher();
             return;
         }
-        if (pdfs.isEmpty()) {
-            System.out.println("ℹ️ [RagInitializer] 路径 " + pdfPath + " 下没有任何 .pdf 文件，跳过向量化初始化。");
+        if (files.isEmpty()) {
+            System.out.println("ℹ️ [RagInitializer] 路径 " + pdfPath + " 下没有任何支持的文档文件（pdf/md/docx/xlsx），跳过向量化初始化。");
             startDirectoryWatcher();
             return;
         }
 
         isOcrAvailable();
         System.out.println();
-        System.out.println("[RagInitializer] 共发现 " + pdfs.size() + " 个 PDF，开始批量向量化 ...");
+        System.out.println("[RagInitializer] 共发现 " + files.size() + " 个文档，开始批量向量化 ...");
         System.out.println("[RagInitializer] Embedding 每批最多 " + DASHSCOPE_EMBEDDING_MAX_BATCH + " 个 chunks（DashScope 硬性限制）");
 
         int totalChunks = 0, totalBatches = 0, okCount = 0, failCount = 0, skippedCount = 0;
-        for (File pdf : pdfs) {
-            IngestResult r = ingestOnePdf(pdf, "  ");
+        for (File file : files) {
+            IngestResult r = ingestOneFile(file, "  ");
             totalChunks += r.chunks;
             totalBatches += r.batches;
             if (r.skipped) skippedCount++;
@@ -626,21 +804,21 @@ public class RagInitializer {
             if (finalNonBlank >= 20) {
                 // 抽取路径的选优靠原始文本打分，正文落库前先清洗（控制字符/私用区字形/水印串/连字符码点）
                 String cleaned = sanitizeExtractedText(fullText);
-                // metadata 的 source 与 probeStoredVersion() 保持同一种路径（getCanonicalPath 归一化）
                 String metaSource;
                 try { metaSource = pdf.getCanonicalPath(); } catch (IOException ignore) { metaSource = pdf.getAbsolutePath(); }
-                Document doc = new Document(cleaned == null ? "" : cleaned, Map.of(
-                        "source", metaSource,
-                        "file_name", pdf.getName(),
-                        "page_count", pageCount,
-                        "text_length", len,
-                        "non_blank_length", finalNonBlank,
-                        // 两级指纹：file_hash 命中可跳过抽取；content_hash 命中可跳过重灌
-                        "file_hash", nullToEmpty(hashFileQuietly(pdf)),
-                        "content_hash", nullToEmpty(sha256Hex(cleaned)),
-                        // 抽取流水线版本：和当前 file_hash 一起决定能否跳过抽取
-                        "extract_version", EXTRACT_PIPELINE_VERSION
-                ));
+                Map<String, Object> meta = new HashMap<>();
+                meta.put("source", metaSource);
+                meta.put("file_name", pdf.getName());
+                meta.put("page_count", pageCount);
+                meta.put("text_length", len);
+                meta.put("non_blank_length", finalNonBlank);
+                meta.put("file_hash", nullToEmpty(hashFileQuietly(pdf)));
+                meta.put("content_hash", nullToEmpty(sha256Hex(cleaned)));
+                meta.put("extract_version", EXTRACT_PIPELINE_VERSION);
+                String[] verInfo = parseVersionFromFileName(pdf.getName());
+                meta.put("version", verInfo[0]);
+                meta.put("version_raw", verInfo[1]);
+                Document doc = new Document(cleaned == null ? "" : cleaned, meta);
                 List<Document> c = splitter.apply(Collections.singletonList(doc));
                 if (c != null) chunks = c;
             }
@@ -650,6 +828,32 @@ public class RagInitializer {
     }
 
     private static int len(String s) { return s == null ? 0 : s.length(); }
+
+    /**
+     * 从文件名解析指南版本号。返回 [标准化版本号, 原始匹配串]。
+     * 规则：先匹配连续 4 位年份（2023 / 2024），其次匹配 "2023年" / "2023版" / "v2.0" 这类。
+     * 匹配不到时返回 ["unknown", ""]，不会抛异常。
+     */
+    static String[] parseVersionFromFileName(String fileName) {
+        if (fileName == null || fileName.isBlank()) {
+            return new String[]{"unknown", ""};
+        }
+        String name = fileName.replaceAll("\\.[^.]+$", "");
+        Matcher year4 = Pattern.compile("(19|20)\\d{2}").matcher(name);
+        if (year4.find()) {
+            return new String[]{year4.group(), year4.group()};
+        }
+        Matcher yearCn = Pattern.compile("(19|20)\\d{2}\\s*[年版]").matcher(name);
+        if (yearCn.find()) {
+            String raw = yearCn.group();
+            return new String[]{raw.replaceAll("[^0-9]", ""), raw};
+        }
+        Matcher vNum = Pattern.compile("[vV]\\s*(\\d+(?:\\.\\d+)*)").matcher(name);
+        if (vNum.find()) {
+            return new String[]{vNum.group(1), vNum.group()};
+        }
+        return new String[]{"unknown", ""};
+    }
 
     private static String nullToEmpty(String s) { return s == null ? "" : s; }
 
@@ -880,7 +1084,7 @@ public class RagInitializer {
     }
 
     /** 重灌前先删掉同一份文件的旧块，保证库里每个 source 只有一套连续的 chunk_index。 */
-    private int deleteStoredSourceRows(File pdf) {
+    public int deleteStoredSourceRows(File pdf) {
         if (this.pgJdbc == null) return 0;
         String[] keys = sourceKeys(pdf);
         try {
@@ -1173,19 +1377,28 @@ public class RagInitializer {
         return result;
     }
 
+    private static final Set<String> SUPPORTED_EXTENSIONS = Set.of("pdf", "md", "markdown", "docx", "xlsx", "xls");
+
+    private static boolean isSupportedFile(File f) {
+        if (f == null || !f.isFile()) return false;
+        String name = f.getName().toLowerCase();
+        int dot = name.lastIndexOf('.');
+        if (dot < 0) return false;
+        return SUPPORTED_EXTENSIONS.contains(name.substring(dot + 1));
+    }
+
     /**
-     * 收集所有待处理的 PDF 文件：目录则扫描 *.pdf，单个文件则只返回该文件，路径无效则空集合。
+     * 收集所有待处理的文档文件：目录则扫描所有支持格式，单个文件则检查后缀。
      */
-    private List<File> collectPdfs(String path) {
+    private List<File> collectSupportedFiles(String path) {
         if (path == null || path.isBlank()) return Collections.emptyList();
         File f = new File(path);
         if (!f.exists()) return Collections.emptyList();
         if (f.isFile()) {
-            if (f.getName().toLowerCase().endsWith(".pdf")) return Collections.singletonList(f);
-            return Collections.emptyList();
+            return isSupportedFile(f) ? Collections.singletonList(f) : Collections.emptyList();
         }
         if (f.isDirectory()) {
-            File[] arr = f.listFiles((dir, name) -> name.toLowerCase().endsWith(".pdf"));
+            File[] arr = f.listFiles(RagInitializer::isSupportedFile);
             if (arr == null || arr.length == 0) return Collections.emptyList();
             List<File> list = new ArrayList<>(Arrays.asList(arr));
             list.sort((a, b) -> a.getName().compareToIgnoreCase(b.getName()));
@@ -1219,7 +1432,7 @@ public class RagInitializer {
     private void watchLoop(Path dirPath) {
         try (WatchService ws = FileSystems.getDefault().newWatchService()) {
             this.watchService = ws;
-            dirPath.register(ws, StandardWatchEventKinds.ENTRY_CREATE, StandardWatchEventKinds.ENTRY_MODIFY);
+            dirPath.register(ws, StandardWatchEventKinds.ENTRY_CREATE, StandardWatchEventKinds.ENTRY_MODIFY, StandardWatchEventKinds.ENTRY_DELETE);
 
             System.out.println("👁️ [RagInitializer] WatchService 已启动，监听目录：" + dirPath.toAbsolutePath());
 
@@ -1243,10 +1456,14 @@ public class RagInitializer {
                     if (child == null) continue;
 
                     Path fullPath = dirPath.resolve(child);
-                    if (!fullPath.toString().toLowerCase().endsWith(".pdf")) continue;
+                    if (!isSupportedFile(fullPath.toFile())) continue;
 
                     try {
-                        handleFileEvent(fullPath);
+                        if (kind == StandardWatchEventKinds.ENTRY_DELETE) {
+                            handleSourceFileDelete(fullPath.toFile());
+                        } else {
+                            handleFileEvent(fullPath);
+                        }
                     } catch (Throwable t) {
                         System.err.println("  [热监听] ❌ 处理 " + fullPath.getFileName() + " 异常: " + t.getMessage());
                     }
@@ -1291,12 +1508,21 @@ public class RagInitializer {
         if (!pdfFile.exists() || !pdfFile.isFile()) return;
 
         System.out.println();
-        System.out.println("🔔 [热监听] 检测到新/变更 PDF：" + fileName);
-        IngestResult r = ingestOnePdf(pdfFile, "  [热监听] ");
+        System.out.println("🔔 [热监听] 检测到新/变更文件：" + fileName);
+        IngestResult r = ingestOneFile(pdfFile, "  [热监听] ");
         // 内容真变过才刷新：判重跳过的文件（hash 相同）关键词索引本来就是对的，白花时间
         // 按份增量刷，不再全表重建
         if (r.ok && !r.skipped && r.chunks > 0) refreshKeywordIndexForSource(pdfFile, "热监听入库 " + fileName);
         System.out.println();
+    }
+
+    private void handleSourceFileDelete(File pdf) {
+        String fileName = pdf.getName();
+        int vectorRows = deleteStoredSourceRows(pdf);
+        int bm25Rows = (bm25IndexService != null && bm25IndexService.isAvailable())
+                ? bm25IndexService.deleteSource(sourceKeys(pdf)) : 0;
+        System.out.println("🗑️ [热监听] 检测到 PDF 已删除：" + fileName
+                + "  → 清理 vector_store 块=" + vectorRows + "  bm25_docs 行=" + bm25Rows);
     }
 
     private boolean waitFileStable(Path path) throws InterruptedException {
@@ -1447,24 +1673,24 @@ public class RagInitializer {
                 ? "本轮启动没跑批量入库（目录里没有 PDF，或没有 VectorStore Bean）" : lastBootIngest);
         out.put("stored_overview", storedOverview());
 
-        List<File> pdfs;
-        try { pdfs = collectPdfs(pdfPath); }
+        List<File> files;
+        try { files = collectSupportedFiles(pdfPath); }
         catch (Exception ex) { out.put("collect_error", ex.toString()); return out; }
 
-        out.put("scanned_pdf_count", pdfs.size());
+        out.put("scanned_file_count", files.size());
         // 逐份体检要开一次文件读页数、再打一条 SQL 问库内指纹，是 per-file 成本。
         // 和库内列表一样套 LIMIT：目录里堆到几万份时，这个接口不该自己把连接打满。
-        int listed = Math.min(pdfs.size(), STORED_OVERVIEW_LIMIT);
-        List<Map<String, Object>> pdfDiags = new ArrayList<>();
+        int listed = Math.min(files.size(), STORED_OVERVIEW_LIMIT);
+        List<Map<String, Object>> fileDiags = new ArrayList<>();
         for (int i = 0; i < listed; i++) {
-            File pdf = pdfs.get(i);
-            Map<String, Object> one = quickPdfDiag(pdf);
-            if (deep) one.putAll(deepExtractDiag(pdf));
-            pdfDiags.add(one);
+            File f = files.get(i);
+            Map<String, Object> one = quickPdfDiag(f);
+            if (deep) one.putAll(deepExtractDiag(f));
+            fileDiags.add(one);
         }
-        out.put("pdfs", pdfDiags);
-        out.put("pdfs_listed", listed);
-        out.put("pdfs_truncated", pdfs.size() > listed);
+        out.put("files", fileDiags);
+        out.put("files_listed", listed);
+        out.put("files_truncated", files.size() > listed);
         return out;
     }
 

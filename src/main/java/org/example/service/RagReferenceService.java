@@ -57,7 +57,14 @@ public class RagReferenceService {
         if (similarityThreshold != null) {
             builder.similarityThreshold(similarityThreshold);
         }
-        List<Document> rawResults = vectorStore.similaritySearch(builder.build());
+        List<Document> rawResults;
+        try {
+            rawResults = vectorStore.similaritySearch(builder.build());
+        } catch (RuntimeException e) {
+            System.err.println("[向量检索] 调用失败（向量化或数据库层异常），降级为空："
+                    + e.getClass().getSimpleName() + " " + e.getMessage());
+            return Collections.emptyList();
+        }
 
         System.out.print("[RAG原始分数] Top " + (rawResults == null ? 0 : rawResults.size())
                 + " score=[ ");
@@ -124,7 +131,7 @@ public class RagReferenceService {
      * 一条引用：去掉路径的文件名 + 该文件被送进模型的块号（升序去重）+ 有几个块查不到块号。
      * chunk_index 是入库时的连续编号，和上下文里「【文档N】」那个展示序号不是一套序号，别混。
      */
-    record Citation(String fileName, List<Integer> chunks, int missingChunkIndex) {}
+    record Citation(String fileName, String version, List<Integer> chunks, int missingChunkIndex) {}
 
     /** 按文件聚合引用块（纯逻辑，只读 Document 的字段，不连库不打模型）。 */
     static List<Citation> groupCitations(List<Document> docs) {
@@ -133,6 +140,7 @@ public class RagReferenceService {
         }
         Map<String, TreeSet<Integer>> byFile = new LinkedHashMap<>();
         Map<String, Integer> missingByFile = new LinkedHashMap<>();
+        Map<String, String> versionByFile = new LinkedHashMap<>();
         for (Document doc : docs) {
             Map<String, Object> metadata = doc.getMetadata() == null ? Map.of() : doc.getMetadata();
             String source = firstNonEmpty(metadata.get("source"), metadata.get("file_name"), metadata.get("filename"));
@@ -141,6 +149,8 @@ public class RagReferenceService {
             }
             String fileName = stripPath(source);
             Integer chunkIndex = parseChunkIndex(metadata.get("chunk_index"));
+            String version = metadata.get("version") == null ? null : String.valueOf(metadata.get("version"));
+            versionByFile.putIfAbsent(fileName, version);
             if (chunkIndex == null) {
                 missingByFile.merge(fileName, 1, Integer::sum);
                 byFile.computeIfAbsent(fileName, k -> new TreeSet<>());
@@ -150,7 +160,8 @@ public class RagReferenceService {
         }
         List<Citation> citations = new ArrayList<>();
         for (Map.Entry<String, TreeSet<Integer>> e : byFile.entrySet()) {
-            citations.add(new Citation(e.getKey(), new ArrayList<>(e.getValue()),
+            citations.add(new Citation(e.getKey(), versionByFile.get(e.getKey()),
+                    new ArrayList<>(e.getValue()),
                     missingByFile.getOrDefault(e.getKey(), 0)));
         }
         return citations;
@@ -163,6 +174,9 @@ public class RagReferenceService {
      */
     static String formatCitation(Citation c) {
         StringBuilder sb = new StringBuilder(c.fileName());
+        if (c.version() != null && !c.version().equals("unknown")) {
+            sb.append("【").append(c.version()).append("版】");
+        }
         if (c.chunks().isEmpty()) {
             return c.missingChunkIndex() > 0 ? sb.append("（本批块未记录块号）").toString() : sb.toString();
         }

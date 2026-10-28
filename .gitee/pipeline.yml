@@ -1,0 +1,26 @@
+services:
+  - name: maven
+    type: jdk21
+    version: "3.9"
+
+stages:
+  - name: build
+    displayName: 构建与测试
+    jobs:
+      - job: maven_build
+        displayName: Maven 测试 + 打包
+        runsOn:
+          group: public
+          labels: [ self-hosted ]
+        steps:
+          - name: 运行单元测试
+            script: |
+              chmod +x mvnw
+              ./mvnw test -B --no-transfer-progress
+          - name: 打包 fat jar
+            script: |
+              ./mvnw package -DskipTests -B --no-transfer-progress
+          - name: 上传制品
+            script: |
+              mkdir -p target
+              ls -la target/*.jar

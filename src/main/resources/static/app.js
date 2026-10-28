@@ -63,9 +63,26 @@ const chatArea = document.getElementById('chatArea');
 const msgInput = document.getElementById('msgInput');
 const sendBtn = document.getElementById('sendBtn');
 
+let currentSessionId = null;
+
+async function ensureSession() {
+  if (currentSessionId) return currentSessionId;
+  try {
+    const res = await fetch('/chat/session/new', { method: 'POST' });
+    const data = await res.json();
+    currentSessionId = data.sessionId;
+    return currentSessionId;
+  } catch {
+    return null;
+  }
+}
+
+function resetSession() {
+  currentSessionId = null;
+}
+
 function splitAnswer(raw) {
-  // 后端返回格式：答案文本 + "\n\n---\n【引用(参考)来源】\n1.xxx\n2.xxx"
-  const refIdx = raw.indexOf('【引用(参考)来源】');
+  const refIdx = raw.indexOf('【引用来源】');
   let answer = raw, refs = null;
   if (refIdx !== -1) {
     answer = raw.substring(0, refIdx).trim();
@@ -108,23 +125,31 @@ function addMsg(role, text) {
   return bubble;
 }
 
-function addThinking() {
+function addStreamingBubble() {
   const welcome = chatArea.querySelector('.chat-welcome');
   if (welcome) welcome.remove();
 
   const wrap = document.createElement('div');
   wrap.className = 'msg ai';
-  wrap.id = 'thinkingMsg';
-  wrap.innerHTML = `
-    <div class="msg-avatar">🩺</div>
-    <div class="msg-bubble"><div class="thinking"><span></span><span></span><span></span></div></div>
-  `;
+  wrap.id = 'streamingMsg';
+
+  const avatar = document.createElement('div');
+  avatar.className = 'msg-avatar';
+  avatar.textContent = '🩺';
+
+  const bubble = document.createElement('div');
+  bubble.className = 'msg-bubble';
+  bubble.style.whiteSpace = 'pre-wrap';
+
+  wrap.appendChild(avatar);
+  wrap.appendChild(bubble);
   chatArea.appendChild(wrap);
   chatArea.scrollTop = chatArea.scrollHeight;
+  return bubble;
 }
 
-function removeThinking() {
-  const t = document.getElementById('thinkingMsg');
+function removeStreamingBubble() {
+  const t = document.getElementById('streamingMsg');
   if (t) t.remove();
 }
 
@@ -136,26 +161,97 @@ async function sendMessage(text) {
 
   addMsg('user', text);
   sendBtn.disabled = true;
-  addThinking();
 
+  if (isRagChat) {
+    await sendRagStream(text);
+  } else {
+    await sendPlainMessage(apiPath, text);
+  }
+
+  sendBtn.disabled = false;
+  msgInput.value = '';
+  msgInput.style.height = 'auto';
+}
+
+async function sendPlainMessage(apiPath, text) {
   try {
     const res = await fetch(apiPath + '?message=' + encodeURIComponent(text));
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const body = await res.text();
-    removeThinking();
-    if (isRagChat) {
-      addMsg('ai', body);
-    } else {
-      const bubble = addMsg('ai', body);
-      bubble.style.borderLeft = '3px solid #9b59b6';
-    }
+    const bubble = addMsg('ai', body);
+    bubble.style.borderLeft = '3px solid #9b59b6';
   } catch (e) {
-    removeThinking();
     addMsg('ai', '❌ 请求失败：' + e.message + '\n\n请检查后端是否已启动（默认端口 8080）。');
-  } finally {
-    sendBtn.disabled = false;
-    msgInput.value = '';
-    msgInput.style.height = 'auto';
+  }
+}
+
+async function sendRagStream(text) {
+  const sid = await ensureSession();
+  const bubble = addStreamingBubble();
+
+  const url = '/chat/stream?message=' + encodeURIComponent(text)
+    + (sid ? '&sessionId=' + sid : '');
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let refsRendered = false;
+    let answerText = '';
+    let refsText = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      const events = buffer.split(/\n\n/);
+      buffer = events.pop();
+
+      for (const rawEvent of events) {
+        const lines = rawEvent.split('\n');
+        let eventName = '';
+        let data = '';
+        for (const line of lines) {
+          if (line.startsWith('event:')) {
+            eventName = line.substring(6).trim();
+          } else if (line.startsWith('data:')) {
+            data += line.substring(5).trim();
+          }
+        }
+
+        if (data === '[DONE]') continue;
+
+        if (eventName === 'refs') {
+          refsText += data;
+          refsRendered = true;
+        } else {
+          answerText += data;
+        }
+
+        bubble.textContent = answerText;
+        if (refsRendered) {
+          let refsDiv = bubble.querySelector('.refs-block');
+          if (!refsDiv) {
+            refsDiv = document.createElement('div');
+            refsDiv.className = 'refs-block';
+            bubble.appendChild(refsDiv);
+          }
+          refsDiv.innerHTML = '<strong>📎 引用来源</strong><br>'
+            + (refsText || '').replace(/\n/g, '<br>');
+        }
+        chatArea.scrollTop = chatArea.scrollHeight;
+      }
+    }
+
+    removeStreamingBubble();
+  } catch (e) {
+    removeStreamingBubble();
+    addMsg('ai', '❌ 请求失败：' + e.message + '\n\n请检查后端是否已启动（默认端口 8080）。');
   }
 }
 

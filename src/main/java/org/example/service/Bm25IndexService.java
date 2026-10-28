@@ -147,6 +147,17 @@ public class Bm25IndexService {
                 + "  耗时=" + ms + "ms";
     }
 
+    public int deleteSource(String[] sourceKeys) {
+        if (pg == null || sourceKeys == null || sourceKeys.length == 0) return 0;
+        try {
+            return pg.update("DELETE FROM bm25_docs WHERE source IN " + placeholders(sourceKeys.length),
+                    (Object[]) sourceKeys);
+        } catch (Exception ex) {
+            System.out.println("    ⚠️ BM25 删除 source 异常：" + ex.getMessage());
+            return -1;
+        }
+    }
+
     private static String placeholders(int n) {
         StringBuilder sb = new StringBuilder("(");
         for (int i = 0; i < n; i++) sb.append(i == 0 ? "?" : ", ?");

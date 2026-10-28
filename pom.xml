@@ -208,6 +208,18 @@
             <version>${spring-ai.version}</version>
         </dependency>
 
+        <!-- ========== 多格式文档读取器（Word / Excel / Markdown） ========== -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.2.5</version>
+        </dependency>
+        <dependency>
+            <groupId>com.vladsch.flexmark</groupId>
+            <artifactId>flexmark-all</artifactId>
+            <version>0.64.8</version>
+        </dependency>
+
         <!-- ========== LangChain4j 学习实验：核心 + DashScope + PgVector ========== -->
         <!--
           版本管理：langchain4j-bom 1.0.0-beta3（阿里百炼官方文档推荐版本）。

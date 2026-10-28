@@ -178,17 +178,39 @@ public class HybridRetrievalService {
      * @param threshold 向量通道的相似度下限，传 null 时用 app.retrieval.vector-floor
      */
     public List<Document> search(String query, int topK, Double threshold) {
+        return search(query, topK, threshold, null);
+    }
+
+    /**
+     * @param threshold     向量通道的相似度下限，传 null 时用 app.retrieval.vector-floor
+     * @param versionFilter 限定检索的版本号白名单（null/空集=不过滤，"2023"/"2021" 这种）
+     */
+    public List<Document> search(String query, int topK, Double threshold, java.util.Set<String> versionFilter) {
         String m = enforceGateCapable(getMode(), bm25IndexService.isAvailable());
+        List<Document> raw;
         switch (m) {
-            case "hybrid" -> {
-                return hybrid(query, topK, true, rerankEnabled);
-            }
+            case "hybrid" -> raw = hybrid(query, topK, true, rerankEnabled);
             default -> {
                 List<Document> v = ragReferenceService.search(retrievalQuery(query), topK,
                         threshold == null ? vectorFloor : threshold);
-                return hasEvidence(v) ? v : List.of();
+                raw = hasEvidence(v) ? v : List.of();
             }
         }
+        return applyVersionFilter(raw, versionFilter);
+    }
+
+    static List<Document> applyVersionFilter(List<Document> docs, java.util.Set<String> versionFilter) {
+        if (docs == null || docs.isEmpty() || versionFilter == null || versionFilter.isEmpty()) {
+            return docs;
+        }
+        java.util.List<Document> filtered = new java.util.ArrayList<>();
+        for (Document d : docs) {
+            Object v = d.getMetadata() == null ? null : d.getMetadata().get("version");
+            if (v != null && versionFilter.contains(String.valueOf(v))) {
+                filtered.add(d);
+            }
+        }
+        return filtered;
     }
 
     /** @param expand 是否把命中块的前后邻居块补进上下文 */

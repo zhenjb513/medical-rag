@@ -123,6 +123,31 @@ app:
     #    而「火星上有没有心血管病指南」这种明显域外的问题 top1 有 0.194，两者分不开。
     #    判定能不能答只用上面那个 answer-floor（看向量通道第一名），重排分只负责排序。
 
+    # ====== 查询扩展（口语→指南术语映射，只作用于召回通道）======
+    #不配时用代码内置 6 条规则（坏胆固醇/血糖/全家/遗传/WHO/世界卫生组织），
+    #配置了就完全覆盖内置规则（不是追加）。trigger 是触发子串，terms 是补进去的指南术语列表。
+    #示例（全部 3 条字段）：
+    # query-expander:
+    #   rules:
+    #     - trigger: 坏胆固醇
+    #       terms: [低密度脂蛋白胆固醇, LDL-C]
+    #     - trigger: 血糖
+    #       terms: [糖尿病]
+    query-expander:
+      rules:
+        - trigger: 坏胆固醇
+          terms: [低密度脂蛋白胆固醇, LDL-C]
+        - trigger: 血糖
+          terms: [糖尿病]
+        - trigger: 全家
+          terms: [家族性高胆固醇血症, FH]
+        - trigger: 遗传
+          terms: [家族性高胆固醇血症, FH]
+        - trigger: WHO
+          terms: [hypertension, blood pressure, target]
+        - trigger: 世界卫生组织
+          terms: [hypertension, blood pressure, target]
+
   pgvector:
     # ✨ 关键开关 ✨
     #   false → SimpleVectorStore（内存向量库，默认，开箱即用，重启会清空向量）
