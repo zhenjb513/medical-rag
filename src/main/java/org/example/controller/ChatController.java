@@ -62,6 +62,30 @@ public class ChatController {
         this.chatMemoryManager = chatMemoryManager;
     }
 
+    public record ChatTrace(String answer, List<Document> docs, List<String> refs) {}
+
+    /** 给评估链路用：跑完整 RAG 流程，但同时返回送进模型的 docs。 */
+    public ChatTrace chatWithTrace(String message) {
+        String currentQuery = QueryExpander.expand(message);
+        List<Document> docs = hybridRetrievalService.search(currentQuery, 5, null);
+        String ragContext = ragReferenceService.buildContext(docs);
+        List<String> refs = ragReferenceService.extractReferences(docs);
+        String fullPrompt = SYSTEM_PROMPT + "\n\n【知识库上下文】\n" + ragContext + "\n\n【用户问题】\n" + message;
+
+        List<Message> promptMessages = List.of(
+                new org.springframework.ai.chat.messages.SystemMessage(SYSTEM_PROMPT),
+                new org.springframework.ai.chat.messages.UserMessage(fullPrompt)
+        );
+        String answer;
+        try {
+            answer = chatClient.prompt(new Prompt(promptMessages)).call().content();
+        } catch (Exception e) {
+            answer = RAG_REFUSAL_PHRASE + "（服务暂时不可用：" + e.getMessage() + "）";
+        }
+        if (answer == null || answer.isBlank()) answer = RAG_REFUSAL_PHRASE;
+        return new ChatTrace(answer.trim(), docs, refs);
+    }
+
     @GetMapping("/chat")
     public String chat(@RequestParam(value = "message") String message,
                        @RequestParam(value = "sessionId", required = false) String sessionId) {

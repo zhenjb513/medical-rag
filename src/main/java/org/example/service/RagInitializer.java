@@ -406,7 +406,7 @@ public class RagInitializer {
         int batches = 0;
         if (!chunks.isEmpty()) {
             try {
-                writeChunksInBatches(chunks);
+                writeChunksInBatches(chunks, logPrefix);
                 batches = (chunks.size() + DASHSCOPE_EMBEDDING_MAX_BATCH - 1) / DASHSCOPE_EMBEDDING_MAX_BATCH;
                 bm25IndexService.refreshSource(sourceKeys(file));
             } catch (Throwable t) {
@@ -442,9 +442,9 @@ public class RagInitializer {
         String raw = Files.readString(file.toPath(), StandardCharsets.UTF_8);
         try {
             com.vladsch.flexmark.parser.Parser parser = com.vladsch.flexmark.parser.Parser.builder().build();
-            com.vladsch.flexmark.ast.Document doc = parser.parse(raw);
+            com.vladsch.flexmark.util.ast.Document flexDoc = parser.parse(raw);
             com.vladsch.flexmark.html.HtmlRenderer renderer = com.vladsch.flexmark.html.HtmlRenderer.builder().build();
-            String html = renderer.render(doc);
+            String html = renderer.render(flexDoc);
             return html.replaceAll("<[^>]+>", " ").replace("&nbsp;", " ")
                     .replaceAll("\\s+", " ").trim();
         } catch (Throwable t) {
@@ -602,16 +602,8 @@ public class RagInitializer {
                         + "（正文与库内版本不同，已删除旧块 " + removed + " 条）");
             }
 
-            int batchesForThisPdf = 0;
-            long batchStartMs = System.currentTimeMillis();
-            for (List<Document> batch : partition(chunks, DASHSCOPE_EMBEDDING_MAX_BATCH)) {
-                vectorStore.add(batch);
-                batchesForThisPdf++;
-                if ((batchesForThisPdf % 20) == 0) {
-                    long secs = (System.currentTimeMillis() - batchStartMs + 500) / 1000;
-                    System.out.println(logPrefix + "   ↪ DashScope Embedding：已完成 " + batchesForThisPdf + " 批（已用约 " + secs + "s）");
-                }
-            }
+            int batchesForThisPdf = writeChunksInBatches(chunks, logPrefix);
+
             long totalChars = 0;
             int minChunk = Integer.MAX_VALUE, maxChunk = 0, emptyChunks = 0;
             java.lang.reflect.Method docTextGetter = null;
@@ -695,7 +687,7 @@ public class RagInitializer {
             else failCount++;
         }
         lastBootIngest = Map.of(
-                "scanned_pdf_count", pdfs.size(),
+                "scanned_file_count", files.size(),
                 "skipped_unchanged", skippedCount,
                 "newly_ingested_or_rewritten", okCount - skippedCount,
                 "failed", failCount,
@@ -1363,6 +1355,22 @@ public class RagInitializer {
                     -> true;
             default -> false;
         };
+    }
+
+    /** 分批写入 VectorStore（Embedding 调用），每批 ≤ DASHSCOPE_EMBEDDING_MAX_BATCH。 */
+    private int writeChunksInBatches(List<Document> chunks, String logPrefix) {
+        if (chunks == null || chunks.isEmpty()) return 0;
+        int batches = 0;
+        long startMs = System.currentTimeMillis();
+        for (List<Document> batch : partition(chunks, DASHSCOPE_EMBEDDING_MAX_BATCH)) {
+            vectorStore.add(batch);
+            batches++;
+            if ((batches % 20) == 0) {
+                long secs = (System.currentTimeMillis() - startMs + 500) / 1000;
+                System.out.println(logPrefix + "   ↪ DashScope Embedding：已完成 " + batches + " 批（已用约 " + secs + "s）");
+            }
+        }
+        return batches;
     }
 
     /** 通用分片：把 list 切成多个子 list，每个子 list size ≤ batchSize。 */

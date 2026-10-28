@@ -343,7 +343,7 @@ public class EvaluationService {
         try {
             trace = chatController.chatWithTrace(testCase.getQuestion());
         } catch (Exception e) {
-            trace = new ChatController.ChatTrace("【调用异常】" + e.getMessage(), List.of(), "");
+            trace = new ChatController.ChatTrace("【调用异常】" + e.getMessage(), List.of(), List.of());
         }
         String answer = trace.answer();
         result.answer = answer;
