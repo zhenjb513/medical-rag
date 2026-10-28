@@ -1,9 +1,6 @@
 package org.example.controller;
 
-import org.example.service.ChatMemoryManager;
-import org.example.service.HybridRetrievalService;
-import org.example.service.QueryExpander;
-import org.example.service.RagReferenceService;
+import org.example.service.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.client.ChatClient;
@@ -53,6 +50,7 @@ public class ChatController {
 
     private final ChatClient chatClient;
     private final HybridRetrievalService hybridRetrievalService;
+    private final MultiHopRetrievalService multiHopRetrievalService;
     private final RagReferenceService ragReferenceService;
     private final ChatMemoryManager chatMemoryManager;
 
@@ -61,10 +59,12 @@ public class ChatController {
 
     public ChatController(ChatClient chatClient,
                           HybridRetrievalService hybridRetrievalService,
+                          MultiHopRetrievalService multiHopRetrievalService,
                           RagReferenceService ragReferenceService,
                           ChatMemoryManager chatMemoryManager) {
         this.chatClient = chatClient;
         this.hybridRetrievalService = hybridRetrievalService;
+        this.multiHopRetrievalService = multiHopRetrievalService;
         this.ragReferenceService = ragReferenceService;
         this.chatMemoryManager = chatMemoryManager;
     }
@@ -77,7 +77,7 @@ public class ChatController {
      */
     public ChatTrace chatWithTrace(String message) {
         String currentQuery = QueryExpander.expand(message);
-        List<Document> docs = hybridRetrievalService.search(currentQuery, chatTopK, null);
+        List<Document> docs = multiHopRetrievalService.search(currentQuery, chatTopK, null);
         String ragContext = ragReferenceService.buildContext(docs);
         List<String> refs = ragReferenceService.extractReferences(docs);
         String fullPrompt = SYSTEM_PROMPT + "\n\n【知识库上下文】\n" + ragContext + "\n\n【用户问题】\n" + message;
@@ -101,7 +101,7 @@ public class ChatController {
                        @RequestParam(value = "sessionId", required = false) String sessionId) {
         try {
             String currentQuery = QueryExpander.expand(message);
-            List<Document> docs = hybridRetrievalService.search(currentQuery, chatTopK, null);
+            List<Document> docs = multiHopRetrievalService.search(currentQuery, chatTopK, null);
             String ragContext = ragReferenceService.buildContext(docs);
             List<String> refs = ragReferenceService.extractReferences(docs);
             String fullPrompt = SYSTEM_PROMPT + "\n\n【知识库上下文】\n" + ragContext + "\n\n【用户问题】\n" + message;
@@ -139,7 +139,7 @@ public class ChatController {
 
         try {
             String currentQuery = QueryExpander.expand(message);
-            List<Document> docs = hybridRetrievalService.search(currentQuery, chatTopK, null);
+            List<Document> docs = multiHopRetrievalService.search(currentQuery, chatTopK, null);
             String ragContext = ragReferenceService.buildContext(docs);
             List<String> refs = ragReferenceService.extractReferences(docs);
             String fullPrompt = SYSTEM_PROMPT + "\n\n【知识库上下文】\n" + ragContext + "\n\n【用户问题】\n" + message;

@@ -24,6 +24,15 @@
   <div class="status-pill" id="apiStatus">
     <span class="dot"></span> 后端检测中...
   </div>
+  <div class="auth-area" id="authArea">
+    <div class="auth-logged-out" id="authLoggedOut">
+      <button class="btn-login" id="loginBtn">🔐 登录</button>
+    </div>
+    <div class="auth-logged-in hidden" id="authLoggedIn">
+      <span class="auth-user" id="authUser"></span>
+      <button class="btn-logout" id="logoutBtn">退出</button>
+    </div>
+  </div>
 </header>
 
 <main class="container">
@@ -49,20 +58,7 @@
       <div class="model-selector">
         <span class="selector-label">🤖 框架 / 场景：</span>
         <select id="modelSelect" class="model-select">
-          <optgroup label="Spring AI（RAG + 工具 + 引用）">
-            <option value="/chat" selected>Spring AI · 医疗 RAG 助手</option>
-          </optgroup>
-          <optgroup label="LangChain4j · 纯对话">
-            <option value="/lc/chat">LC4J · 医疗耗材助手</option>
-            <option value="/lc/chat/doctor">LC4J · 心内科医生</option>
-            <option value="/lc/chat/safe">LC4J · 安全防护（反注入）</option>
-            <option value="/lc/chat/json">LC4J · JSON 结构化输出</option>
-          </optgroup>
-          <optgroup label="LangChain4j · 工具调用">
-            <option value="/lc/tool/inventory">LC4J · 库存查询（单工具）</option>
-            <option value="/lc/tool/phi">LC4J · PHI 脱敏（单工具）</option>
-            <option value="/lc/tool/full">LC4J · 全能助手（多工具）</option>
-          </optgroup>
+          <option value="/chat" selected>Spring AI · 医疗 RAG 助手</option>
         </select>
         <span class="selector-hint" id="selectorHint">Spring AI：RAG 检索 + 引用来源</span>
       </div>
@@ -100,6 +96,33 @@
   </section>
 
 </main>
+
+<!-- ==================== 登录模态框 ==================== -->
+<div class="modal-backdrop hidden" id="loginModal">
+  <div class="modal login-modal">
+    <div class="modal-header">
+      <h3>🔐 登录 mkbAI</h3>
+      <button class="modal-close" id="loginClose">×</button>
+    </div>
+    <div class="modal-body">
+      <form id="loginForm">
+        <div class="form-group">
+          <label>用户名</label>
+          <input type="text" name="username" required placeholder="admin">
+        </div>
+        <div class="form-group">
+          <label>密码</label>
+          <input type="password" name="password" required placeholder="admin123">
+        </div>
+        <div class="form-hint">
+          本地开发默认账号：<code>admin / admin123</code>
+        </div>
+        <div class="form-error hidden" id="loginError">用户名或密码错误</div>
+        <button type="submit" class="btn-primary btn-full">登录</button>
+      </form>
+    </div>
+  </div>
+</div>
 
 <script src="app.js"></script>
 </body>

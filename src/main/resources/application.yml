@@ -172,6 +172,22 @@ app:
     # 重建 vector_store 表开关：true=启动时先清空并重建表（重新入库所有 PDF），false=保留现有数据增量入库
     reset-table: false
 
+  # ====== 安全鉴权 ======
+  # API Key 鉴权（和 Spring Security session 二选一，任一通过即可放行 API）
+  security:
+    # 逗号分隔的 API Key 列表（为空时只允许 session 登录）
+    api-keys: ""
+    # 内置账号（demo 级，不建数据库表）
+    users:
+      - username: admin
+        password: admin123
+        roles: [ADMIN]
+      - username: doctor
+        password: doctor123
+        roles: [USER]
+    # 是否开启 Spring Security 登录鉴权（false=完全关闭，只靠 ApiKeyFilter）
+    form-login-enabled: true
+
 management:
   endpoints:
     web:
@@ -181,7 +197,7 @@ management:
     health:
       show-details: when-authorized
 
-  api-keys: ""
+app:
   rate-limit:
     enabled: true
     rpm: 60
