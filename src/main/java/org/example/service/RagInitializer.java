@@ -2,11 +2,7 @@ package org.example.service;
 
 import jakarta.annotation.PostConstruct;
 import org.apache.pdfbox.Loader;
-import org.apache.pdfbox.cos.COSArray;
-import org.apache.pdfbox.cos.COSBase;
-import org.apache.pdfbox.cos.COSDictionary;
-import org.apache.pdfbox.cos.COSName;
-import org.apache.pdfbox.cos.COSStream;
+import org.apache.pdfbox.cos.*;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPageTree;
 import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotation;
@@ -22,30 +18,10 @@ import org.springframework.stereotype.Component;
 
 import javax.imageio.ImageIO;
 import java.awt.image.BufferedImage;
-import java.io.BufferedReader;
-import java.io.File;
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.io.InputStream;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.FileSystems;
-import java.nio.file.Path;
-import java.nio.file.StandardWatchEventKinds;
-import java.nio.file.WatchEvent;
-import java.nio.file.WatchKey;
-import java.nio.file.WatchService;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.IdentityHashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Objects;
-import java.util.Set;
+import java.nio.file.*;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
@@ -54,11 +30,11 @@ import java.util.regex.Pattern;
 
 /**
  * RAG 知识库初始化：把 PDF 文档切片 → 向量化 → 分批写入 VectorStore。
- *
+ * <p>
  * 不使用 Spring AI 自带的 PagePdfDocumentReader：其版面坐标排序 Comparator 不满足 Java TimSort 合约，
  * 复杂 PDF（双栏/表格/OCR 扫描件）会抛 "Comparison method violates its general contract"。
  * 这里改用 PDFBox 原生 PDFTextStripper 按文本流顺序抽全文，从源头规避坏排序。
- *
+ * <p>
  * 由于 DashScope text-embedding-v3 官方限制单次批量 ≤10，写入时按批切分。
  */
 @Component
@@ -68,39 +44,48 @@ public class RagInitializer {
     // 兼容 PDFBox 2.x ~ 3.1.x 各小版本不同命名的 System Property。
     static {
         final String FALSE = "false";
-        final String FILE  = "file";
-        setProp("pdfbox.useMainMemory",                 FALSE);
-        setProp("pdfbox.memory.useMainMemory",          FALSE);
-        setProp("org.apache.pdfbox.useMainMemory",      FALSE);
-        setProp("pdfbox.scratchFile.useMainMemory",     FALSE);
-        setProp("pdfbox.stream.cache",                  FILE);
-        setProp("pdfbox.memory.usage",                  "tempfile");
-        setProp("pdfbox.memory.mainMemoryBytes",        String.valueOf(128L * 1024 * 1024));
-        setProp("pdfbox.mainMemoryUsageBytes",          String.valueOf(128L * 1024 * 1024));
+        final String FILE = "file";
+        setProp("pdfbox.useMainMemory", FALSE);
+        setProp("pdfbox.memory.useMainMemory", FALSE);
+        setProp("org.apache.pdfbox.useMainMemory", FALSE);
+        setProp("pdfbox.scratchFile.useMainMemory", FALSE);
+        setProp("pdfbox.stream.cache", FILE);
+        setProp("pdfbox.memory.usage", "tempfile");
+        setProp("pdfbox.memory.mainMemoryBytes", String.valueOf(128L * 1024 * 1024));
+        setProp("pdfbox.mainMemoryUsageBytes", String.valueOf(128L * 1024 * 1024));
 
         long maxMemBytes = Runtime.getRuntime().maxMemory();
-        long maxMemMB    = maxMemBytes / (1024 * 1024);
+        long maxMemMB = maxMemBytes / (1024 * 1024);
         String pdfboxVer = "UNKNOWN";
         try {
             Package p = PDDocument.class.getPackage();
             if (p != null && p.getImplementationVersion() != null) pdfboxVer = p.getImplementationVersion();
-        } catch (Throwable ignore) {}
+        } catch (Throwable ignore) {
+        }
         if (maxMemMB < 2048) {
             System.out.println("[RagInitializer] ⚠️ JVM 堆 < 2GB（当前 " + maxMemMB + " MB），超大扫描 PDF 可能发生 Full GC。");
             System.out.println("[RagInitializer]    建议在 Run Configuration 的 VM options 中加入 -Xmx2g。");
         }
     }
+
     private static void setProp(String key, String val) {
-        try { System.setProperty(key, val); } catch (Throwable ignore) {}
+        try {
+            System.setProperty(key, val);
+        } catch (Throwable ignore) {
+        }
     }
 
-    /** DashScope Embedding 单次批量上限（官方硬限制，不要调大） */
+    /**
+     * DashScope Embedding 单次批量上限（官方硬限制，不要调大）
+     */
     private static final int DASHSCOPE_EMBEDDING_MAX_BATCH = 10;
 
     private final VectorStore vectorStore;
 
     private final Bm25IndexService bm25IndexService;
-    /** PGVector JDBC：用于「PDF 已入库」去重（PGVector 未启用时为 null） */
+    /**
+     * PGVector JDBC：用于「PDF 已入库」去重（PGVector 未启用时为 null）
+     */
     private final org.springframework.jdbc.core.JdbcTemplate pgJdbc;
     private final TokenTextSplitter splitter = TokenTextSplitter.builder()
             .withChunkSize(512)
@@ -161,7 +146,7 @@ public class RagInitializer {
      * 热监听走这条：以前每份 PDF 入库都 TRUNCATE 整张表重插一遍，两个毛病——
      * ① 代价跟**全库块数**成正比（501 块 1.6~1.8s 无感，库堆大就成了每次入库的固定重税）；
      * ② TRUNCATE 让**所有**文件的关键词行在重插完成前都不在表里，这个空窗同样跟全库长度一起涨；
-     *    按份刷只让**这一份**短暂缺行。
+     * 按份刷只让**这一份**短暂缺行。
      * 启动时那次仍然走 {@code rebuildAll} 全量对账，由它负责把历史遗留的缺口补齐。
      */
     private void refreshKeywordIndexForSource(File pdf, String why) {
@@ -175,28 +160,49 @@ public class RagInitializer {
     private interface ProcessRegistrar {
         void register(Process p);
     }
-    private static final ProcessRegistrar NOOP_REGISTRAR = p -> { };
+
+    private static final ProcessRegistrar NOOP_REGISTRAR = p -> {
+    };
+
     private static final class PdfProcessRegistry implements ProcessRegistrar, AutoCloseable {
         private final ProcessRegistrar delegate;
-        PdfProcessRegistry(ProcessRegistrar delegate) { this.delegate = delegate == null ? NOOP_REGISTRAR : delegate; }
-        @Override public void register(Process p) { delegate.register(p); }
-        @Override public void close() { }
+
+        PdfProcessRegistry(ProcessRegistrar delegate) {
+            this.delegate = delegate == null ? NOOP_REGISTRAR : delegate;
+        }
+
+        @Override
+        public void register(Process p) {
+            delegate.register(p);
+        }
+
+        @Override
+        public void close() {
+        }
     }
 
     // OCR 配置有效性（运行时一次性判定，缓存结果）
     private transient Boolean ocrAvailableCache = null;
     private transient String effectiveTessdataDir = null;
-    /** OCR 诊断原文（启动时打印的那行）。/rag/diag 要能回答「OCR 到底就绪没、tessdata 用的哪个目录」。 */
+    /**
+     * OCR 诊断原文（启动时打印的那行）。/rag/diag 要能回答「OCR 到底就绪没、tessdata 用的哪个目录」。
+     */
     private transient String ocrDiagLine = null;
-    /** 本轮启动的入库流水：扫描/跳过/新灌/失败/chunks/批次。/rag/diag 的「入库历史」数据来源。 */
+    /**
+     * 本轮启动的入库流水：扫描/跳过/新灌/失败/chunks/批次。/rag/diag 的「入库历史」数据来源。
+     */
     private volatile Map<String, Object> lastBootIngest = null;
 
     // WatchService 相关：目录热监听
     private volatile WatchService watchService;
     private final Map<Path, Long> pendingFileStableTime = new ConcurrentHashMap<>();
+
     private boolean isOcrAvailable() {
         if (ocrAvailableCache != null) return ocrAvailableCache;
-        if (!ocrEnabled) { ocrAvailableCache = false; return false; }
+        if (!ocrEnabled) {
+            ocrAvailableCache = false;
+            return false;
+        }
         boolean ok = false;
         StringBuilder diag = new StringBuilder(512);
         diag.append("[RagInitializer:OCR 诊断] ");
@@ -226,9 +232,16 @@ public class RagInitializer {
                         String l = langPart.trim();
                         if (l.isEmpty()) continue;
                         File td = new File(candDir, l + ".traineddata");
-                        if (!td.exists()) { allOk = false; missSb.append(l).append(" "); }
+                        if (!td.exists()) {
+                            allOk = false;
+                            missSb.append(l).append(" ");
+                        }
                     }
-                    if (allOk) { bestDir = candDir; bestDirIndex = i; break; }
+                    if (allOk) {
+                        bestDir = candDir;
+                        bestDirIndex = i;
+                        break;
+                    }
                     if (missingLangs == null) missingLangs = missSb.toString().trim();
                 }
 
@@ -244,7 +257,8 @@ public class RagInitializer {
                             boolean hasEng = new File(dstDir, "eng.traineddata").exists();
                             if (!hasEng) {
                                 File engSrc = new File("D:/Program Files/Tesseract-OCR/tessdata/eng.traineddata");
-                                if (engSrc.exists()) Files.copy(engSrc.toPath(), new File(dstDir, "eng.traineddata").toPath());
+                                if (engSrc.exists())
+                                    Files.copy(engSrc.toPath(), new File(dstDir, "eng.traineddata").toPath());
                                 hasEng = new File(dstDir, "eng.traineddata").exists();
                             }
                             boolean allOk = true;
@@ -253,8 +267,12 @@ public class RagInitializer {
                                 if (l.isEmpty()) continue;
                                 if (!new File(dstDir, l + ".traineddata").exists()) allOk = false;
                             }
-                            if (allOk) { bestDir = dstDir; bestDirIndex = -2; }
-                        } catch (Throwable ignore) {}
+                            if (allOk) {
+                                bestDir = dstDir;
+                                bestDirIndex = -2;
+                            }
+                        } catch (Throwable ignore) {
+                        }
                     }
                 }
 
@@ -272,9 +290,11 @@ public class RagInitializer {
                     ok = true;
                     boolean usedConfigured = (bestDirIndex == 0) || (bestDir == configuredDir);
                     if (!usedConfigured) {
-                        try { usedConfigured = configuredDir.exists() && configuredDir.isDirectory()
-                                && configuredDir.getCanonicalFile().equals(bestDir.getCanonicalFile()); }
-                        catch (Throwable ignore) {}
+                        try {
+                            usedConfigured = configuredDir.exists() && configuredDir.isDirectory()
+                                    && configuredDir.getCanonicalFile().equals(bestDir.getCanonicalFile());
+                        } catch (Throwable ignore) {
+                        }
                     }
                     diag.append("✅ Tesseract 就绪：exe=").append(exe.getAbsolutePath())
                             .append("\n       tessdata（")
@@ -301,29 +321,44 @@ public class RagInitializer {
         return ok;
     }
 
-    /** 单个 PDF 入库结果（给 init() 汇总用） */
+    /**
+     * 单个 PDF 入库结果（给 init() 汇总用）
+     */
     private static final class IngestResult {
         final int chunks;
         final int batches;
         final boolean ok;
         final boolean skipped;
+
         IngestResult(int chunks, int batches, boolean ok, boolean skipped) {
-            this.chunks = chunks; this.batches = batches; this.ok = ok; this.skipped = skipped;
+            this.chunks = chunks;
+            this.batches = batches;
+            this.ok = ok;
+            this.skipped = skipped;
         }
-        static IngestResult skipped(int chunks) { return new IngestResult(chunks, 0, true, true); }
-        static IngestResult ok(int chunks, int batches) { return new IngestResult(chunks, batches, true, false); }
-        static IngestResult fail() { return new IngestResult(0, 0, false, false); }
+
+        static IngestResult skipped(int chunks) {
+            return new IngestResult(chunks, 0, true, true);
+        }
+
+        static IngestResult ok(int chunks, int batches) {
+            return new IngestResult(chunks, batches, true, false);
+        }
+
+        static IngestResult fail() {
+            return new IngestResult(0, 0, false, false);
+        }
     }
 
-    private static final long PER_PDF_MIN_TIMEOUT_MILLIS   = 120_000L;
-    private static final long PER_PDF_OCR_MS_PER_PAGE      = 15_000L;
-    private static final long PER_PDF_BASE_MILLIS          = 60_000L;
+    private static final long PER_PDF_MIN_TIMEOUT_MILLIS = 120_000L;
+    private static final long PER_PDF_OCR_MS_PER_PAGE = 15_000L;
+    private static final long PER_PDF_BASE_MILLIS = 60_000L;
 
     /**
      * 把单个 PDF 做 提取→切片→Embedding→写入 VectorStore。
      * 已入库且文件字节没变的 PDF 直接跳过（probeStoredVersion 的 file_hash 快通道）。
      *
-     * @param pdf 目标 PDF 文件
+     * @param file      目标 file 文件
      * @param logPrefix 日志前缀（启动时用 "  "，热监听用 "  [热监听]"）
      */
     private IngestResult ingestOneFile(File file, String logPrefix) {
@@ -384,7 +419,11 @@ public class RagInitializer {
         }
 
         String metaSource;
-        try { metaSource = file.getCanonicalPath(); } catch (IOException ignore) { metaSource = file.getAbsolutePath(); }
+        try {
+            metaSource = file.getCanonicalPath();
+        } catch (IOException ignore) {
+            metaSource = file.getAbsolutePath();
+        }
         Map<String, Object> meta = new HashMap<>();
         meta.put("source", metaSource);
         meta.put("file_name", file.getName());
@@ -427,7 +466,9 @@ public class RagInitializer {
         return dot > 0 ? name.substring(dot + 1) : "";
     }
 
-    /** 轻量格式文本抽取：Markdown / Word(docx) / Excel(xlsx/xls)。 */
+    /**
+     * 轻量格式文本抽取：Markdown / Word(docx) / Excel(xlsx/xls)。
+     */
     private String extractLightweightText(File file) throws IOException {
         String ext = extensionOf(file);
         return switch (ext) {
@@ -489,13 +530,20 @@ public class RagInitializer {
                                 case NUMERIC -> v = String.valueOf(cell.getNumericCellValue());
                                 case BOOLEAN -> v = String.valueOf(cell.getBooleanCellValue());
                                 case FORMULA -> {
-                                    try { v = cell.getStringCellValue(); }
-                                    catch (Throwable t2) { v = String.valueOf(cell.getNumericCellValue()); }
+                                    try {
+                                        v = cell.getStringCellValue();
+                                    } catch (Throwable t2) {
+                                        v = String.valueOf(cell.getNumericCellValue());
+                                    }
                                 }
-                                default -> {}
+                                default -> {
+                                }
                             }
                         }
-                        if (!v.isBlank()) { hasAny = true; line.append(v).append(" | "); }
+                        if (!v.isBlank()) {
+                            hasAny = true;
+                            line.append(v).append(" | ");
+                        }
                     }
                     if (hasAny) sb.append(line).append("\n");
                 }
@@ -528,7 +576,8 @@ public class RagInitializer {
         int pageCount = 0;
         try (PDDocument probe = Loader.loadPDF(pdf)) {
             pageCount = probe.getNumberOfPages();
-        } catch (Throwable ignore) {}
+        } catch (Throwable ignore) {
+        }
         if (pageCount > 0) {
             long ocrBased = PER_PDF_BASE_MILLIS + (long) pageCount * PER_PDF_OCR_MS_PER_PAGE;
             thisTimeoutMs = Math.max(PER_PDF_MIN_TIMEOUT_MILLIS, ocrBased);
@@ -539,7 +588,9 @@ public class RagInitializer {
         try {
             final FutureTask<List<Document>> ft = new FutureTask<>(() -> {
                 List<Document> result;
-                ProcessRegistrar registrarLambda = proc -> { if (proc != null) childProcesses.add(proc); };
+                ProcessRegistrar registrarLambda = proc -> {
+                    if (proc != null) childProcesses.add(proc);
+                };
                 try (PdfProcessRegistry reg = new PdfProcessRegistry(registrarLambda)) {
                     result = readAndSplitOnePdf(pdf, reg);
                 }
@@ -557,10 +608,16 @@ public class RagInitializer {
                 synchronized (childProcesses) {
                     for (Process p : childProcesses) {
                         try {
-                            p.descendants().forEach(ph -> { try { ph.destroyForcibly(); } catch (Throwable ignore) {} });
+                            p.descendants().forEach(ph -> {
+                                try {
+                                    ph.destroyForcibly();
+                                } catch (Throwable ignore) {
+                                }
+                            });
                             p.destroyForcibly();
                             killed++;
-                        } catch (Throwable ignore) {}
+                        } catch (Throwable ignore) {
+                        }
                     }
                     childProcesses.clear();
                 }
@@ -616,7 +673,12 @@ public class RagInitializer {
             }
             for (Document d : chunks) {
                 String s = null;
-                if (docTextGetter != null) { try { s = (String) docTextGetter.invoke(d); } catch (Throwable ignore) {} }
+                if (docTextGetter != null) {
+                    try {
+                        s = (String) docTextGetter.invoke(d);
+                    } catch (Throwable ignore) {
+                    }
+                }
                 int l = (s == null) ? 0 : s.length();
                 totalChars += l;
                 if (l == 0) emptyChunks++;
@@ -625,7 +687,7 @@ public class RagInitializer {
             }
             String qcMsg = (emptyChunks == 0) ? "" : ("  ⚠️ 空块=" + emptyChunks);
             System.out.println(logPrefix + "✅ " + pdf.getName()
-                    + "（" + (tookSec + (System.currentTimeMillis() - startMs)/1000) + "s）"
+                    + "（" + (tookSec + (System.currentTimeMillis() - startMs) / 1000) + "s）"
                     + "  chunks=" + chunks.size()
                     + "  totalChars=" + totalChars
                     + "  chunkLen=[" + (chunks.isEmpty() ? 0 : minChunk) + "~" + maxChunk + "]"
@@ -711,7 +773,7 @@ public class RagInitializer {
 
     /**
      * 读单个 PDF + 切分。
-     *
+     * <p>
      * 为应对「扫描件 + 隐藏 OCR 文字层」PDF，采用多层 fallback 提取流程。
      * 打开 PDF 时同时绕过常见的所有者权限限制，以便从加密但内容可见的 PDF 中抽取文字。
      */
@@ -745,7 +807,9 @@ public class RagInitializer {
                 s2.setLineSeparator("\n");
                 String t2 = s2.getText(pdDoc);
                 if (usableScore(t2) > usableScore(fullText)) {
-                    fullText = t2; len = len(t2); finalNonBlank = countNonBlank(t2);
+                    fullText = t2;
+                    len = len(t2);
+                    finalNonBlank = countNonBlank(t2);
                     chosenPath = "P2 PDFTextStripper(无排版)";
                 }
             }
@@ -754,7 +818,9 @@ public class RagInitializer {
             if (usableScore(fullText) < MIN_VALID_NONBLANK) {
                 String brute = bruteExtractStringsFromAllStreams(pdDoc, stats, firstHitDump);
                 if (usableScore(brute) > usableScore(fullText)) {
-                    fullText = brute; len = len(brute); finalNonBlank = countNonBlank(brute);
+                    fullText = brute;
+                    len = len(brute);
+                    finalNonBlank = countNonBlank(brute);
                     chosenPath = "P3 暴力COS流";
                 }
             }
@@ -767,7 +833,9 @@ public class RagInitializer {
                 String ocr = ocrExtractFromPdf(pdDoc, registrar);
                 int nbOcr = countNonBlank(ocr);
                 if (usableScore(ocr) > usableScore(fullText) && nbOcr >= 20) {
-                    fullText = ocr; len = len(ocr); finalNonBlank = nbOcr;
+                    fullText = ocr;
+                    len = len(ocr);
+                    finalNonBlank = nbOcr;
                     chosenPath = "P4 Tesseract OCR";
                 } else {
                     System.out.println("    ↪ [OCR] 识别结果不如现有文本（OCR 非空白=" + nbOcr
@@ -797,7 +865,11 @@ public class RagInitializer {
                 // 抽取路径的选优靠原始文本打分，正文落库前先清洗（控制字符/私用区字形/水印串/连字符码点）
                 String cleaned = sanitizeExtractedText(fullText);
                 String metaSource;
-                try { metaSource = pdf.getCanonicalPath(); } catch (IOException ignore) { metaSource = pdf.getAbsolutePath(); }
+                try {
+                    metaSource = pdf.getCanonicalPath();
+                } catch (IOException ignore) {
+                    metaSource = pdf.getAbsolutePath();
+                }
                 Map<String, Object> meta = new HashMap<>();
                 meta.put("source", metaSource);
                 meta.put("file_name", pdf.getName());
@@ -819,7 +891,9 @@ public class RagInitializer {
         }
     }
 
-    private static int len(String s) { return s == null ? 0 : s.length(); }
+    private static int len(String s) {
+        return s == null ? 0 : s.length();
+    }
 
     /**
      * 从文件名解析指南版本号。返回 [标准化版本号, 原始匹配串]。
@@ -847,9 +921,13 @@ public class RagInitializer {
         return new String[]{"unknown", ""};
     }
 
-    private static String nullToEmpty(String s) { return s == null ? "" : s; }
+    private static String nullToEmpty(String s) {
+        return s == null ? "" : s;
+    }
 
-    /** 正文指纹：抽取文本变了吗。文字层修复、换抽取路径都会让它变化，从而触发重灌。 */
+    /**
+     * 正文指纹：抽取文本变了吗。文字层修复、换抽取路径都会让它变化，从而触发重灌。
+     */
     private static String sha256Hex(String s) {
         try {
             java.security.MessageDigest d = java.security.MessageDigest.getInstance("SHA-256");
@@ -859,7 +937,9 @@ public class RagInitializer {
         }
     }
 
-    /** 文件指纹：PDF 字节变了吗。命中即可完全跳过抽取，避免每次启动重跑 OCR。 */
+    /**
+     * 文件指纹：PDF 字节变了吗。命中即可完全跳过抽取，避免每次启动重跑 OCR。
+     */
     private static String hashFileQuietly(File f) {
         try (InputStream in = new FileInputStream(f)) {
             java.security.MessageDigest d = java.security.MessageDigest.getInstance("SHA-256");
@@ -878,9 +958,13 @@ public class RagInitializer {
         return sb.toString();
     }
 
-    /** 有效字数下限：低于此值认为该路径没抽到正文 */
+    /**
+     * 有效字数下限：低于此值认为该路径没抽到正文
+     */
     private static final int MIN_VALID_NONBLANK = 200;
-    /** 非空白字符中「文档常见字符之外」的比例上限，超过即判定为乱码（如 CID 字体暴力抽取出的 ࡺᓯ㵬） */
+    /**
+     * 非空白字符中「文档常见字符之外」的比例上限，超过即判定为乱码（如 CID 字体暴力抽取出的 ࡺᓯ㵬）
+     */
     private static final double WEIRD_RATE_MAX = 0.15;
 
     /**
@@ -921,18 +1005,24 @@ public class RagInitializer {
         return c == 0x2022 || c == 0x00B7;                // 项目符号、间隔号
     }
 
-    /** 候选文本可用性打分：乱码超标的按三折计，保证干净文本必然胜出 */
+    /**
+     * 候选文本可用性打分：乱码超标的按三折计，保证干净文本必然胜出
+     */
     private static long usableScore(String s) {
         int nb = countNonBlank(s);
         return weirdRate(s) > WEIRD_RATE_MAX ? nb / 3 : nb;
     }
+
     private static String formatSize(long bytes) {
         if (bytes < 1024) return bytes + "B";
         if (bytes < 1024L * 1024) return String.format(Locale.ROOT, "%.1fKB", bytes / 1024.0);
         if (bytes < 1024L * 1024 * 1024) return String.format(Locale.ROOT, "%.1fMB", bytes / 1024.0 / 1024.0);
         return String.format(Locale.ROOT, "%.2fGB", bytes / 1024.0 / 1024.0 / 1024.0);
     }
-    /** 去掉 \r\n\t 空格及零宽/不间断空白后计数 */
+
+    /**
+     * 去掉 \r\n\t 空格及零宽/不间断空白后计数
+     */
     private static int countNonBlank(String s) {
         if (s == null || s.isEmpty()) return 0;
         int n = 0;
@@ -948,18 +1038,18 @@ public class RagInitializer {
      * 正文清洗。每类命中数都以只读审计为准（scratch/charaudit.txt；抽取口径与生产一致——四份 PDF 全部走 P1，
      * 见 scratch/path2_final.txt）。写着「本库 0 个」的规则是兜底，防以后进来的 PDF，别按它们评估收益。
      * ① 控制字符 U+0000–U+001F（保留 \t\n\r）：血脂管理指南 750 个、基层高血压 3 个，另两份 0；
-     *    U+007F–U+009F 本库 0 个。这些字符夹在正文里（实例见 scratch/fhpeek.txt 清洗前块头），
-     *    成因未考证，这里只确认「存在于正文且不是可见字符」。
+     * U+007F–U+009F 本库 0 个。这些字符夹在正文里（实例见 scratch/fhpeek.txt 清洗前块头），
+     * 成因未考证，这里只确认「存在于正文且不是可见字符」。
      * ② 零宽/连接符 U+200B–U+200F、U+2060、U+FEFF：本库 0 个，兜底。
      * ③ 私用区字形：补充私用区 U+F0000 以上血脂管理指南 13 个，其中 U+100C94 􀲔 占 10 次，10 次全部紧跟在
-     *    LDL/VLDL/HDL⁃C 或 ApoB 之后，位置就是表「对脂蛋白的影响」里该画箭头的那一列（scratch/rawpeek2.txt）；
-     *    至于它到底代表升还是降，文本里读不出来，所以只做删除不做替换。BMP 私用区 U+E000–U+F8FF 本库 0 个，兜底。
+     * LDL/VLDL/HDL⁃C 或 ApoB 之后，位置就是表「对脂蛋白的影响」里该画箭头的那一列（scratch/rawpeek2.txt）；
+     * 至于它到底代表升还是降，文本里读不出来，所以只做删除不做替换。BMP 私用区 U+E000–U+F8FF 本库 0 个，兜底。
      * ④ 水印串 fmx_…：血脂管理指南 35 次，全库普查只出现 fmx_T3RoZXJNaXJyb3Jz 这一种写法（scratch/census.txt）。
      * ⑤ 连字符码点归一：U+2010/U+2011/U+2043/U+2212 → '-'，软连字符 U+00AD 删除，全库 2374 处
-     *    （U+2011 953、U+2010 913、U+2043 508；U+2212 与 U+00AD 本库 0 个，兜底）。
-     *    「特殊码点不进分词器」是实测：scratch/p0_hyphen2.txt 里 df("ldl-c")=6，而 ldl‐c / ldl‑c / ldl⁃c / ldl−c 四种写法 df 全为 0。
-     *    同一份指南把 LDL-C 排成多种码点（一级预防 U+2010×104 / U+2011×7，血脂 U+2043×226 / U+2010×6），
-     *    归一后可逐字定位到 LDL-C 的块数：一级预防 1→38、血脂 0→86、基层 5→5（scratch/chunkdiff2.txt）。
+     * （U+2011 953、U+2010 913、U+2043 508；U+2212 与 U+00AD 本库 0 个，兜底）。
+     * 「特殊码点不进分词器」是实测：scratch/p0_hyphen2.txt 里 df("ldl-c")=6，而 ldl‐c / ldl‑c / ldl⁃c / ldl−c 四种写法 df 全为 0。
+     * 同一份指南把 LDL-C 排成多种码点（一级预防 U+2010×104 / U+2011×7，血脂 U+2043×226 / U+2010×6），
+     * 归一后可逐字定位到 LDL-C 的块数：一级预防 1→38、血脂 0→86、基层 5→5（scratch/chunkdiff2.txt）。
      * metadata 里的 text_length / non_blank_length 仍是清洗前的数字——代码顺序是先按原始文本打分选路、再清洗落库，
      * 那两个字段是判断抽取路径合不合格的质量指标，不是正文长度，所以重灌后拿它们和块正文长度对账会看到差值。
      */
@@ -976,7 +1066,10 @@ public class RagInitializer {
             if (cp == 0x2060 || cp == 0xFEFF) continue;
             if (cp >= 0xE000 && cp <= 0xF8FF) continue;
             if (cp >= 0xF0000) continue;
-            if (cp == 0x2010 || cp == 0x2011 || cp == 0x2043 || cp == 0x2212) { sb.append('-'); continue; }
+            if (cp == 0x2010 || cp == 0x2011 || cp == 0x2043 || cp == 0x2212) {
+                sb.append('-');
+                continue;
+            }
             sb.appendCodePoint(cp);
         }
         // 水印按整串摘除，所以放在逐字符过滤之后；替换成一个空格而不是空串，避免相邻词被粘在一起
@@ -998,6 +1091,7 @@ public class RagInitializer {
         final String contentHash;
         final String extractVersion;
         final int totalChunks;
+
         StoredVersion(int chunkCount, String fileHash, String contentHash, String extractVersion, int totalChunks) {
             this.chunkCount = chunkCount;
             this.fileHash = fileHash == null ? "" : fileHash;
@@ -1005,24 +1099,39 @@ public class RagInitializer {
             this.extractVersion = extractVersion == null ? "" : extractVersion;
             this.totalChunks = totalChunks;
         }
-        /** 是否完整入库过：chunk_index 应该铺满 0..total_chunks-1，缺块说明上次写库中断了 */
-        boolean complete() { return chunkCount > 0 && chunkCount == totalChunks; }
+
+        /**
+         * 是否完整入库过：chunk_index 应该铺满 0..total_chunks-1，缺块说明上次写库中断了
+         */
+        boolean complete() {
+            return chunkCount > 0 && chunkCount == totalChunks;
+        }
+
         boolean sameFile(String currentFileHash) {
             return complete()
                     && !currentFileHash.isEmpty() && currentFileHash.equals(fileHash)
                     && EXTRACT_PIPELINE_VERSION.equals(extractVersion);
         }
+
         boolean sameContent(String currentContentHash, int expectedChunks) {
             return !currentContentHash.isEmpty() && currentContentHash.equals(contentHash)
                     && chunkCount == expectedChunks;
         }
-        boolean versionUpToDate() { return EXTRACT_PIPELINE_VERSION.equals(extractVersion); }
+
+        boolean versionUpToDate() {
+            return EXTRACT_PIPELINE_VERSION.equals(extractVersion);
+        }
     }
 
-    /** 兼容历史记录的 source 写法：canonicalPath 与 absolutePath 都视为同一份文件（与写入侧 getCanonicalPath 对齐）。 */
+    /**
+     * 兼容历史记录的 source 写法：canonicalPath 与 absolutePath 都视为同一份文件（与写入侧 getCanonicalPath 对齐）。
+     */
     private static String[] sourceKeys(File pdf) {
         String canonical = null;
-        try { canonical = pdf.getCanonicalPath(); } catch (IOException ignore) {}
+        try {
+            canonical = pdf.getCanonicalPath();
+        } catch (IOException ignore) {
+        }
         String absolute = pdf.getAbsolutePath();
         return (canonical == null || canonical.equals(absolute))
                 ? new String[]{absolute} : new String[]{canonical, absolute};
@@ -1051,14 +1160,18 @@ public class RagInitializer {
         }
     }
 
-    /** 拼接进 SQL 的表名只允许标识符字符，非法配置退回默认表。 */
+    /**
+     * 拼接进 SQL 的表名只允许标识符字符，非法配置退回默认表。
+     */
     private String vectorStoreTable() {
         String s = (pgSchema == null || pgSchema.isBlank() ? "public" : pgSchema)
                 + "." + (pgTable == null || pgTable.isBlank() ? "vector_store" : pgTable);
         return s.matches("[A-Za-z0-9_.]+") ? s : "public.vector_store";
     }
 
-    /** 文件字节或抽取版本变了、但抽出来的正文没变：回写 file_hash + extract_version，下次启动就能走零抽取的快速通道。 */
+    /**
+     * 文件字节或抽取版本变了、但抽出来的正文没变：回写 file_hash + extract_version，下次启动就能走零抽取的快速通道。
+     */
     private void refreshStoredFileHash(File pdf, String newFileHash) {
         if (this.pgJdbc == null || newFileHash.isEmpty()) return;
         String[] keys = sourceKeys(pdf);
@@ -1075,7 +1188,9 @@ public class RagInitializer {
         }
     }
 
-    /** 重灌前先删掉同一份文件的旧块，保证库里每个 source 只有一套连续的 chunk_index。 */
+    /**
+     * 重灌前先删掉同一份文件的旧块，保证库里每个 source 只有一套连续的 chunk_index。
+     */
     public int deleteStoredSourceRows(File pdf) {
         if (this.pgJdbc == null) return 0;
         String[] keys = sourceKeys(pdf);
@@ -1116,9 +1231,11 @@ public class RagInitializer {
                     try {
                         java.lang.reflect.Method m = c.getMethod(name, boolean.class);
                         m.invoke(doc, true);
-                    } catch (Throwable ignore) { }
+                    } catch (Throwable ignore) {
+                    }
                 }
-            } catch (Throwable ignore) { }
+            } catch (Throwable ignore) {
+            }
         }
         return doc;
     }
@@ -1131,7 +1248,7 @@ public class RagInitializer {
     private static String bruteExtractStringsFromAllStreams(PDDocument pdDoc, int[] stats, StringBuilder firstHitDump) {
         StringBuilder sb = new StringBuilder(65536);
         Pattern literalPat = Pattern.compile("\\(([^\\)]{2,2000})\\)");
-        Pattern hexPat     = Pattern.compile("<([0-9A-Fa-f]{4,65536})>");
+        Pattern hexPat = Pattern.compile("<([0-9A-Fa-f]{4,65536})>");
         IdentityHashMap<COSBase, Boolean> visited = new IdentityHashMap<>(4096);
         if (stats == null) stats = new int[4];
 
@@ -1144,23 +1261,35 @@ public class RagInitializer {
                     java.util.List<PDAnnotation> anns = page.getAnnotations();
                     if (anns != null) {
                         for (PDAnnotation ann : anns) {
-                            try { walkCOS(ann.getCOSObject(), literalPat, hexPat, sb, visited, stats, firstHitDump); } catch (Throwable ignore) {}
+                            try {
+                                walkCOS(ann.getCOSObject(), literalPat, hexPat, sb, visited, stats, firstHitDump);
+                            } catch (Throwable ignore) {
+                            }
                         }
                     }
-                } catch (Throwable ignore) {}
+                } catch (Throwable ignore) {
+                }
             }
-            try { walkCOS(pdDoc.getDocumentCatalog().getCOSObject(), literalPat, hexPat, sb, visited, stats, firstHitDump); } catch (Throwable ignore) {}
-        } catch (Throwable ignore) {}
+            try {
+                walkCOS(pdDoc.getDocumentCatalog().getCOSObject(), literalPat, hexPat, sb, visited, stats, firstHitDump);
+            } catch (Throwable ignore) {
+            }
+        } catch (Throwable ignore) {
+        }
         return sb.toString().trim();
     }
 
-    /** 单行预览，用于控制台告警时展示被判定为乱码的文本长什么样。 */
+    /**
+     * 单行预览，用于控制台告警时展示被判定为乱码的文本长什么样。
+     */
     private static String previewOf(String s) {
         String p = (s == null ? "" : s).replaceAll("[\\r\\n\\t ]+", " ").trim();
         return "「" + (p.length() > 150 ? p.substring(0, 150) + "…" : p) + "」";
     }
 
-    /** 递归 walk COS 对象树，提取可读文字并统计；stats[0]=totalStreams stats[1]=Tj/TJ hits stats[2]=literalOk stats[3]=hexOk */
+    /**
+     * 递归 walk COS 对象树，提取可读文字并统计；stats[0]=totalStreams stats[1]=Tj/TJ hits stats[2]=literalOk stats[3]=hexOk
+     */
     private static void walkCOS(COSBase base, Pattern literalPat, Pattern hexPat,
                                 StringBuilder sb, IdentityHashMap<COSBase, Boolean> visited,
                                 int[] stats, StringBuilder firstHitDump) {
@@ -1178,7 +1307,10 @@ public class RagInitializer {
 
             // 极速剪枝①：纯图片 Filter 的流（无 Tj/TJ 文本指令），直接跳过
             COSBase filterObj = null;
-            try { filterObj = s.getDictionaryObject(COSName.FILTER); } catch (Throwable ignore) {}
+            try {
+                filterObj = s.getDictionaryObject(COSName.FILTER);
+            } catch (Throwable ignore) {
+            }
             if (filterObj != null && isPureImageFilter(filterObj)) return;
 
             // 极速剪枝②：嵌入字体流，直接跳过
@@ -1196,7 +1328,8 @@ public class RagInitializer {
                         || s.getItem(COSName.getPDFName("FontFile3")) != null) {
                     return;
                 }
-            } catch (Throwable ignore) {}
+            } catch (Throwable ignore) {
+            }
 
             try (InputStream in = s.createInputStream()) {
                 if (in == null) return;
@@ -1217,44 +1350,80 @@ public class RagInitializer {
                 while (mp.find()) {
                     String raw = mp.group(1);
                     String str = unescapePdfLiteral(raw);
-                    if (looksReadable(str)) { sb.append(str).append(' '); stats[2]++; }
+                    if (looksReadable(str)) {
+                        sb.append(str).append(' ');
+                        stats[2]++;
+                    }
                 }
                 Matcher mh = hexPat.matcher(content);
                 while (mh.find()) {
                     String hex = mh.group(1);
                     String decoded = decodeHexSmart(hex);
-                    if (looksReadable(decoded)) { sb.append(decoded).append(' '); stats[3]++; }
+                    if (looksReadable(decoded)) {
+                        sb.append(decoded).append(' ');
+                        stats[3]++;
+                    }
                 }
-            } catch (Throwable ignore) {}
+            } catch (Throwable ignore) {
+            }
         } else if (base instanceof COSDictionary dict) {
             Set<Map.Entry<COSName, COSBase>> entries;
-            try { entries = dict.entrySet(); } catch (Throwable ignore) { return; }
+            try {
+                entries = dict.entrySet();
+            } catch (Throwable ignore) {
+                return;
+            }
             for (Map.Entry<COSName, COSBase> e : entries) {
-                try { walkCOS(e.getValue(), literalPat, hexPat, sb, visited, stats, firstHitDump); } catch (Throwable ignore) {}
+                try {
+                    walkCOS(e.getValue(), literalPat, hexPat, sb, visited, stats, firstHitDump);
+                } catch (Throwable ignore) {
+                }
             }
         } else if (base instanceof COSArray arr) {
             for (int i = 0; i < arr.size(); i++) {
-                try { walkCOS(arr.get(i), literalPat, hexPat, sb, visited, stats, firstHitDump); } catch (Throwable ignore) {}
+                try {
+                    walkCOS(arr.get(i), literalPat, hexPat, sb, visited, stats, firstHitDump);
+                } catch (Throwable ignore) {
+                }
             }
         }
     }
 
-    /** PDF 括号字面量转义还原：\( \) \\ \n \r \t \b \f 及八进制 */
+    /**
+     * PDF 括号字面量转义还原：\( \) \\ \n \r \t \b \f 及八进制
+     */
     private static String unescapePdfLiteral(String raw) {
         if (raw == null || raw.indexOf('\\') < 0) return raw;
         StringBuilder out = new StringBuilder(raw.length());
         for (int i = 0; i < raw.length(); i++) {
             char c = raw.charAt(i);
-            if (c != '\\') { out.append(c); continue; }
+            if (c != '\\') {
+                out.append(c);
+                continue;
+            }
             if (i + 1 >= raw.length()) break;
             char n = raw.charAt(++i);
             switch (n) {
-                case '(': case ')': case '\\': out.append(n); break;
-                case 'n': out.append('\n'); break;
-                case 'r': out.append('\r'); break;
-                case 't': out.append('\t'); break;
-                case 'b': out.append('\b'); break;
-                case 'f': out.append('\f'); break;
+                case '(':
+                case ')':
+                case '\\':
+                    out.append(n);
+                    break;
+                case 'n':
+                    out.append('\n');
+                    break;
+                case 'r':
+                    out.append('\r');
+                    break;
+                case 't':
+                    out.append('\t');
+                    break;
+                case 'b':
+                    out.append('\b');
+                    break;
+                case 'f':
+                    out.append('\f');
+                    break;
                 default:
                     // 八进制：\ddd / \dd / \d
                     if (n >= '0' && n <= '7') {
@@ -1272,21 +1441,36 @@ public class RagInitializer {
         return out.toString();
     }
 
-    /** 十六进制智能解码：按 "UTF-16BE → GBK → UTF-8" 顺序尝试，返回最像可读文字的 */
+    /**
+     * 十六进制智能解码：按 "UTF-16BE → GBK → UTF-8" 顺序尝试，返回最像可读文字的
+     */
     private static String decodeHexSmart(String hex) {
         if (hex == null || (hex.length() & 1) != 0) return "";
         byte[] bytes;
-        try { bytes = hexToBytes(hex); } catch (Throwable ignore) { return ""; }
+        try {
+            bytes = hexToBytes(hex);
+        } catch (Throwable ignore) {
+            return "";
+        }
         if (bytes == null || bytes.length == 0) return "";
 
         String utf16 = "", gbk = "", utf8 = "";
-        try { utf16 = new String(bytes, java.nio.charset.StandardCharsets.UTF_16BE); } catch (Throwable ignore) {}
-        try { gbk   = new String(bytes, java.nio.charset.Charset.forName("GBK")); } catch (Throwable ignore) {}
-        try { utf8  = new String(bytes, java.nio.charset.StandardCharsets.UTF_8); }    catch (Throwable ignore) {}
+        try {
+            utf16 = new String(bytes, java.nio.charset.StandardCharsets.UTF_16BE);
+        } catch (Throwable ignore) {
+        }
+        try {
+            gbk = new String(bytes, java.nio.charset.Charset.forName("GBK"));
+        } catch (Throwable ignore) {
+        }
+        try {
+            utf8 = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Throwable ignore) {
+        }
 
         String[] candidates = {utf16, gbk, utf8};
         String best = "";
-        int    bestScore = -1;
+        int bestScore = -1;
         for (String c : candidates) {
             if (c == null || c.isEmpty()) continue;
             int score = 0;
@@ -1297,7 +1481,10 @@ public class RagInitializer {
                 else if (" ，。、；：？！,.?!;:\n\t-".indexOf(ch) >= 0) score += 0;
                 else score -= 2;
             }
-            if (score > bestScore) { bestScore = score; best = c; }
+            if (score > bestScore) {
+                bestScore = score;
+                best = c;
+            }
         }
         return best;
     }
@@ -1307,18 +1494,22 @@ public class RagInitializer {
         byte[] data = new byte[len / 2];
         for (int i = 0; i < len; i += 2) {
             data[i / 2] = (byte) ((Character.digit(hex.charAt(i), 16) << 4)
-                                + Character.digit(hex.charAt(i + 1), 16));
+                    + Character.digit(hex.charAt(i + 1), 16));
         }
         return data;
     }
 
-    /** 判断字符串是否"看起来像人读的文字"：CJK 汉字优先，怪异/控制字符超标则拒 */
+    /**
+     * 判断字符串是否"看起来像人读的文字"：CJK 汉字优先，怪异/控制字符超标则拒
+     */
     private static boolean looksReadable(String s) {
         if (s == null || s.isEmpty()) return false;
         int cjk = 0, lettersOrDigit = 0, weird = 0, total = s.length();
         for (char c : s.toCharArray()) {
-            if (c >= 0x4E00 && c <= 0x9FFF) { cjk++; lettersOrDigit++; }
-            else if (Character.isLetterOrDigit(c)) lettersOrDigit++;
+            if (c >= 0x4E00 && c <= 0x9FFF) {
+                cjk++;
+                lettersOrDigit++;
+            } else if (Character.isLetterOrDigit(c)) lettersOrDigit++;
             else if (c < 0x20 && "\n\r\t\b\f".indexOf(c) < 0) weird++;
             else if (c == 0x7F) weird++;
         }
@@ -1327,7 +1518,9 @@ public class RagInitializer {
         return lettersOrDigit * 5 >= total * 2;
     }
 
-    /** 判断 COSStream 的 /Filter 是否属于纯图像压缩类（此类流不含文本指令，直接跳过）。 */
+    /**
+     * 判断 COSStream 的 /Filter 是否属于纯图像压缩类（此类流不含文本指令，直接跳过）。
+     */
     private static boolean isPureImageFilter(COSBase filter) {
         if (filter == null) return false;
         if (filter instanceof COSName name) {
@@ -1336,30 +1529,40 @@ public class RagInitializer {
         if (filter instanceof COSArray arr) {
             for (int i = 0; i < arr.size(); i++) {
                 COSBase item;
-                try { item = arr.get(i); } catch (Throwable ignore) { continue; }
+                try {
+                    item = arr.get(i);
+                } catch (Throwable ignore) {
+                    continue;
+                }
                 if (item instanceof COSName n && isImageFilterName(n.getName())) return true;
             }
         }
         return false;
     }
+
     private static boolean isImageFilterName(String n) {
         if (n == null) return false;
         return switch (n) {
             // PDF 标准里的纯图像 Filter（不承载 Tj/TJ 文本指令）
             case "DCTDecode", "DCT"
-                    , "JPXDecode", "JPX"
-                    , "CCITTFaxDecode", "CCF"
-                    , "JBIG2Decode"
-                    , "RunLengthDecode", "RL"
-                    , "LZWDecode", "LZW"
-                    -> true;
+            , "JPXDecode", "JPX"
+            , "CCITTFaxDecode", "CCF"
+            , "JBIG2Decode"
+            , "RunLengthDecode", "RL"
+            , "LZWDecode", "LZW" -> true;
             default -> false;
         };
     }
 
-    /** 分批写入 VectorStore（Embedding 调用），每批 ≤ DASHSCOPE_EMBEDDING_MAX_BATCH。 */
+    /**
+     * 分批写入 VectorStore（Embedding 调用），每批 ≤ DASHSCOPE_EMBEDDING_MAX_BATCH。
+     */
     private int writeChunksInBatches(List<Document> chunks, String logPrefix) {
         if (chunks == null || chunks.isEmpty()) return 0;
+        int total = chunks.size();
+        for (Document c : chunks) {
+            c.getMetadata().put("total_chunks", total);
+        }
         int batches = 0;
         long startMs = System.currentTimeMillis();
         for (List<Document> batch : partition(chunks, DASHSCOPE_EMBEDDING_MAX_BATCH)) {
@@ -1373,7 +1576,9 @@ public class RagInitializer {
         return batches;
     }
 
-    /** 通用分片：把 list 切成多个子 list，每个子 list size ≤ batchSize。 */
+    /**
+     * 通用分片：把 list 切成多个子 list，每个子 list size ≤ batchSize。
+     */
     private static <T> List<List<T>> partition(List<T> list, int batchSize) {
         if (list == null || list.isEmpty()) return Collections.emptyList();
         if (batchSize <= 0) throw new IllegalArgumentException("batchSize must be positive");
@@ -1525,6 +1730,7 @@ public class RagInitializer {
     }
 
     private void handleSourceFileDelete(File pdf) {
+        pendingFileStableTime.remove(pdf.toPath());
         String fileName = pdf.getName();
         int vectorRows = deleteStoredSourceRows(pdf);
         int bm25Rows = (bm25IndexService != null && bm25IndexService.isAvailable())
@@ -1559,6 +1765,7 @@ public class RagInitializer {
         // 超时退出：如果文件已存在且有稳定过至少一次，仍然尝试处理
         return f.exists() && stableCount >= 1;
     }
+
     private String ocrExtractFromPdf(PDDocument pdDoc, ProcessRegistrar registrar) {
         if (registrar == null) registrar = NOOP_REGISTRAR;
         File workDir = null;
@@ -1586,10 +1793,14 @@ public class RagInitializer {
                     cmd.add(ocrTesseractPath);
                     cmd.add(png.getAbsolutePath());
                     cmd.add(outBase.getAbsolutePath());
-                    cmd.add("-l"); cmd.add(ocrLanguage);
-                    cmd.add("--dpi"); cmd.add(String.valueOf(ocrDpi));
-                    cmd.add("--tessdata-dir"); cmd.add(effectiveTessdataDir != null ? effectiveTessdataDir : ocrTessdataDir);
-                    cmd.add("-c"); cmd.add("output_encoding=UTF-8");
+                    cmd.add("-l");
+                    cmd.add(ocrLanguage);
+                    cmd.add("--dpi");
+                    cmd.add(String.valueOf(ocrDpi));
+                    cmd.add("--tessdata-dir");
+                    cmd.add(effectiveTessdataDir != null ? effectiveTessdataDir : ocrTessdataDir);
+                    cmd.add("-c");
+                    cmd.add("output_encoding=UTF-8");
 
                     ProcessBuilder pb = new ProcessBuilder(cmd).redirectErrorStream(true);
                     java.util.Map<String, String> env = pb.environment();
@@ -1605,13 +1816,13 @@ public class RagInitializer {
                     int exit = p.exitValue();
                     if (!finished) {
                         p.destroyForcibly();
-                        System.out.println("      ⚠️ 第 " + (i+1) + "/" + pages + " 页 OCR 超时（>" + ocrPageTimeoutSec + "s），跳过");
+                        System.out.println("      ⚠️ 第 " + (i + 1) + "/" + pages + " 页 OCR 超时（>" + ocrPageTimeoutSec + "s），跳过");
                         continue;
                     }
                     if (exit != 0) {
                         String hint = procOut.toString().replaceAll("\\s+", " ").trim();
-                        if (hint.length() > 500) hint = hint.substring(0,500)+"...";
-                        System.err.println("      ❌ 第 " + (i+1) + "/" + pages + " 页 OCR 失败 exit=" + exit
+                        if (hint.length() > 500) hint = hint.substring(0, 500) + "...";
+                        System.err.println("      ❌ 第 " + (i + 1) + "/" + pages + " 页 OCR 失败 exit=" + exit
                                 + "：" + (hint.isEmpty() ? "(stdout空)" : hint));
                         continue;
                     }
@@ -1628,16 +1839,16 @@ public class RagInitializer {
                     // 4) 进度输出
                     int nb = countNonBlank(pageText);
                     long totalMs = System.currentTimeMillis() - pageStart;
-                    String pageMsg = "      ↪ 第 " + (i+1) + "/" + pages + " 页 OCR 完成（共" + totalMs
-                            + "ms，PNG=" + (pngSize/1024) + "KB，TXT="
-                            + (txtSize>0?txtSize+"B":"空") + "，非空字符≈" + nb + "）";
+                    String pageMsg = "      ↪ 第 " + (i + 1) + "/" + pages + " 页 OCR 完成（共" + totalMs
+                            + "ms，PNG=" + (pngSize / 1024) + "KB，TXT="
+                            + (txtSize > 0 ? txtSize + "B" : "空") + "，非空字符≈" + nb + "）";
                     if (nb == 0) {
                         System.err.println(pageMsg);
                     } else {
                         System.out.println(pageMsg);
                     }
                 } catch (Throwable pageTh) {
-                    System.err.println("      ⚠️ 第 " + (i+1) + "/" + pages + " 页 OCR 异常: "
+                    System.err.println("      ⚠️ 第 " + (i + 1) + "/" + pages + " 页 OCR 异常: "
                             + pageTh.getClass().getSimpleName() + ": " + pageTh.getMessage());
                 } finally {
                     if (png != null && png.exists()) png.delete();
@@ -1660,7 +1871,8 @@ public class RagInitializer {
                     File[] left = workDir.listFiles();
                     if (left != null) for (File f : left) f.delete();
                     workDir.delete();
-                } catch (Throwable ignore) {}
+                } catch (Throwable ignore) {
+                }
             }
         }
     }
@@ -1682,8 +1894,12 @@ public class RagInitializer {
         out.put("stored_overview", storedOverview());
 
         List<File> files;
-        try { files = collectSupportedFiles(pdfPath); }
-        catch (Exception ex) { out.put("collect_error", ex.toString()); return out; }
+        try {
+            files = collectSupportedFiles(pdfPath);
+        } catch (Exception ex) {
+            out.put("collect_error", ex.toString());
+            return out;
+        }
 
         out.put("scanned_file_count", files.size());
         // 逐份体检要开一次文件读页数、再打一条 SQL 问库内指纹，是 per-file 成本。
@@ -1702,7 +1918,9 @@ public class RagInitializer {
         return out;
     }
 
-    /** OCR 这条腿的真实状态：README 让人「看 ocr_ready 和 tessdata_dir」，那两个键必须真的存在。 */
+    /**
+     * OCR 这条腿的真实状态：README 让人「看 ocr_ready 和 tessdata_dir」，那两个键必须真的存在。
+     */
     private Map<String, Object> ocrSection() {
         Map<String, Object> o = new java.util.LinkedHashMap<>();
         o.put("enabled_config", ocrEnabled);
@@ -1718,7 +1936,9 @@ public class RagInitializer {
         return o;
     }
 
-    /** 单份 PDF 的便宜体检：页数/字节指纹 + 库里已有的块数，下次启动会不会跳过。 */
+    /**
+     * 单份 PDF 的便宜体检：页数/字节指纹 + 库里已有的块数，下次启动会不会跳过。
+     */
     private Map<String, Object> quickPdfDiag(File pdf) {
         Map<String, Object> m = new java.util.LinkedHashMap<>();
         m.put("name", pdf.getName());
@@ -1751,7 +1971,9 @@ public class RagInitializer {
         return m;
     }
 
-    /** 库内实况：按 source 数块（只读 SQL，不碰模型）。列表一律带 LIMIT，百万份文件下不能全表往外倒。 */
+    /**
+     * 库内实况：按 source 数块（只读 SQL，不碰模型）。列表一律带 LIMIT，百万份文件下不能全表往外倒。
+     */
     private static final int STORED_OVERVIEW_LIMIT = 200;
 
     private Map<String, Object> storedOverview() {
@@ -1812,7 +2034,9 @@ public class RagInitializer {
         return o;
     }
 
-    /** 对单个 PDF 跑多层提取 + 暴力扫统计（不切片不写库，返回诊断 Map）。 */
+    /**
+     * 对单个 PDF 跑多层提取 + 暴力扫统计（不切片不写库，返回诊断 Map）。
+     */
     private Map<String, Object> deepExtractDiag(File pdf) {
         Map<String, Object> m = new java.util.LinkedHashMap<>();
         m.put("name", pdf.getName());
@@ -1830,7 +2054,8 @@ public class RagInitializer {
                 int nb2 = 0;
                 if (nb1 < 500) {
                     PDFTextStripper s2 = new PDFTextStripper();
-                    s2.setSortByPosition(false); s2.setAddMoreFormatting(false);
+                    s2.setSortByPosition(false);
+                    s2.setAddMoreFormatting(false);
                     s2.setShouldSeparateByBeads(false);
                     String t2 = s2.getText(pdDoc);
                     nb2 = countNonBlank(t2);
@@ -1860,9 +2085,9 @@ public class RagInitializer {
                 }
                 m.put("verdict",
                         nb3 >= 500 ? "PASS_3_OK" :
-                        Math.max(nb1, nb2) >= 500 ? "PASS_1_OR_2_OK" :
-                        stats[1] == 0 ? "NO_TEXT_STREAM_AT_ALL（纯图片，建议用 OCR 识别）" :
-                        "HAS_TEXT_STREAM_BUT_DECODE_FAILED");
+                                Math.max(nb1, nb2) >= 500 ? "PASS_1_OR_2_OK" :
+                                        stats[1] == 0 ? "NO_TEXT_STREAM_AT_ALL（纯图片，建议用 OCR 识别）" :
+                                                "HAS_TEXT_STREAM_BUT_DECODE_FAILED");
             }
         } catch (Throwable th) {
             m.put("error", th.getClass().getSimpleName() + ": " + th.getMessage());
