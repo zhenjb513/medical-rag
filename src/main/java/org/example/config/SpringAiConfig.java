@@ -13,6 +13,11 @@ public class SpringAiConfig {
      * 这里显式基于自动注入的 ChatModel 构建一个 Builder，供 ChatController 注入使用。
      */
     @Bean
+    public ChatClient chatClient(ChatModel chatModel) {
+        return ChatClient.builder(chatModel).build();
+    }
+
+    @Bean
     public ChatClient.Builder chatClientBuilder(ChatModel chatModel) {
         return ChatClient.builder(chatModel);
     }
