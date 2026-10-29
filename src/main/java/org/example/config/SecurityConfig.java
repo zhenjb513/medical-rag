@@ -38,7 +38,9 @@ public class SecurityConfig {
                                 "/auth/**",
                                 "/error",
                                 "/static/**", "/css/**", "/js/**",
-                                "/favicon.ico", "/actuator/**"
+                                "/favicon.ico", "/actuator/**",
+                                "/swagger-ui/**", "/swagger-resources/**",
+                                "/v3/api-docs/**", "/webjars/**"
                         ).permitAll()
                         .requestMatchers("/chat/**", "/evaluation/**", "/bm25/**", "/rag/**").permitAll()
                         .anyRequest().authenticated()

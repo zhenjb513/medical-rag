@@ -40,7 +40,11 @@ public class ApiKeyFilter extends OncePerRequestFilter {
             "/favicon.ico",
             "/login",
             "/logout",
-            "/auth"
+            "/auth",
+            "/swagger-ui",
+            "/swagger-resources",
+            "/v3/api-docs",
+            "/webjars"
     );
 
     @Override

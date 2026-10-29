@@ -1,8 +1,12 @@
 package org.example.controller;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
 import org.example.service.EvaluationService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -16,6 +20,7 @@ import java.util.Map;
  */
 @RestController
 @RequestMapping("/evaluation")
+@Validated
 public class EvaluationController {
 
     private final EvaluationService evaluationService;
@@ -39,8 +44,8 @@ public class EvaluationController {
      * 生产开着 rerank-enabled 时还要多打一次 gte-rerank-v2；零调用的对照口子是 /evaluation/recall?mode=bm25。
      */
     @GetMapping(value = "/retrieve", produces = "text/plain; charset=utf-8")
-    public String retrieve(@RequestParam String q,
-                           @RequestParam(defaultValue = "8") int topK) {
+    public String retrieve(@RequestParam @NotBlank(message = "查询词不能为空") String q,
+                           @RequestParam(defaultValue = "8") @Min(1) @Max(100) int topK) {
         long start = System.currentTimeMillis();
         var docs = hybridRetrievalService.search(q, topK, null);
         StringBuilder sb = new StringBuilder();
@@ -67,7 +72,7 @@ public class EvaluationController {
      * 分档依据见 RecallEvaluationService 的 probe 分派与类头说明。
      */
     @GetMapping(value = "/recall", produces = "text/plain; charset=utf-8")
-    public String recallBaseline(@RequestParam(defaultValue = "20") int probeK,
+    public String recallBaseline(@RequestParam(defaultValue = "20") @Min(1) @Max(200) int probeK,
                                  @RequestParam(defaultValue = "vector") String mode,
                                  @RequestParam(defaultValue = "false") boolean expand) {
         long start = System.currentTimeMillis();
@@ -86,7 +91,9 @@ public class EvaluationController {
         return String.join("\n", evaluationService.matchedQuestions(parseOnly(only)));
     }
 
-    /** only= 是题目片段，逗号分隔；留空 = 全量。片段只在内存里比 contains，不查库。 */
+    /**
+     * only= 是题目片段，逗号分隔；留空 = 全量。片段只在内存里比 contains，不查库。
+     */
     private static java.util.List<String> parseOnly(String only) {
         if (only == null || only.isBlank()) {
             return java.util.List.of();

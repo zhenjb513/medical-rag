@@ -16,6 +16,23 @@ spring:
     username: ${DEMO_MYSQL_USER:demo}
     password: ${DEMO_MYSQL_PASSWORD:demo123}
 
+  # Redis 缓存（compose 里有 redis 服务，默认连 redis:6379 无密码）
+  data:
+    redis:
+      host: ${DEMO_REDIS_HOST:redis}
+      port: ${DEMO_REDIS_PORT:6379}
+      database: 0
+      timeout: 5000ms
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+          max-wait: 3000ms
+
+  cache:
+    type: redis
+
   ai:
     dashscope:
       # 占位用：Spring AI 的 ChatModel / EmbeddingModel 两个 bean 在 demo 档被 DemoModelConfig

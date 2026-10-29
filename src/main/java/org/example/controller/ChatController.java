@@ -11,6 +11,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
+import jakarta.validation.constraints.Max;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Size;
+import org.springframework.validation.annotation.Validated;
 import reactor.core.publisher.Flux;
 
 import java.time.Duration;
@@ -19,6 +24,7 @@ import java.util.List;
 import java.util.Map;
 
 @RestController
+@Validated
 public class ChatController {
 
     private static final Logger log = LoggerFactory.getLogger(ChatController.class);
@@ -97,8 +103,8 @@ public class ChatController {
     }
 
     @GetMapping("/chat")
-    public String chat(@RequestParam(value = "message") String message,
-                       @RequestParam(value = "sessionId", required = false) String sessionId) {
+    public String chat(@RequestParam(value = "message") @NotBlank(message = "问题不能为空") String message,
+                       @RequestParam(value = "sessionId", required = false) @Size(max = 64) String sessionId) {
         try {
             String currentQuery = QueryExpander.expand(message);
             List<Document> docs = multiHopRetrievalService.search(currentQuery, chatTopK, null);
@@ -134,8 +140,8 @@ public class ChatController {
 
     @GetMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> chatStream(
-            @RequestParam("message") String message,
-            @RequestParam(value = "sessionId", required = false) String sessionId) {
+            @RequestParam("message") @NotBlank(message = "问题不能为空") String message,
+            @RequestParam(value = "sessionId", required = false) @Size(max = 64) String sessionId) {
 
         try {
             String currentQuery = QueryExpander.expand(message);

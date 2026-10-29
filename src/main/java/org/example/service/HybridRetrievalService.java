@@ -2,6 +2,7 @@ package org.example.service;
 
 import jakarta.annotation.PostConstruct;
 import org.springframework.ai.document.Document;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -9,6 +10,9 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Executor;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 向量 + BM25 混合检索。
@@ -29,8 +33,11 @@ public class HybridRetrievalService {
     private final RagReferenceService ragReferenceService;
     private final Bm25IndexService bm25IndexService;
     private final RerankService rerankService;
+    private final Executor ragExecutor;
 
-    /** app.retrieval.mode 的原始值；实际执行哪个通道看 {@link #executedMode(String, boolean)}（配成 bm25 会降级成 hybrid） */
+    /**
+     * app.retrieval.mode 的原始值；实际执行哪个通道看 {@link #executedMode(String, boolean)}（配成 bm25 会降级成 hybrid）
+     */
     @Value("${app.retrieval.mode:vector}")
     private String mode = "vector";
 
@@ -52,22 +59,30 @@ public class HybridRetrievalService {
     @Value("${app.retrieval.bm25-weight:1.0}")
     private double bm25Weight = 1.0;
 
-    /** 每一路先取多少条参与融合 */
+    /**
+     * 每一路先取多少条参与融合
+     */
     @Value("${app.retrieval.probe-size:20}")
     private int probeSize = 20;
 
-    /** 向量侧下限：只挡真正无关的（实测 Java/电影类问题 top1 只有 0.39~0.44） */
+    /**
+     * 向量侧下限：只挡真正无关的（实测 Java/电影类问题 top1 只有 0.39~0.44）
+     */
     @Value("${app.retrieval.vector-floor:0.45}")
     private double vectorFloor = 0.45;
 
     @Value("${app.retrieval.expand-neighbors:true}")
     private boolean expandNeighbors = true;
 
-    /** 扩展后最多给模型多少块，防止上下文被撑爆 */
+    /**
+     * 扩展后最多给模型多少块，防止上下文被撑爆
+     */
     @Value("${app.retrieval.max-context-chunks:16}")
     private int maxContextChunks = 16;
 
-    /** 生产链路是否启用重排；评测用 mode=rerank 单独打开，两者互不干扰 */
+    /**
+     * 生产链路是否启用重排；评测用 mode=rerank 单独打开，两者互不干扰
+     */
     @Value("${app.retrieval.rerank-enabled:false}")
     private boolean rerankEnabled = false;
 
@@ -82,7 +97,9 @@ public class HybridRetrievalService {
     @Value("${app.retrieval.rerank-use-expanded-query:false}")
     private boolean rerankUseExpandedQuery = false;
 
-    /** 重排前先从融合池里取多少块。重排只能在这个池子里换座位，池子太小它再准也救不回来。 */
+    /**
+     * 重排前先从融合池里取多少块。重排只能在这个池子里换座位，池子太小它再准也救不回来。
+     */
     @Value("${app.retrieval.rerank-window:20}")
     private int rerankWindow = 20;
 
@@ -99,16 +116,24 @@ public class HybridRetrievalService {
     private double answerFloor = 0.60;
 
     public HybridRetrievalService(RagReferenceService ragReferenceService, Bm25IndexService bm25IndexService,
-                                  RerankService rerankService) {
+                                  RerankService rerankService,
+                                  @Qualifier("ragExecutor") Executor ragExecutor) {
         this.ragReferenceService = ragReferenceService;
         this.bm25IndexService = bm25IndexService;
         this.rerankService = rerankService;
+        this.ragExecutor = ragExecutor;
     }
 
-    /** 配置里的原始模式（app.retrieval.mode）。生产实际执行哪个通道看 {@link #executedMode(String, boolean)}。 */
-    public String getMode() { return mode == null ? "vector" : mode; }
+    /**
+     * 配置里的原始模式（app.retrieval.mode）。生产实际执行哪个通道看 {@link #executedMode(String, boolean)}。
+     */
+    public String getMode() {
+        return mode == null ? "vector" : mode;
+    }
 
-    /** 本次真正会执行的模式：配置成 bm25 时这里是 hybrid。 */
+    /**
+     * 本次真正会执行的模式：配置成 bm25 时这里是 hybrid。
+     */
     public String effectiveMode() {
         return enforceGateCapable(getMode(), bm25IndexService.isAvailable());
     }
@@ -124,7 +149,9 @@ public class HybridRetrievalService {
         return enforceGateCapable(configured, bm25IndexAvailable).equals("hybrid") ? "hybrid" : "vector";
     }
 
-    /** 打印用：配置值与实际执行值不一致时两个都写出来，并说明原因，别让日志替错误配置背书。 */
+    /**
+     * 打印用：配置值与实际执行值不一致时两个都写出来，并说明原因，别让日志替错误配置背书。
+     */
     public String describeMode() {
         String raw = getMode();
         String run = executedMode(raw, bm25IndexService.isAvailable());
@@ -152,7 +179,7 @@ public class HybridRetrievalService {
      * 为什么要有这条：{@link #enforceGateCapable} 把不认识的写法原样透传，{@link #search} 的 switch
      * 只剩 default 分支接住它，于是**静默按 vector 跑**——把 hybrid 拼错、或把评测专用的 rerank
      * 当生产模式写进配置，检索照样出结果，谁都不报错，只有分数和降级行为悄悄变了。
-     * 本次改造只加提示和 {@link #executedMode()} 这个如实标签，执行路径一个字节没动（仍然是 vector，和改造前一致）。
+     * 本次改造只加提示和  这个如实标签，执行路径一个字节没动（仍然是 vector，和改造前一致）。
      */
     static String unrecognizedModeWarning(String configured) {
         String m = configured == null ? "vector" : configured.toLowerCase();
@@ -213,26 +240,38 @@ public class HybridRetrievalService {
         return filtered;
     }
 
-    /** @param expand 是否把命中块的前后邻居块补进上下文 */
+    /**
+     * @param expand 是否把命中块的前后邻居块补进上下文
+     */
     public List<Document> searchFused(String query, int topK, boolean expand) {
         return hybrid(query, topK, expand, false);
     }
 
-    /** 融合 + 重排，强制开启重排（评测对比用，不看 rerank-enabled） */
+    /**
+     * 融合 + 重排，强制开启重排（评测对比用，不看 rerank-enabled）
+     */
     public List<Document> searchReranked(String query, int topK, boolean expand) {
         return hybrid(query, topK, expand, true);
     }
 
-    public double getAnswerFloor() { return answerFloor; }
+    public double getAnswerFloor() {
+        return answerFloor;
+    }
 
-    /** 重排实际用哪个查询串（受 rerank-use-expanded-query 支配）。评测要对同一批候选单独调重排，得跟线上用同一个口径。 */
+    /**
+     * 重排实际用哪个查询串（受 rerank-use-expanded-query 支配）。评测要对同一批候选单独调重排，得跟线上用同一个口径。
+     */
     public String rerankQuery(String query) {
         return rerankUseExpandedQuery ? QueryExpander.expand(query) : query;
     }
 
-    public boolean isRerankUseExpandedQuery() { return rerankUseExpandedQuery; }
+    public boolean isRerankUseExpandedQuery() {
+        return rerankUseExpandedQuery;
+    }
 
-    /** 第一名都不够像（或压根没召回到）就判定为「这次没有资料」，只判一次，不逐条砍。 */
+    /**
+     * 第一名都不够像（或压根没召回到）就判定为「这次没有资料」，只判一次，不逐条砍。
+     */
     private boolean hasEvidence(List<Document> vectorDocs) {
         if (vectorDocs == null || vectorDocs.isEmpty()) return false;
         Double top = vectorDocs.get(0).getScore();
@@ -243,14 +282,46 @@ public class HybridRetrievalService {
         int poolSize = rerank ? Math.max(topK, rerankWindow) : topK;
         int perChannel = rerank ? Math.max(probeSize, poolSize) : probeSize;
         String recallQuery = retrievalQuery(query);
-        List<Document> vectorDocs = ragReferenceService.search(recallQuery, perChannel, vectorFloor);
+
+        System.out.println("[检索并行] 启动: query=" + query + "  poolSize=" + poolSize
+                + "  expand=" + expand + "  rerank=" + rerank + "  线程=" + Thread.currentThread().getName());
+
+        CompletableFuture<List<Document>> vectorFuture = CompletableFuture.supplyAsync(
+                () -> {
+                    System.out.println("[检索并行] 向量通道开始  线程=" + Thread.currentThread().getName());
+                    return ragReferenceService.search(recallQuery, perChannel, vectorFloor);
+                }, ragExecutor);
+        CompletableFuture<List<Bm25IndexService.Hit>> bm25Future = CompletableFuture.supplyAsync(
+                () -> {
+                    System.out.println("[检索并行] BM25 通道开始  线程=" + Thread.currentThread().getName());
+                    return bm25IndexService.search(recallQuery, perChannel);
+                }, ragExecutor);
+
+        List<Document> vectorDocs;
+        try {
+            vectorDocs = vectorFuture.get(30, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            bm25Future.cancel(true);
+            System.out.println("[检索并行] 向量检索超时/异常，取消 BM25：" + e.getMessage());
+            return List.of();
+        }
+
         if (!hasEvidence(vectorDocs)) {
+            bm25Future.cancel(true);
             System.out.println("[检索闸门] 最像的一条也不够像（阈值 " + String.format("%.2f", answerFloor)
                     + "），本次不提供知识库上下文：" + query);
             return List.of();
         }
-        List<Document> fused = fuse(vectorDocs,
-                fromHits(bm25IndexService.search(recallQuery, perChannel)), poolSize);
+
+        List<Bm25IndexService.Hit> bm25Hits;
+        try {
+            bm25Hits = bm25Future.get(30, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            System.out.println("[检索并行] BM25 超时/异常，只用向量通道：" + e.getMessage());
+            bm25Hits = List.of();
+        }
+
+        List<Document> fused = fuse(vectorDocs, fromHits(bm25Hits), poolSize);
         String rerankQuery = rerankQuery(query);
         if (rerank && !rerankQuery.equals(query)) {
             System.out.println("[重排查询] 本次送重排的是扩展串（rerank-use-expanded-query=true）：" + rerankQuery);
@@ -266,11 +337,29 @@ public class HybridRetrievalService {
     public List<Document> fuseCandidates(String query, int poolSize) {
         int perChannel = Math.max(probeSize, poolSize);
         String recallQuery = retrievalQuery(query);
-        return fuse(ragReferenceService.search(recallQuery, perChannel, vectorFloor),
-                fromHits(bm25IndexService.search(recallQuery, perChannel)), poolSize);
+
+        CompletableFuture<List<Document>> vectorFuture = CompletableFuture.supplyAsync(
+                () -> ragReferenceService.search(recallQuery, perChannel, vectorFloor), ragExecutor);
+        CompletableFuture<List<Bm25IndexService.Hit>> bm25Future = CompletableFuture.supplyAsync(
+                () -> bm25IndexService.search(recallQuery, perChannel), ragExecutor);
+
+        try {
+            return fuse(vectorFuture.get(30, TimeUnit.SECONDS),
+                    fromHits(bm25Future.get(30, TimeUnit.SECONDS)), poolSize);
+        } catch (Exception e) {
+            System.out.println("[检索并行] fuseCandidates 超时/异常：" + e.getMessage());
+            bm25Future.cancel(true);
+            try {
+                return fuse(vectorFuture.get(5, TimeUnit.SECONDS), List.of(), poolSize);
+            } catch (Exception ex) {
+                return List.of();
+            }
+        }
     }
 
-    /** 命中口语措辞时给召回通道补指南术语（详见 QueryExpander），没命中就原样返回、不打日志。 */
+    /**
+     * 命中口语措辞时给召回通道补指南术语（详见 QueryExpander），没命中就原样返回、不打日志。
+     */
     private static String retrievalQuery(String query) {
         List<String> extra = QueryExpander.addedTerms(query);
         if (extra.isEmpty()) return query;

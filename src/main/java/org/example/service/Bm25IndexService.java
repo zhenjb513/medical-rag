@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.example.config.PgVectorConfigProperties;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -64,6 +66,7 @@ public class Bm25IndexService {
     }
 
     /** 全量重建：清表 → 读 vector_store → 分词 → 写倒排。返回一段可直接看的人类可读统计。 */
+    @CacheEvict(cacheNames = "bm25Search", allEntries = true)
     public String rebuildAll() {
         requirePg();
         ensureSchema();
@@ -112,6 +115,7 @@ public class Bm25IndexService {
      * 看着无害——但两条都是扫全表，是 O(全库)，留在每份文件都走一次的按份路径里，等于自己给自己
      * 埋回 rebuildAll 那根随库增长的曲线。全库对账交回 {@code rebuildAll}（启动那次）和 {@code /rag/diag}。
      */
+    @CacheEvict(cacheNames = "bm25Search", allEntries = true)
     public String refreshSource(String[] sourceKeys) {
         requirePg();
         ensureSchema();
@@ -219,6 +223,7 @@ public class Bm25IndexService {
     }
 
     /** 关键词检索：查询分词 → 一条 SQL 算完 idf/tf/长度归一 → 按 BM25 分数取前 topN。 */
+    @Cacheable(cacheNames = "bm25Search", key = "#query + '_' + #topN")
     public List<Hit> search(String query, int topN) {
         requirePg();
         ensureSchema();
