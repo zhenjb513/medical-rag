@@ -1,6 +1,8 @@
 package org.ragai.service;
 
 import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.document.Document;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
@@ -29,6 +31,8 @@ import java.util.concurrent.TimeUnit;
  */
 @Service
 public class HybridRetrievalService {
+
+    private static final Logger log = LoggerFactory.getLogger(HybridRetrievalService.class);
 
     private final RagReferenceService ragReferenceService;
     private final Bm25IndexService bm25IndexService;
@@ -164,12 +168,10 @@ public class HybridRetrievalService {
     void warnUngatedModeConfig() {
         String unrecognized = unrecognizedModeWarning(getMode());
         if (unrecognized != null) {
-            System.out.println(unrecognized);
+            log.warn(unrecognized);
         }
         if (getMode().equalsIgnoreCase("bm25")) {
-            System.out.println("[检索模式] ⚠️ app.retrieval.mode=bm25 已降级为 " + effectiveMode()
-                    + "：纯关键词通道没有余弦，可答性闸门判不了，生产问答不允许只走关键词。"
-                    + "需要 bm25 单边对照请用零调用口子 /evaluation/recall?mode=bm25。");
+            log.warn("[检索模式] app.retrieval.mode=bm25 已降级为 {}：纯关键词通道没有余弦，可答性闸门判不了，生产问答不允许只走关键词。需要 bm25 单边对照请用零调用口子 /evaluation/recall?mode=bm25。", effectiveMode());
         }
     }
 
@@ -283,17 +285,16 @@ public class HybridRetrievalService {
         int perChannel = rerank ? Math.max(probeSize, poolSize) : probeSize;
         String recallQuery = retrievalQuery(query);
 
-        System.out.println("[检索并行] 启动: query=" + query + "  poolSize=" + poolSize
-                + "  expand=" + expand + "  rerank=" + rerank + "  线程=" + Thread.currentThread().getName());
+        log.info("[检索并行] 启动: query={}  poolSize={}  expand={}  rerank={}  线程={}", query, poolSize, expand, rerank, Thread.currentThread().getName());
 
         CompletableFuture<List<Document>> vectorFuture = CompletableFuture.supplyAsync(
                 () -> {
-                    System.out.println("[检索并行] 向量通道开始  线程=" + Thread.currentThread().getName());
+                    log.debug("[检索并行] 向量通道开始  线程={}", Thread.currentThread().getName());
                     return ragReferenceService.search(recallQuery, perChannel, vectorFloor);
                 }, ragExecutor);
         CompletableFuture<List<Bm25IndexService.Hit>> bm25Future = CompletableFuture.supplyAsync(
                 () -> {
-                    System.out.println("[检索并行] BM25 通道开始  线程=" + Thread.currentThread().getName());
+                    log.debug("[检索并行] BM25 通道开始  线程={}", Thread.currentThread().getName());
                     return bm25IndexService.search(recallQuery, perChannel);
                 }, ragExecutor);
 
@@ -302,14 +303,13 @@ public class HybridRetrievalService {
             vectorDocs = vectorFuture.get(30, TimeUnit.SECONDS);
         } catch (Exception e) {
             bm25Future.cancel(true);
-            System.out.println("[检索并行] 向量检索超时/异常，取消 BM25：" + e.getMessage());
+            log.warn("[检索并行] 向量检索超时/异常，取消 BM25：{}", e.getMessage());
             return List.of();
         }
 
         if (!hasEvidence(vectorDocs)) {
             bm25Future.cancel(true);
-            System.out.println("[检索闸门] 最像的一条也不够像（阈值 " + String.format("%.2f", answerFloor)
-                    + "），本次不提供知识库上下文：" + query);
+            log.info("[检索闸门] 最像的一条也不够像（阈值 {}），本次不提供知识库上下文：{}", String.format("%.2f", answerFloor), query);
             return List.of();
         }
 
@@ -317,14 +317,14 @@ public class HybridRetrievalService {
         try {
             bm25Hits = bm25Future.get(30, TimeUnit.SECONDS);
         } catch (Exception e) {
-            System.out.println("[检索并行] BM25 超时/异常，只用向量通道：" + e.getMessage());
+            log.warn("[检索并行] BM25 超时/异常，只用向量通道：{}", e.getMessage());
             bm25Hits = List.of();
         }
 
         List<Document> fused = fuse(vectorDocs, fromHits(bm25Hits), poolSize);
         String rerankQuery = rerankQuery(query);
         if (rerank && !rerankQuery.equals(query)) {
-            System.out.println("[重排查询] 本次送重排的是扩展串（rerank-use-expanded-query=true）：" + rerankQuery);
+            log.debug("[重排查询] 本次送重排的是扩展串（rerank-use-expanded-query=true）：{}", rerankQuery);
         }
         if (rerank) fused = take(rerankService.rerank(rerankQuery, fused), topK);
         return expand ? expand(fused) : fused;
@@ -347,7 +347,7 @@ public class HybridRetrievalService {
             return fuse(vectorFuture.get(30, TimeUnit.SECONDS),
                     fromHits(bm25Future.get(30, TimeUnit.SECONDS)), poolSize);
         } catch (Exception e) {
-            System.out.println("[检索并行] fuseCandidates 超时/异常：" + e.getMessage());
+            log.warn("[检索并行] fuseCandidates 超时/异常：{}", e.getMessage());
             bm25Future.cancel(true);
             try {
                 return fuse(vectorFuture.get(5, TimeUnit.SECONDS), List.of(), poolSize);
@@ -363,7 +363,7 @@ public class HybridRetrievalService {
     private static String retrievalQuery(String query) {
         List<String> extra = QueryExpander.addedTerms(query);
         if (extra.isEmpty()) return query;
-        System.out.println("[查询扩展] 补充术语: " + String.join(" ", extra) + "  原问句: " + query);
+        log.debug("[查询扩展] 补充术语: {}  原问句: {}", String.join(" ", extra), query);
         return QueryExpander.expand(query);
     }
 
