@@ -1,22 +1,15 @@
 # =====================================================================================
-# demo 档：不配 API key、不联网也能把整条链路点开看。
-#   起法一（Docker，推荐）：docker compose up --build   →  http://localhost:8080
-#   起法二（本机已有 PG+MySQL）：mvn package && java -jar target/mkbAI-1.0-SNAPSHOT.jar \
-#                                  --spring.profiles.active=demo
+# demo profile: 不配 API key、不联网也能把整条链路点开看。
+#   起法一 (Docker，推荐): docker compose up --build   -> http://localhost:8080
+#   起法二 (本机已有 PG+MySQL): mvn package && java -jar target/mkbAI-1.0-SNAPSHOT.jar --spring.profiles.active=demo
 # 下面每个值都能用同名环境变量覆盖，改 compose 里的 environment 即可，不用动这个文件。
-#
-# ⚠️ 这一档的检索分数和 98.4% 基线**不可比**：向量化换成了字符 2-gram 哈希
-#    （见 DemoModelConfig），余弦量的是字面重叠，不是语义相似度，所以两道闸门的线是按
-#    假向量的实测分布另定的。要看真数字请用默认档 + 百炼 key。
 # =====================================================================================
 spring:
   datasource:
-    # 业务库（MySQL）：consumables 库存表 + phi_audit_log 审计表，compose 里的 mysql 服务建好并塞了 3 行示例库存
     url: jdbc:mysql://${DEMO_MYSQL_HOST:mysql}:${DEMO_MYSQL_PORT:3306}/${DEMO_MYSQL_DB:mkbAI}?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     username: ${DEMO_MYSQL_USER:demo}
     password: ${DEMO_MYSQL_PASSWORD:demo123}
 
-  # Redis 缓存（compose 里有 redis 服务，默认连 redis:6379 无密码）
   data:
     redis:
       host: ${DEMO_REDIS_HOST:redis}
@@ -33,27 +26,40 @@ spring:
   cache:
     type: redis
 
+  rabbitmq:
+    host: ${DEMO_RABBITMQ_HOST:rabbitmq}
+    port: 5672
+    username: guest
+    password: guest
+    listener:
+      simple:
+        ack-mode: manual
+        prefetch: 1
+        concurrency: 2
+        max-concurrency: 4
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 2000ms
+
   ai:
     dashscope:
-      # 占位用：Spring AI 的 ChatModel / EmbeddingModel 两个 bean 在 demo 档被 DemoModelConfig
-      # 顶掉，这个 key 不会被真的拿去发请求。留它是为了让自动配置类不因缺 key 直接炸启动。
       api-key: ${DASHSCOPE_API_KEY:demo-placeholder-not-sent}
-
-# LangChain4j 那套 /lc/* 实验接口要的是它自己的 ChatLanguageModel bean，缺 key 时容器里没有这个
-# bean、控制器构造不了 → 整个应用起不来。给个占位 key 让它建出来；/lc/* 真点会报鉴权失败，
-# demo 档只演示 /chat 这一条主链路。
-langchain4j:
-  community:
-    dashscope:
-      chat-model:
+      agent:
+        enabled: false
+      chat:
         api-key: ${DASHSCOPE_API_KEY:demo-placeholder-not-sent}
 
+  langchain4j:
+    community:
+      dashscope:
+        chat-model:
+          api-key: ${DASHSCOPE_API_KEY:demo-placeholder-not-sent}
+
 app:
-  # 仓库自带的两份示例指南（合成文本，不是真实指南）。compose 把这个目录只读挂进容器。
   pdf-path: ${DEMO_PDF_PATH:./data/pdfs}
 
   ocr:
-    # 容器里没有 tesseract，关掉纯图片扫描件的 OCR 兜底；示例 PDF 是文字版，走 P1 直取。
     enabled: false
 
   pgvector:
@@ -61,29 +67,9 @@ app:
     jdbc-url: jdbc:postgresql://${DEMO_PG_HOST:postgres}:${DEMO_PG_PORT:5432}/${DEMO_PG_DB:vector}?charSet=UTF8&stringtype=unspecified&prepareThreshold=0
     username: ${DEMO_PG_USER:demo}
     password: ${DEMO_PG_PASSWORD:demo123}
-    # 假向量也是 1024 维，和默认档同一张表结构，切换档位不需要重建表
     dimensions: 1024
 
   retrieval:
-    # ↓ 这两条是 demo 档唯一的「另定阈值」：假向量是字符 2-gram 余弦，整体比真模型低一个量级，
-    #   默认档那两条 0.45 / 0.60 会把所有题都拦成拒答。数值按假向量实测分布定，实测口径见下。
-    #   2026-10-22 用 24 题打 /chat（15 道库内 + 7 道超纲 + 库存/PHI 两个 chip），
-    #   top1 分布见 scratch/demo_floors.out（探针 scratch/demo_e2e.py，服务端日志 scratch/demo_boot8.log）：
-    #     库内 0.0641 ~ 0.4100；超纲 0.0478 ~ 0.1715。
-    #   ⚠️ 这两组是**重叠**的：超纲的「中医针灸治疗高血压有效吗」0.1715 比库内最低的
-    #     「这个指南推荐了哪些降压药」0.0641 还高一倍。所以这条 answer-floor 不是可答性判据，
-    #     只是「字面几乎不沾的题别浪费上下文」的下限。按这份实测逐条对上：
-    #       闸门拦下（召回 0 条）：Java 冒泡 0.0480、帕金森 0.0478；
-    #       过了闸门、由抽取器自己找不到重叠句而拒答：天气 0.0510（召回 5 条）、红楼梦 0.0588（召回 3 条）；
-    #       过了闸门也被答出原文：火星指南 0.1041、哮喘 0.0549、针灸 0.1715。
-    #     和默认档同一个形状：那档里火星题 top1=0.6591 > 0.60 照样过闸门（README「域外题」一节，
-    #     词面覆盖率闸门已证伪）。差别只在默认档最后由真模型自己判、能拒，demo 档的假生成只认字面。
-    #   answer-floor=0.05 距实测最低的库内题 0.0641 只留 28% 余量；样本仅 24 题、库仅 6 块，
-    #   别把它当通用阈值，来访者问得更偏时可能连闸门都进不去——那是假向量的字面重叠本性，不是坏了。
-    #   ⚠️ 发请求要用 UTF-8：bash + curl --data-urlencode 在 Windows 下会把中文按本地代码页重编码，
-    #   服务端收到乱码串、分数整体偏低（早期那版阈值就是照这个错口径定的，已作废重测）。
     vector-floor: ${DEMO_VECTOR_FLOOR:0.01}
     answer-floor: ${DEMO_ANSWER_FLOOR:0.05}
-    # 假档没有 RerankModel（那是百炼的 gte-rerank-v2），显式关掉，免得每次问答都打一行
-    # 「没有可用的 RerankModel…保持原顺序」。融合顺序即最终顺序。
     rerank-enabled: false

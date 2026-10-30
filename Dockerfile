@@ -3,6 +3,9 @@
 
 FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /src
+
+COPY docker/maven/settings.xml /root/.m2/settings.xml
+
 COPY pom.xml .
 RUN mvn -B -q dependency:go-offline || true
 COPY src src

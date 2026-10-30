@@ -7,21 +7,48 @@
 # 所以答案质量不等于接了百炼的真实效果，闸门阈值也是按假向量另定的。
 services:
   postgres:
-    image: pgvector/pgvector:pg17
+    image: docker.m.daocloud.io/pgvector/pgvector:pg17
     environment:
       POSTGRES_DB: vector
       POSTGRES_USER: demo
       POSTGRES_PASSWORD: demo123
     volumes:
       - pgdata:/var/lib/postgresql/data
+      - ./docker/pgvector-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U demo -d vector"]
       interval: 3s
       timeout: 3s
       retries: 20
 
+  redis:
+    image: redis:7-alpine
+    container_name: mkbai-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: mkbai-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   mysql:
-    image: mysql:8.0
+    image: docker.m.daocloud.io/library/mysql:8.0
     command:
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_0900_ai_ci
@@ -54,6 +81,8 @@ services:
       DEMO_MYSQL_DB: mkbAI
       DEMO_MYSQL_USER: demo
       DEMO_MYSQL_PASSWORD: demo123
+      DEMO_REDIS_HOST: redis
+      DEMO_RABBITMQ_HOST: rabbitmq
       DEMO_PDF_PATH: /app/data/pdfs
     volumes:
       # 只读挂自己的 PDF 目录：往 data/pdfs 丢文件再重启容器就会入库（热监听在容器里同样开着）
@@ -63,7 +92,12 @@ services:
         condition: service_healthy
       mysql:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
 volumes:
   pgdata:
   mysqldata:
+  redisdata:

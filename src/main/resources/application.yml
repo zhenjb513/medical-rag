@@ -40,6 +40,24 @@ spring:
   cache:
     type: redis
 
+  # ====== RabbitMQ 异步消息 ======
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
+    virtual-host: /
+    listener:
+      simple:
+        ack-mode: manual
+        prefetch: 1
+        concurrency: 2
+        max-concurrency: 4
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 2000ms
+
   # ====== 阿里云百炼 DashScope AI 配置 ======
   ai:
     dashscope:
