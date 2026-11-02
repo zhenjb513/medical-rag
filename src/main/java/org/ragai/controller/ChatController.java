@@ -1,5 +1,8 @@
 package org.ragai.controller;
 
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
 import org.ragai.service.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -22,6 +25,8 @@ import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 
 @RestController
 @Validated
@@ -59,6 +64,13 @@ public class ChatController {
     private final MultiHopRetrievalService multiHopRetrievalService;
     private final RagReferenceService ragReferenceService;
     private final ChatMemoryManager chatMemoryManager;
+    private final MeterRegistry meterRegistry;
+
+    private final Counter streamSuccessCounter;
+    private final Counter streamCancelCounter;
+    private final Counter streamErrorCounter;
+    private final Timer   streamTtftTimer;
+    private final Timer   streamTotalTimer;
 
     @Value("${app.retrieval.chat-top-k:8}")
     private int chatTopK;
@@ -67,12 +79,25 @@ public class ChatController {
                           HybridRetrievalService hybridRetrievalService,
                           MultiHopRetrievalService multiHopRetrievalService,
                           RagReferenceService ragReferenceService,
-                          ChatMemoryManager chatMemoryManager) {
+                          ChatMemoryManager chatMemoryManager,
+                          MeterRegistry meterRegistry) {
         this.chatClient = chatClient;
         this.hybridRetrievalService = hybridRetrievalService;
         this.multiHopRetrievalService = multiHopRetrievalService;
         this.ragReferenceService = ragReferenceService;
         this.chatMemoryManager = chatMemoryManager;
+        this.meterRegistry = meterRegistry;
+
+        this.streamSuccessCounter = Counter.builder("rag.stream.requests")
+                .tag("result", "completed").register(meterRegistry);
+        this.streamCancelCounter = Counter.builder("rag.stream.requests")
+                .tag("result", "cancelled").register(meterRegistry);
+        this.streamErrorCounter = Counter.builder("rag.stream.requests")
+                .tag("result", "error").register(meterRegistry);
+        this.streamTtftTimer = Timer.builder("rag.stream.ttft")
+                .description("Time To First Token").register(meterRegistry);
+        this.streamTotalTimer = Timer.builder("rag.stream.duration")
+                .description("Total stream duration").register(meterRegistry);
     }
 
     public record ChatTrace(String answer, List<Document> docs, List<String> refs) {
@@ -163,11 +188,25 @@ public class ChatController {
             Prompt prompt = new Prompt(promptMessages);
             StringBuilder answerBuilder = new StringBuilder();
 
+            long startNanos = System.nanoTime();
+            AtomicBoolean firstTokenObserved = new AtomicBoolean(false);
+            AtomicLong firstTokenNanos = new AtomicLong(0);
+            AtomicBoolean cancelled = new AtomicBoolean(false);
+
             Flux<String> tokenFlux = chatClient.prompt(prompt).stream().content()
                     .timeout(Duration.ofSeconds(120))
-                    .doOnNext(answerBuilder::append)
+                    .doOnNext(token -> {
+                        if (firstTokenObserved.compareAndSet(false, true)) {
+                            long ttft = System.nanoTime() - startNanos;
+                            firstTokenNanos.set(ttft);
+                            streamTtftTimer.record(Duration.ofNanos(ttft));
+                            log.debug("[Stream] TTFT = {} ms", ttft / 1_000_000);
+                        }
+                        answerBuilder.append(token);
+                    })
                     .onErrorResume(e -> {
                         log.error("stream error", e);
+                        streamErrorCounter.increment();
                         return Flux.just("\n\n[生成中断：" + e.getMessage() + "]");
                     });
 
@@ -179,15 +218,36 @@ public class ChatController {
                             ServerSentEvent.<String>builder().data(refsBlock).event("refs").build(),
                             ServerSentEvent.<String>builder().data("[DONE]").event("done").build()
                     ))
-                    .doOnComplete(() -> {
-                        if (sessionId != null && !sessionId.isBlank()) {
-                            chatMemoryManager.appendTurn(sessionId, message,
-                                    answerBuilder.toString().trim() + refsBlock);
+                    .doOnCancel(() -> {
+                        cancelled.set(true);
+                        streamCancelCounter.increment();
+                        log.warn("[Stream] cancelled by client, sessionId={}, answerLen={}",
+                                sessionId, answerBuilder.length());
+                    })
+                    .doFinally(signalType -> {
+                        long totalNanos = System.nanoTime() - startNanos;
+                        streamTotalTimer.record(Duration.ofNanos(totalNanos));
+
+                        if (cancelled.get()) {
+                            log.info("[Stream] finalize={} (cancelled), total={}ms, answerLen={}",
+                                    signalType, totalNanos / 1_000_000, answerBuilder.length());
+                        } else if (signalType == reactor.core.publisher.SignalType.ON_COMPLETE) {
+                            streamSuccessCounter.increment();
+                            if (sessionId != null && !sessionId.isBlank()) {
+                                chatMemoryManager.appendTurn(sessionId, message,
+                                        answerBuilder.toString().trim() + refsBlock);
+                            }
+                            log.info("[Stream] completed, ttft={}ms, total={}ms, answerLen={}",
+                                    firstTokenNanos.get() / 1_000_000,
+                                    totalNanos / 1_000_000, answerBuilder.length());
+                        } else {
+                            log.info("[Stream] finalize={}, total={}ms", signalType, totalNanos / 1_000_000);
                         }
                     });
 
         } catch (Exception e) {
             log.error("chatStream setup error", e);
+            streamErrorCounter.increment();
             return Flux.just(
                     ServerSentEvent.<String>builder()
                             .data(RAG_REFUSAL_PHRASE + "（服务暂时不可用：" + e.getMessage() + "）").build(),

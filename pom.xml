@@ -65,6 +65,11 @@
             <artifactId>spring-boot-starter-actuator</artifactId>
         </dependency>
 
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
         <!-- ========== Spring AI 核心：ChatClient（必须！显式 version，防止 BOM 失效） ========== -->
         <!--
           经过对 spring-ai-client-chat-1.1.2.jar 的实际解压验证：
