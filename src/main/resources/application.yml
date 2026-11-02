@@ -191,7 +191,7 @@ app:
     enabled: true
 
     # --- 以下仅当 enabled=true 才生效 ---
-    jdbc-url: jdbc:postgresql://localhost:5432/postgres?charSet=UTF8&stringtype=unspecified&prepareThreshold=0
+    jdbc-url: jdbc:postgresql://127.0.0.1:5432/postgres?charSet=UTF8&stringtype=unspecified&prepareThreshold=0
       # 参数说明：
       #   charSet=UTF8             → PostgreSQL JDBC 驱动强制 UTF-8（和 MySQL 的 characterEncoding 参数名不同！）
     #   stringtype=unspecified   → 传 String 给 setString 不声明 varchar 类型，让 PG 按目标列类型隐式转换，避免一次多余的编码转换

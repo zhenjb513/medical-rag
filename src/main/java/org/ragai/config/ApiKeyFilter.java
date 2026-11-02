@@ -42,6 +42,7 @@ public class ApiKeyFilter extends OncePerRequestFilter {
             "/logout",
             "/auth",
             "/ingest",
+            "/evaluation",
             "/swagger-ui",
             "/swagger-resources",
             "/v3/api-docs",

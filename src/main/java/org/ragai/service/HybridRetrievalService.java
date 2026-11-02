@@ -358,13 +358,15 @@ public class HybridRetrievalService {
     }
 
     /**
-     * 命中口语措辞时给召回通道补指南术语（详见 QueryExpander），没命中就原样返回、不打日志。
+     * BM25 专用：先滤口语停用词，再补指南术语。向量通道保持原 query（保语义）。
      */
     private static String retrievalQuery(String query) {
-        List<String> extra = QueryExpander.addedTerms(query);
-        if (extra.isEmpty()) return query;
-        log.debug("[查询扩展] 补充术语: {}  原问句: {}", String.join(" ", extra), query);
-        return QueryExpander.expand(query);
+        String stripped = QueryExpander.stripStopwords(query);
+        List<String> extra = QueryExpander.addedTerms(stripped);
+        if (extra.isEmpty() && stripped.equals(query)) return query;
+        log.debug("[查询扩展] '{}'→'{}' +{}", query, stripped, String.join(",", extra));
+        if (extra.isEmpty()) return stripped;
+        return stripped + " " + String.join(" ", extra);
     }
 
     private static List<Document> take(List<Document> docs, int limit) {

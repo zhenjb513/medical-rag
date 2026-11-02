@@ -1,32 +1,13 @@
-# 一键起一个能点的 demo：http://localhost:8080
+# 混合模式：pgvector + mysql 走 Windows 本地（保留真向量），redis + rabbitmq Docker 起
 #
-#   docker compose up --build
+#   docker compose up -d
 #
-# 三个服务：pgvector（向量表 + BM25 倒排两张自建表）、MySQL（库存示例表 + PHI 审计表）、应用本身。
-# 应用跑 demo 档（application-demo.yml）：向量化和生成都是本地替身，**不需要 API key、不出网**，
-# 所以答案质量不等于接了百炼的真实效果，闸门阈值也是按假向量另定的。
+#   Windows 本地需要先启动：PostgreSQL(含 pgvector) + MySQL
 services:
-  postgres:
-    image: docker.m.daocloud.io/pgvector/pgvector:pg17
-    environment:
-      POSTGRES_DB: vector
-      POSTGRES_USER: demo
-      POSTGRES_PASSWORD: demo123
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./docker/pgvector-init:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U demo -d vector"]
-      interval: 3s
-      timeout: 3s
-      retries: 20
-
   redis:
     image: redis:7-alpine
     container_name: mkbai-redis
     command: redis-server --appendonly yes
-    volumes:
-      - redisdata:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 3s
@@ -47,57 +28,23 @@ services:
       timeout: 5s
       retries: 20
 
-  mysql:
-    image: docker.m.daocloud.io/library/mysql:8.0
-    command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_0900_ai_ci
-    environment:
-      MYSQL_DATABASE: mkbAI
-      MYSQL_USER: demo
-      MYSQL_PASSWORD: demo123
-      MYSQL_ROOT_PASSWORD: demo123
-    volumes:
-      - mysqldata:/var/lib/mysql
-      # 首次起容器时建 consumables 并塞三行示例库存（第三个故意不塞，好让「未录入」那一态看得见）
-      - ./docker/mysql-init:/docker-entrypoint-initdb.d:ro
-    healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -udemo -pdemo123"]
-      interval: 5s
-      timeout: 5s
-      retries: 30
-
   app:
     build: .
     ports:
       - "8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     environment:
-      SPRING_PROFILES_ACTIVE: demo
-      DEMO_PG_HOST: postgres
-      DEMO_PG_DB: vector
-      DEMO_PG_USER: demo
-      DEMO_PG_PASSWORD: demo123
-      DEMO_MYSQL_HOST: mysql
-      DEMO_MYSQL_DB: mkbAI
-      DEMO_MYSQL_USER: demo
-      DEMO_MYSQL_PASSWORD: demo123
-      DEMO_REDIS_HOST: redis
-      DEMO_RABBITMQ_HOST: rabbitmq
+      SPRING_PROFILES_ACTIVE: local
+      SPRING_DATASOURCE_URL: jdbc:mysql://host.docker.internal:3306/mkbAI?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+      APP_PGVECTOR_JDBC_URL: jdbc:postgresql://host.docker.internal:5432/postgres?charSet=UTF8&stringtype=unspecified&prepareThreshold=0
+      SPRING_DATA_REDIS_HOST: redis
+      SPRING_RABBITMQ_HOST: rabbitmq
       DEMO_PDF_PATH: /app/data/pdfs
     volumes:
-      # 只读挂自己的 PDF 目录：往 data/pdfs 丢文件再重启容器就会入库（热监听在容器里同样开着）
       - ./data/pdfs:/app/data/pdfs:ro
     depends_on:
-      postgres:
-        condition: service_healthy
-      mysql:
-        condition: service_healthy
       redis:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
-
-volumes:
-  pgdata:
-  mysqldata:
-  redisdata:
