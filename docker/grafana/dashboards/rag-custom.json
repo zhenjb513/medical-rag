@@ -1,0 +1,104 @@
+{
+  "annotations": {"list": []},
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "title": "流式请求 QPS（按结果分组）",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+      "targets": [
+        {"expr": "sum(rate(rag_stream_requests_total[5m])) by (result)", "legendFormat": "{{result}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}}
+    },
+    {
+      "id": 2,
+      "title": "首 Token 延迟 TTFT (ms)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, rate(rag_stream_ttft_seconds_bucket[5m])) * 1000", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.50, rate(rag_stream_ttft_seconds_bucket[5m])) * 1000", "legendFormat": "p50"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ms"}}
+    },
+    {
+      "id": 3,
+      "title": "流总耗时 (ms)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+      "targets": [
+        {"expr": "histogram_quantile(0.95, rate(rag_stream_duration_seconds_bucket[5m])) * 1000", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.50, rate(rag_stream_duration_seconds_bucket[5m])) * 1000", "legendFormat": "p50"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "ms"}}
+    },
+    {
+      "id": 4,
+      "title": "LLM Token 用量（5 分钟）",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+      "targets": [
+        {"expr": "sum(rate(gen_ai_client_token_usage_total[5m]))", "legendFormat": "tokens/5m"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "short"}}
+    },
+    {
+      "id": 5,
+      "title": "JVM 堆内存 (MB)",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+      "targets": [
+        {"expr": "jvm_memory_used_bytes{area='heap'} / 1024 / 1024", "legendFormat": "heap used"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "mb"}}
+    },
+    {
+      "id": 6,
+      "title": "HTTP 请求 QPS",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+      "targets": [
+        {"expr": "sum(rate(http_server_requests_seconds_count[5m])) by (uri)", "legendFormat": "{{uri}}"}
+      ],
+      "fieldConfig": {"defaults": {"unit": "reqps"}}
+    },
+    {
+      "id": 7,
+      "title": "数据库连接池活跃数",
+      "type": "timeseries",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+      "targets": [
+        {"expr": "hikaricp_connections_active", "legendFormat": "{{pool}}"}
+      ]
+    },
+    {
+      "id": 8,
+      "title": "RabbitMQ 已消费消息",
+      "type": "stat",
+      "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+      "targets": [
+        {"expr": "rabbitmq_consumed_total", "legendFormat": "total consumed"}
+      ]
+    }
+  ],
+  "time": {"from": "now-1h", "to": "now"},
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "RAG mkbAI 可观测性看板",
+  "uid": "rag-custom",
+  "version": 1,
+  "schemaVersion": 38
+}
