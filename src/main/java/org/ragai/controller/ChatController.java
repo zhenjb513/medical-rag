@@ -1,5 +1,7 @@
 package org.ragai.controller;
 
+import io.github.resilience4j.circuitbreaker.annotation.CircuitBreaker;
+import io.github.resilience4j.ratelimiter.annotation.RateLimiter;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
@@ -146,6 +148,8 @@ public class ChatController {
     }
 
     @GetMapping("/chat")
+    @RateLimiter(name = "chatRateLimiter", fallbackMethod = "chatRateLimitFallback")
+    @CircuitBreaker(name = "llmCircuitBreaker", fallbackMethod = "chatCircuitFallback")
     public String chat(@RequestParam(value = "message") @NotBlank(message = "问题不能为空") String message,
                        @RequestParam(value = "sessionId", required = false) @Size(max = 64) String sessionId) {
         try {
@@ -182,6 +186,8 @@ public class ChatController {
     }
 
     @GetMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @RateLimiter(name = "chatRateLimiter", fallbackMethod = "chatStreamRateLimitFallback")
+    @CircuitBreaker(name = "llmCircuitBreaker", fallbackMethod = "chatStreamCircuitFallback")
     public Flux<ServerSentEvent<String>> chatStream(
             @RequestParam("message") @NotBlank(message = "问题不能为空") String message,
             @RequestParam(value = "sessionId", required = false) @Size(max = 64) String sessionId) {
@@ -297,5 +303,61 @@ public class ChatController {
         r.put("maxRoundsPerSession", ChatMemoryManager.DEFAULT_MAX_ROUNDS);
         r.put("sessionTtlMs", ChatMemoryManager.DEFAULT_TTL_MS);
         return r;
+    }
+
+    // ========== Resilience4j Fallback 方法 ==========
+    // 规则：参数和原方法一致，最后多一个 Throwable；返回值和原方法一致
+
+    public String chatRateLimitFallback(String message, String sessionId, Throwable t) {
+        log.warn("[RateLimit] 拒绝请求 message={}", message);
+        return "请求过于频繁（限流 20 QPS），请稍后再试。";
+    }
+
+    public String chatCircuitFallback(String message, String sessionId, Throwable t) {
+        log.warn("[CircuitBreaker] LLM 熔断降级，返回纯检索结果", t);
+        String currentQuery = QueryExpander.expand(message);
+        try {
+            List<Document> docs = multiHopRetrievalService.search(currentQuery, chatTopK, null);
+            String ragContext = ragReferenceService.buildContext(docs);
+            List<String> refs = ragReferenceService.extractReferences(docs);
+            return "【服务降级】LLM 暂时不可用，以下为检索到的相关内容：\n\n"
+                    + ragContext + "\n\n【引用来源】\n" + String.join("\n", refs);
+        } catch (Exception retryFail) {
+            log.error("[CircuitBreaker] 降级也失败了", retryFail);
+            return RAG_REFUSAL_PHRASE + "（检索也暂时不可用）";
+        }
+    }
+
+    public Flux<ServerSentEvent<String>> chatStreamRateLimitFallback(
+            String message, String sessionId, Throwable t) {
+        log.warn("[RateLimit] 拒绝流式请求 message={}", message);
+        return Flux.just(
+                ServerSentEvent.<String>builder().data("请求过于频繁（限流 20 QPS），请稍后再试。").build(),
+                ServerSentEvent.<String>builder().data("[DONE]").event("done").build()
+        );
+    }
+
+    public Flux<ServerSentEvent<String>> chatStreamCircuitFallback(
+            String message, String sessionId, Throwable t) {
+        log.warn("[CircuitBreaker] LLM 熔断降级（流式），返回纯检索结果", t);
+        String currentQuery = QueryExpander.expand(message);
+        try {
+            List<Document> docs = multiHopRetrievalService.search(currentQuery, chatTopK, null);
+            String ragContext = ragReferenceService.buildContext(docs);
+            List<String> refs = ragReferenceService.extractReferences(docs);
+            String fallbackText = "【服务降级】LLM 暂时不可用，以下为检索到的相关内容：\n\n" + ragContext;
+            String refsBlock = "\n\n【引用来源】\n" + String.join("\n", refs);
+            return Flux.just(
+                    ServerSentEvent.<String>builder().data(fallbackText).build(),
+                    ServerSentEvent.<String>builder().data(refsBlock).event("refs").build(),
+                    ServerSentEvent.<String>builder().data("[DONE]").event("done").build()
+            );
+        } catch (Exception retryFail) {
+            log.error("[CircuitBreaker] 流式降级也失败了", retryFail);
+            return Flux.just(
+                    ServerSentEvent.<String>builder().data(RAG_REFUSAL_PHRASE + "（检索也暂时不可用）").build(),
+                    ServerSentEvent.<String>builder().data("[DONE]").event("done").build()
+            );
+        }
     }
 }

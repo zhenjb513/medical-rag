@@ -1,5 +1,6 @@
 package org.ragai.service;
 
+import io.github.resilience4j.retry.annotation.Retry;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -214,6 +215,7 @@ public class HybridRetrievalService {
      * @param threshold     向量通道的相似度下限，传 null 时用 app.retrieval.vector-floor
      * @param versionFilter 限定检索的版本号白名单（null/空集=不过滤，"2023"/"2021" 这种）
      */
+    @Retry(name = "retrievalRetry")
     public List<Document> search(String query, int topK, Double threshold, java.util.Set<String> versionFilter) {
         String m = enforceGateCapable(getMode(), bm25IndexService.isAvailable());
         List<Document> raw;

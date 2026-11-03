@@ -229,11 +229,57 @@ app:
     enabled: true
     rpm: 60
 
+resilience4j:
+  # ====== 限流：接口级令牌桶 ======
+  ratelimiter:
+    configs:
+      default:
+        limit-for-period: 20          # 每个周期（1s）允许 20 个请求
+        limit-refresh-period: 1s       # 1 秒一个周期
+        timeout-duration: 0            # 超过直接拒绝，不等待
+    instances:
+      chatRateLimiter:
+        base-config: default
+
+  # ====== 熔断：LLM 连续失败 → 熔断降级 ======
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-type: COUNT_BASED      # 按请求数统计
+        sliding-window-size: 20              # 20 个请求为一个窗口
+        minimum-number-of-calls: 5           # 至少 5 个请求才开始算失败率
+        failure-rate-threshold: 50            # 失败率 ≥ 50% → 打开
+        wait-duration-in-open-state: 30s      # 打开 30 秒后进入半开
+        permitted-number-of-calls-in-half-open-state: 5  # 半开放行 5 个请求探测
+        automatic-transition-from-open-to-half-open-enabled: true
+    instances:
+      llmCircuitBreaker:
+        base-config: default
+
+  # ====== 重试：向量检索偶发失败 → 指数退避 ======
+  retry:
+    configs:
+      default:
+        max-attempts: 3                      # 共 3 次（1 原试 + 2 重试）
+        wait-duration: 1s                    # 初始间隔 1s
+        enable-exponential-backoff: true     # 指数退避
+        exponential-backoff-multiplier: 2    # 间隔翻倍：1s → 2s
+        retry-exceptions:
+          - java.net.SocketTimeoutException
+          - org.springframework.dao.DataAccessException
+    instances:
+      retrievalRetry:
+        base-config: default
+
+  # ====== 与 Micrometer 自动打通 ======
+  metrics:
+    enabled: true
+
 management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: health,info,metrics,prometheus,resilience4j
   endpoint:
     health:
       show-details: when-authorized

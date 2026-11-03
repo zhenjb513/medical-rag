@@ -70,7 +70,18 @@
             <artifactId>micrometer-registry-prometheus</artifactId>
         </dependency>
 
-        <!-- ========== Spring AI 核心：ChatClient（必须！显式 version，防止 BOM 失效） ========== -->
+        <!-- ========== Resilience4j 高可用：限流/熔断/重试，与 Micrometer 自动打通 ========== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-spring-boot3</artifactId>
+            <version>2.3.0</version>
+        </dependency>
+
+        <!-- ========== Spring AI 核心：ChatClient ========== -->
         <!--
           经过对 spring-ai-client-chat-1.1.2.jar 的实际解压验证：
           org/springframework/ai/chat/client/ChatClient.class
