@@ -95,9 +95,27 @@ public class ChatController {
         this.streamErrorCounter = Counter.builder("rag.stream.requests")
                 .tag("result", "error").register(meterRegistry);
         this.streamTtftTimer = Timer.builder("rag.stream.ttft")
-                .description("Time To First Token").register(meterRegistry);
+                .description("Time To First Token")
+                .publishPercentileHistogram()
+                .serviceLevelObjectives(
+                        Duration.ofMillis(200),
+                        Duration.ofMillis(500),
+                        Duration.ofMillis(1000),
+                        Duration.ofMillis(2000),
+                        Duration.ofMillis(5000)
+                )
+                .register(meterRegistry);
         this.streamTotalTimer = Timer.builder("rag.stream.duration")
-                .description("Total stream duration").register(meterRegistry);
+                .description("Total stream duration")
+                .publishPercentileHistogram()
+                .serviceLevelObjectives(
+                        Duration.ofSeconds(3),
+                        Duration.ofSeconds(5),
+                        Duration.ofSeconds(10),
+                        Duration.ofSeconds(20),
+                        Duration.ofSeconds(30)
+                )
+                .register(meterRegistry);
     }
 
     public record ChatTrace(String answer, List<Document> docs, List<String> refs) {

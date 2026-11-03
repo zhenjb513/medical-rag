@@ -23,8 +23,8 @@
       "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
       "targets": [
-        {"expr": "histogram_quantile(0.95, rate(rag_stream_ttft_seconds_bucket[5m])) * 1000", "legendFormat": "p95"},
-        {"expr": "histogram_quantile(0.50, rate(rag_stream_ttft_seconds_bucket[5m])) * 1000", "legendFormat": "p50"}
+        {"expr": "histogram_quantile(0.95, rate(rag_stream_ttft_seconds_bucket[5m])) * 1000", "legendFormat": "p95 TTFT"},
+        {"expr": "histogram_quantile(0.50, rate(rag_stream_ttft_seconds_bucket[5m])) * 1000", "legendFormat": "p50 TTFT"}
       ],
       "fieldConfig": {"defaults": {"unit": "ms"}}
     },
@@ -42,12 +42,12 @@
     },
     {
       "id": 4,
-      "title": "LLM Token 用量（5 分钟）",
+      "title": "LLM Token 用量总计",
       "type": "stat",
       "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
       "targets": [
-        {"expr": "sum(rate(gen_ai_client_token_usage_total[5m]))", "legendFormat": "tokens/5m"}
+        {"expr": "sum(gen_ai_client_token_usage_total{gen_ai_token_type='total'}) by (gen_ai_operation_name)", "legendFormat": "{{gen_ai_operation_name}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "short"}}
     },
@@ -58,18 +58,18 @@
       "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
       "targets": [
-        {"expr": "jvm_memory_used_bytes{area='heap'} / 1024 / 1024", "legendFormat": "heap used"}
+        {"expr": "sum(jvm_memory_used_bytes{area='heap'}) / 1024 / 1024", "legendFormat": "heap total"}
       ],
       "fieldConfig": {"defaults": {"unit": "mb"}}
     },
     {
       "id": 6,
-      "title": "HTTP 请求 QPS",
+      "title": "HTTP 请求 QPS（非 actuator）",
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
       "targets": [
-        {"expr": "sum(rate(http_server_requests_seconds_count[5m])) by (uri)", "legendFormat": "{{uri}}"}
+        {"expr": "sum(rate(http_server_requests_seconds_count{uri!~'/actuator/.*'}[5m])) by (uri)", "legendFormat": "{{uri}}"}
       ],
       "fieldConfig": {"defaults": {"unit": "reqps"}}
     },
@@ -90,7 +90,7 @@
       "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
       "targets": [
-        {"expr": "rabbitmq_consumed_total", "legendFormat": "total consumed"}
+        {"expr": "rabbitmq_consumed_total", "legendFormat": "{{name}}"}
       ]
     }
   ],
@@ -99,6 +99,6 @@
   "timezone": "browser",
   "title": "RAG mkbAI 可观测性看板",
   "uid": "rag-custom",
-  "version": 1,
+  "version": 2,
   "schemaVersion": 38
 }
