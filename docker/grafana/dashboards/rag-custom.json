@@ -18,25 +18,27 @@
     },
     {
       "id": 2,
-      "title": "首 Token 延迟 TTFT (ms)",
+      "title": "首 Token 延迟 TTFT (ms) — p95/p50/avg",
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
       "targets": [
-        {"expr": "histogram_quantile(0.95, rate(rag_stream_ttft_seconds_bucket[5m])) * 1000", "legendFormat": "p95 TTFT"},
-        {"expr": "histogram_quantile(0.50, rate(rag_stream_ttft_seconds_bucket[5m])) * 1000", "legendFormat": "p50 TTFT"}
+        {"expr": "histogram_quantile(0.95, increase(rag_stream_ttft_seconds_bucket[5m])) * 1000", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.50, increase(rag_stream_ttft_seconds_bucket[5m])) * 1000", "legendFormat": "p50"},
+        {"expr": "sum(increase(rag_stream_ttft_seconds_sum[5m])) / sum(increase(rag_stream_ttft_seconds_count[5m])) * 1000", "legendFormat": "avg"}
       ],
       "fieldConfig": {"defaults": {"unit": "ms"}}
     },
     {
       "id": 3,
-      "title": "流总耗时 (ms)",
+      "title": "流总耗时 (ms) — p95/p50/avg",
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
       "targets": [
-        {"expr": "histogram_quantile(0.95, rate(rag_stream_duration_seconds_bucket[5m])) * 1000", "legendFormat": "p95"},
-        {"expr": "histogram_quantile(0.50, rate(rag_stream_duration_seconds_bucket[5m])) * 1000", "legendFormat": "p50"}
+        {"expr": "histogram_quantile(0.95, increase(rag_stream_duration_seconds_bucket[5m])) * 1000", "legendFormat": "p95"},
+        {"expr": "histogram_quantile(0.50, increase(rag_stream_duration_seconds_bucket[5m])) * 1000", "legendFormat": "p50"},
+        {"expr": "sum(increase(rag_stream_duration_seconds_sum[5m])) / sum(increase(rag_stream_duration_seconds_count[5m])) * 1000", "legendFormat": "avg"}
       ],
       "fieldConfig": {"defaults": {"unit": "ms"}}
     },
@@ -75,22 +77,27 @@
     },
     {
       "id": 7,
-      "title": "数据库连接池活跃数",
+      "title": "数据库连接池（活跃/空闲/最大）",
       "type": "timeseries",
       "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
       "targets": [
-        {"expr": "hikaricp_connections_active", "legendFormat": "{{pool}}"}
+        {"expr": "hikaricp_connections_active", "legendFormat": "{{pool}} active"},
+        {"expr": "hikaricp_connections_idle", "legendFormat": "{{pool}} idle"},
+        {"expr": "hikaricp_connections_max", "legendFormat": "{{pool}} max"}
       ]
     },
     {
       "id": 8,
-      "title": "RabbitMQ 已消费消息",
+      "title": "RabbitMQ 状态",
       "type": "stat",
       "datasource": {"type": "prometheus", "uid": "PBFA97CFB590B2093"},
       "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
       "targets": [
-        {"expr": "rabbitmq_consumed_total", "legendFormat": "{{name}}"}
+        {"expr": "rabbitmq_connections", "legendFormat": "connections"},
+        {"expr": "rabbitmq_channels", "legendFormat": "channels"},
+        {"expr": "rabbitmq_consumed_total", "legendFormat": "{{name}} consumed"},
+        {"expr": "rabbitmq_acknowledged_total", "legendFormat": "{{name}} acked"}
       ]
     }
   ],
@@ -99,6 +106,6 @@
   "timezone": "browser",
   "title": "RAG mkbAI 可观测性看板",
   "uid": "rag-custom",
-  "version": 2,
+  "version": 4,
   "schemaVersion": 38
 }
