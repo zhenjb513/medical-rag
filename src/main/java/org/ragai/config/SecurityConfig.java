@@ -34,10 +34,14 @@ public class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(
                                 "/", "/index.html",
-                                "/login", "/login.html",
+                                "/login",
                                 "/auth/**",
                                 "/error",
                                 "/static/**", "/css/**", "/js/**",
+                                // 前端是零构建的裸文件，index.html 里写的是 src="app.js"，
+                                // 落到根路径上而不是 /static/ 或 /js/ 下；漏了这两条就是 401，
+                                // 页面变成没样式的裸 HTML 且所有按钮失效。
+                                "/app.js", "/style.css",
                                 "/favicon.ico", "/actuator/**",
                                 "/swagger-ui/**", "/swagger-resources/**",
                                 "/v3/api-docs/**", "/webjars/**"
@@ -52,10 +56,11 @@ public class SecurityConfig {
                         )
                 )
                 .formLogin(form -> form
-                        .loginPage("/login.html")
+                        // 不指定 loginPage：仓库里从来没有 static/login.html，指过去浏览器就是
+                        // 500「No static resource login.html」。用 Spring Security 自带的 GET /login 页兜底，
+                        // 前端正常登录走 index.html 上的模态框直接 POST /login。
                         .loginProcessingUrl("/login")
                         .defaultSuccessUrl("/", true)
-                        .failureUrl("/login.html?error=true")
                         .usernameParameter("username")
                         .passwordParameter("password")
                 )
