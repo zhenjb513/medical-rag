@@ -66,6 +66,7 @@ public class ChatController {
     private final MultiHopRetrievalService multiHopRetrievalService;
     private final RagReferenceService ragReferenceService;
     private final ChatMemoryManager chatMemoryManager;
+    private final InventoryService inventoryService;
     private final MeterRegistry meterRegistry;
 
     private final Counter streamSuccessCounter;
@@ -82,12 +83,14 @@ public class ChatController {
                           MultiHopRetrievalService multiHopRetrievalService,
                           RagReferenceService ragReferenceService,
                           ChatMemoryManager chatMemoryManager,
+                          InventoryService inventoryService,
                           MeterRegistry meterRegistry) {
         this.chatClient = chatClient;
         this.hybridRetrievalService = hybridRetrievalService;
         this.multiHopRetrievalService = multiHopRetrievalService;
         this.ragReferenceService = ragReferenceService;
         this.chatMemoryManager = chatMemoryManager;
+        this.inventoryService = inventoryService;
         this.meterRegistry = meterRegistry;
 
         this.streamSuccessCounter = Counter.builder("rag.stream.requests")
@@ -125,6 +128,7 @@ public class ChatController {
 
     /**
      * 给评估链路用：跑完整 RAG 流程，但同时返回送进模型的 docs。
+     * 这里刻意不挂工具——61 题考卷全是指南问答，挂上会让每题多走一次工具选择，历史基线就不再是同一口径。
      */
     public ChatTrace chatWithTrace(String message) {
         String currentQuery = QueryExpander.expand(message);
@@ -169,7 +173,7 @@ public class ChatController {
                 );
             }
 
-            String answer = chatClient.prompt(new Prompt(promptMessages)).call().content();
+            String answer = chatClient.prompt(new Prompt(promptMessages)).tools(inventoryService).call().content();
             String finalAnswer = (answer == null || answer.isBlank())
                     ? RAG_REFUSAL_PHRASE : answer.trim();
             String finalText = finalAnswer + "\n\n【引用来源】\n"
@@ -217,7 +221,7 @@ public class ChatController {
             AtomicLong firstTokenNanos = new AtomicLong(0);
             AtomicBoolean cancelled = new AtomicBoolean(false);
 
-            Flux<String> tokenFlux = chatClient.prompt(prompt).stream().content()
+            Flux<String> tokenFlux = chatClient.prompt(prompt).tools(inventoryService).stream().content()
                     .timeout(Duration.ofSeconds(120))
                     .doOnNext(token -> {
                         if (firstTokenObserved.compareAndSet(false, true)) {
