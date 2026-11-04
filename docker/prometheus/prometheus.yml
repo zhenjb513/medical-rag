@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'mkbai-app'
+    metrics_path: '/actuator/prometheus'
+    static_configs:
+      # host.docker.internal 由 compose 的 extra_hosts: host-gateway 动态解析。
+      # 这里原先写死 172.20.96.1（WSL 那侧看到的 Windows 网卡地址）。同一批文件里 Grafana 数据源
+      # 写死的是容器网桥 IP 172.17.0.2，Prometheus 容器重启后拿到 172.17.0.3，数据源立刻
+      # connection refused（2026-11-03 实测），所以这类写死地址不能进仓库。
+      - targets: ['host.docker.internal:8080']

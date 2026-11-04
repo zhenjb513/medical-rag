@@ -1,8 +1,9 @@
-# 混合模式：pgvector + mysql 走 Windows 本地（保留真向量），redis + rabbitmq Docker 起
+# 混合模式：pgvector + mysql 走 Windows 本地（保留真向量），redis + rabbitmq + Grafana/Prometheus Docker 起
 #
 #   docker compose up -d
 #
 #   Windows 本地需要先启动：PostgreSQL(含 pgvector) + MySQL
+#   监控栈：看板 http://localhost:3000 （库里的 rag-custom），Prometheus http://localhost:9090
 services:
   redis:
     image: redis:7-alpine
@@ -33,7 +34,7 @@ services:
     ports:
       - "8080:8080"
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:${WINDOWS_HOST_IP:-host-gateway}"
     environment:
       SPRING_PROFILES_ACTIVE: local
       SPRING_DATASOURCE_URL: jdbc:mysql://host.docker.internal:3306/mkbAI?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
@@ -48,3 +49,49 @@ services:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy
+
+  # ===== 可观测性栈：和上面一样 docker compose up -d 就起，不用另外手敲 docker run =====
+  # 抓取目标是 host.docker.internal:8080，因此 app 跑在容器里（8080 已发布到宿主）
+  # 或跑在宿主机上（IDE/mvn 起的那种）都抓得到。
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: mkbai-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.console.libraries=/usr/share/prometheus/console_libraries
+      - --web.console.templates=/usr/share/prometheus/consoles
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./docker/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    extra_hosts:
+      - "host.docker.internal:${WINDOWS_HOST_IP:-host-gateway}"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: mkbai-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      # 本机 demo 用的账号，不是生产凭据；对外演示前自己换掉或直接删掉 anonymous 那两行
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./docker/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # 没有这个卷的话，UI 里改出来的看板只活在容器文件系统里，容器一删就没了
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+
+volumes:
+  grafana-data:
