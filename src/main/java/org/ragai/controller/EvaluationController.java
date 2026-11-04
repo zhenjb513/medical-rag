@@ -8,6 +8,7 @@ import org.ragai.service.EvaluationService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -24,6 +25,7 @@ import java.util.Map;
 public class EvaluationController {
 
     private final EvaluationService evaluationService;
+    private final org.ragai.service.EvaluationTaskService evaluationTaskService;
     private final org.ragai.service.RecallEvaluationService recallEvaluationService;
     private final org.ragai.service.HybridRetrievalService hybridRetrievalService;
     private final ObjectMapper jsonMapper = new ObjectMapper()
@@ -31,9 +33,11 @@ public class EvaluationController {
 
     @Autowired
     public EvaluationController(EvaluationService evaluationService,
+                                org.ragai.service.EvaluationTaskService evaluationTaskService,
                                 org.ragai.service.RecallEvaluationService recallEvaluationService,
                                 org.ragai.service.HybridRetrievalService hybridRetrievalService) {
         this.evaluationService = evaluationService;
+        this.evaluationTaskService = evaluationTaskService;
         this.recallEvaluationService = recallEvaluationService;
         this.hybridRetrievalService = hybridRetrievalService;
     }
@@ -105,72 +109,57 @@ public class EvaluationController {
     }
 
     /**
-     * 运行完整评估，返回JSON格式评估报告
+     * 提交一轮端到端评估，立刻返回 taskId，不在请求线程里等结果。
+     * 全量 61 题实测 394s：同步等等于让一个 Tomcat 工作线程挂 7 分钟，而且客户端一断线
+     * 报告就没了（2026-10-12 那次 node fetch 默认 300s 超时，钱照烧、明细全丢）。
      */
     @GetMapping(value = "/run", produces = "application/json; charset=utf-8")
     public String runEvaluation(@RequestParam(defaultValue = "") String only) throws Exception {
-        java.util.List<String> subset = parseOnly(only);
-        System.out.println("[评估] 开始运行医疗测试集评估...  子集片段=" + (subset.isEmpty() ? "（全量）" : subset.toString()));
-        long startTime = System.currentTimeMillis();
-
-        EvaluationService.EvaluationReport report = evaluationService.runEvaluation(subset);
-
-        long duration = System.currentTimeMillis() - startTime;
-        System.out.println("[评估] 完成，耗时" + duration + "ms，通过率" + report.passRate + "%");
-
-        // 构建简化的JSON输出（避免answer太长）
+        org.ragai.service.EvaluationTaskService.EvalTask task = evaluationTaskService.submit(parseOnly(only));
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("subset_filter", subset.isEmpty() ? "全量" : String.join(",", subset));
-        out.put("total_count", report.totalCount);
-        out.put("pass_count", report.passCount);
-        out.put("pass_rate", report.passRate + "%");
-        out.put("duration_ms", duration);
+        out.put("code", 0);
+        out.put("taskId", task.taskId);
+        out.put("state", task.state);
+        out.put("subset_filter", task.subset);
+        out.put("message", "已在后台运行，用 GET /evaluation/status/" + task.taskId + " 取回执");
+        return jsonMapper.writeValueAsString(out);
+    }
 
-        Map<String, Object> dimensions = new LinkedHashMap<>();
-        dimensions.put("答案准确性", report.accuracyPassCount + "/" + report.totalCount);
-        dimensions.put("引用正确性", report.referencePassCount + "/" + report.totalCount);
-        dimensions.put("幻觉抑制", report.hallucinationPassCount + "/" + report.totalCount);
-        dimensions.put("合规性", report.compliancePassCount + "/" + report.totalCount);
-        dimensions.put("库外背书（答案写了但上下文没有）", report.backfillSuspectCount + "/" + report.totalCount);
-        dimensions.put("出处不在答案块（有出处但答错段落）", report.wrongBlockCount + "/" + report.totalCount);
-        out.put("dimensions", dimensions);
-
-        out.put("category_stats", report.categoryStats);
-        out.put("summary", report.summary);
-
-        // 详细结果（只包含问题和是否通过，不包含完整answer）
-        var detailedResults = new java.util.ArrayList<Map<String, Object>>();
-        for (EvaluationService.TestResult r : report.results) {
-            Map<String, Object> item = new LinkedHashMap<>();
-            item.put("question", r.question);
-            item.put("category", r.category);
-            item.put("should_be_answerable", r.shouldBeAnswerable);
-            item.put("accuracy_pass", r.accuracyPass);
-            item.put("accuracy_evidence", r.accuracyEvidence);
-            item.put("backfill_suspect", r.backfillSuspect);
-            item.put("wrong_block_suspect", r.wrongBlockSuspect);
-            item.put("reference_pass", r.referencePass);
-            item.put("hallucination_pass", r.hallucinationPass);
-            item.put("compliance_pass", r.compliancePass);
-            item.put("all_pass", r.isAllPass());
-            if (!r.isAllPass()) {
-                item.put("fail_reason", r.failReason);
-            }
-            detailedResults.add(item);
+    /** 评估任务回执：RUNNING 只有已耗时，DONE 带完整报告（字段形状与同步时代一致），FAILED 带错误。 */
+    @GetMapping(value = "/status/{taskId}", produces = "application/json; charset=utf-8")
+    public String evaluationStatus(@PathVariable String taskId) throws Exception {
+        org.ragai.service.EvaluationTaskService.EvalTask task = evaluationTaskService.find(taskId);
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (task == null) {
+            out.put("code", 404);
+            out.put("message", "taskId 不存在或已被淘汰（已完结的只留最近 20 个）");
+            return jsonMapper.writeValueAsString(out);
         }
-        out.put("detailed_results", detailedResults);
-
+        out.put("code", 0);
+        out.put("taskId", task.taskId);
+        out.put("state", task.state);
+        out.put("subset_filter", task.subset);
+        out.put("elapsed_ms", (task.finishedAt > 0 ? task.finishedAt : System.currentTimeMillis()) - task.startedAt);
+        if ("DONE".equals(task.state)) {
+            out.put("report", jsonMapper.readTree(task.reportJson));
+        }
+        if ("FAILED".equals(task.state)) {
+            out.put("error", task.errorMsg);
+        }
         return jsonMapper.writeValueAsString(out);
     }
 
     /**
-     * 获取评估摘要（纯文本）。
-     * ⚠️ 这个接口同样会真跑一遍评测链路（每题三次付费调用），所以必须带 only= 指定子集；
-     * 不带就是全量，别随手点。
+     * 获取评估摘要（纯文本）。只认带 {@code only=} 的子集：
+     * 不带就是 61 题真金白银的全量，那条路现在归异步口子 {@code /run} + {@code /status/{taskId}} 管。
      */
     @GetMapping(value = "/summary", produces = "text/plain; charset=utf-8")
     public String getSummary(@RequestParam(defaultValue = "") String only) {
-        EvaluationService.EvaluationReport report = evaluationService.runEvaluation(parseOnly(only));
-        return report.summary;
+        java.util.List<String> subset = parseOnly(only);
+        if (subset.isEmpty()) {
+            return "全量摘要改走异步口子了：GET /evaluation/run 提交 → GET /evaluation/status/{taskId} 取 summary。\n"
+                    + "这个口子现在只接带 only= 的子集，因为不带 only= 点一次就是 61 题的付费全量。";
+        }
+        return evaluationService.runEvaluation(subset).summary;
     }
 }

@@ -343,13 +343,15 @@ const evalBody = document.getElementById('evalBody');
 runEvalBtn.addEventListener('click', async () => {
   runEvalBtn.disabled = true;
   runEvalBtn.textContent = '⏳ 评估运行中...';
-  evalBody.innerHTML = '<div class="eval-placeholder">正在运行 10 个测试用例，大约需要 1~3 分钟...</div>';
+  evalBody.innerHTML = '<div class="eval-placeholder">已提交后台评估，正在等待回执...</div>';
 
   try {
     const res = await fetch('/evaluation/run');
     if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
-    renderEval(data);
+    const submit = await res.json();
+    if (!submit.taskId) throw new Error('未拿到 taskId');
+    const report = await pollEvalStatus(submit.taskId);
+    renderEval(report);
   } catch (e) {
     evalBody.innerHTML = '<div class="eval-placeholder" style="color:var(--danger)">❌ 评估失败：' + e.message + '</div>';
   } finally {
@@ -357,6 +359,22 @@ runEvalBtn.addEventListener('click', async () => {
     runEvalBtn.textContent = '▶ 开始评估';
   }
 });
+
+// /evaluation/run 提交即返回，报告落在后台任务表里；全量 61 题实测约 394s，所以轮询到 10 分钟为止
+async function pollEvalStatus(taskId) {
+  for (let i = 0; i < 200; i++) {
+    await new Promise(r => setTimeout(r, 3000));
+    const res = await fetch('/evaluation/status/' + taskId);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const d = await res.json();
+    if (d.state === 'DONE') return d.report;
+    if (d.state === 'FAILED') throw new Error(d.error || '后台评估失败');
+    const secs = Math.round((d.elapsed_ms || 0) / 1000);
+    evalBody.innerHTML = '<div class="eval-placeholder">后台运行中… 已用 ' + secs
+      + 's（全量 61 题实测约 394s，别关页面）</div>';
+  }
+  throw new Error('等待超时，任务仍在后台跑：稍后可再查 /evaluation/status/' + taskId);
+}
 
 function renderEval(d) {
   const total = d.total_count || 0;
@@ -472,13 +490,15 @@ function renderDiag(d) {
   const ocr = (ri.ocr || {}).ocr_ready;
   const so = ri.stored_overview || {};
   const boot = typeof ri.last_boot_ingest === 'object' ? ri.last_boot_ingest : null;
-  const scanned = ri.scanned_pdf_count ?? '-';
+  const scanned = ri.scanned_file_count ?? '-';
   const stored = so.files_in_store;
   const chunks = so.chunks_in_store;
   const bm25 = d.bm25_index || {};
 
-  // pdfs[] 是逐份体检（磁盘文件 + 库内指纹），per_file 是按 source 聚合的库内清单，只在前者空着时兜底。
-  const list = (ri.pdfs && ri.pdfs.length) ? ri.pdfs : (so.per_file || []);
+  // files[] 是逐份体检（磁盘文件 + 库内指纹），per_file 是按 source 聚合的库内清单，只在前者空着时兜底。
+  // 键名跟着 RagInitializer 走：包名重命名时 pdfs/scanned_pdf_count 已改成 files/scanned_file_count，
+  // 前端没跟上，所以这两处一直在走兜底分支。
+  const list = (ri.files && ri.files.length) ? ri.files : (so.per_file || []);
   let recent = list.map(p => {
     const name = p.name || p.source;
     const got = p.stored_chunks ?? p.chunks ?? '?';
@@ -490,7 +510,7 @@ function renderDiag(d) {
     ].filter(Boolean).join('、');
     return `  · ${name} — ${got}${want ? '/' + want : ''} chunks${flags ? ' ⚠ ' + flags : ''}`;
   }).join('\n') || '  （暂无）';
-  if (ri.pdfs_truncated || so.per_file_truncated) recent += '\n  …（列表已按上限截断）';
+  if (ri.files_truncated || so.per_file_truncated) recent += '\n  …（列表已按上限截断）';
 
   const dimCards = [
     { title: '向量库类型', val: d.vector_store_type ? d.vector_store_type.split('.').pop() : '-', cls: 'info' },
