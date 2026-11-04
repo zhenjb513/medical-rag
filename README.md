@@ -53,7 +53,7 @@ flowchart LR
 | HanLP | portable-1.8.4 | BM25 中文分词（词典打包在 jar 里，无需外部数据） |
 | LangChain4j | 1.0.0-beta3 | 并存实验链路（`/lc/*`），与 `/chat` 走两套框架 |
 | PDFBox | 随 Spring AI pdf-reader | PDF 文字层抽取 |
-| JUnit 5 | — | 130 条纯逻辑单测，不连库不打模型 |
+| JUnit 5 | — | 155 条纯逻辑单测，不连库不打模型 |
 
 > 版本配套硬约束：Spring AI Alibaba 1.1.2.3 的 pom 里直接硬编码了 Spring Boot 3.5.10 + Spring AI 1.1.2，不要随意升级。
 
@@ -86,7 +86,7 @@ compose 起三个服务：pgvector/pg17、mysql:8.0、应用（`SPRING_PROFILES_
 | 软件 | 最低版本 | 说明 |
 |---|---|---|
 | JDK | 21 | |
-| Maven | 3.9+ | 仓库**无** `mvnw`（pom.xml 里补了 spring-boot-maven-plugin，`mvn package` 可生成可执行 fat jar） |
+| Maven | 3.9+ | 仓库带 `mvnw` / `mvnw.cmd`（Wrapper 3.9.9，2026-11-04 本机实测可用），装了系统 maven 也可以直接用 |
 | MySQL | 8.0 | 业务库；Demo 档用容器 |
 | PostgreSQL | 17 + pgvector 扩展 | 向量库 + BM25 倒排；Demo 档用容器 |
 | Tesseract-OCR | 5.3.3+ (chi_sim) | 扫描件识别；纯文字 PDF 可跳过 |
@@ -221,11 +221,14 @@ PgVectorHikariPool - Start completed.          ← 向量库池
 👁️ WatchService 已启动，监听目录：D:\ai-docs   ← 热监听
 ```
 
-跑测试（130 条纯逻辑单测，几秒完成）：
+跑测试（155 条纯逻辑单测，几秒完成）：
 
-```powershell
-mvn test
+```bash
+./mvnw test          # Linux / macOS；Windows PowerShell 用 .\mvnw.cmd test
 ```
+
+⚠️ 仓库里有 `.github/workflows/ci.yml`（三 OS 矩阵跑 `./mvnw test` + `package`），**但当前 `origin` 是 Gitee，GitHub Actions 不会在那儿触发**。
+所以这套门现在只在你手动跑、或把仓库镜像推到 GitHub 时才真的生效——别把它当成「有 CI 兜底」。
 
 ## 6️⃣ 访问 Web 界面
 
@@ -238,6 +241,42 @@ mvn test
 | 💬 智能问诊 | RAG 问答 / Tool Call 查库存 / PHI 脱敏。输入框上方下拉有 8 个入口（Spring AI `/chat` + 7 个 LangChain4j 场景） |
 | 🧪 系统评估 | 一键跑 61 题测试集（58 可答 + 3 超纲），输出四维评估 |
 | 🩻 运行诊断 | `GET /rag/diag` 可视化：向量库状态、OCR 就绪、入库流水、BM25 对账 |
+
+---
+
+## 7️⃣ 可观测性栈（Prometheus + Grafana，可选）
+
+应用自己已经把指标吐在 `GET /actuator/prometheus`（Micrometer）；看板要另外起两个容器，一条命令：
+
+```bash
+bash docker/up-monitoring.sh        # 只起 Prometheus + Grafana
+docker compose up -d                # 或者连 redis / rabbitmq / app 一起起
+```
+
+| 入口 | 地址 | 说明 |
+|---|---|---|
+| Grafana 看板 | http://localhost:3000 （`admin`/`admin`，也开了匿名读） | 「RAG mkbAI 可观测性看板」`/d/rag-custom`，10 个面板 |
+| Prometheus | http://localhost:9090/targets | job `mkbai-app` 应当是 `up`，几百条时间序列 |
+
+看板覆盖：流式请求按结果分组（completed / error / cancelled）、TTFT 与整段耗时的 p50/p95/avg、LLM token 用量、JVM 堆、HTTP QPS、HikariCP 连接池活跃/空闲/上限、RabbitMQ 连接与信道、Resilience4j 熔断状态、限流可用令牌。
+
+配置全在仓库里，容器只挂这几份文件，改完重跑 `docker compose up -d prometheus grafana` 就生效：
+
+```
+docker/prometheus/prometheus.yml                        抓取目标（15s）
+docker/grafana/provisioning/datasources/prometheus.yml  数据源 → http://prometheus:9090
+docker/grafana/provisioning/dashboards/provider.yml     看板目录提供者
+docker/grafana/dashboards/rag-custom.json               看板本体
+```
+
+两个坑，写死就会静默没数据：
+
+1. **抓取地址别写死 IP。** 容器里 `host.docker.internal` 要指到跑应用的那台机器：Docker Desktop 的引擎认 `host-gateway`，纯 WSL2 里跑的 docker engine 不认（实测解析成网桥 `172.17.0.1`，连不上宿主的 8080），那边得用默认路由的下一跳。`docker/up-monitoring.sh` 没给 `WINDOWS_HOST_IP` 时自动按默认路由取一次，Compose 里是 `${WINDOWS_HOST_IP:-host-gateway}`。
+2. **Grafana 的数据源同理。** 这份配置以前写的是 Prometheus 的网桥 IP，容器重启换址后数据源直接 `connection refused`，看板一片空白——所以现在是服务名 `prometheus`。
+
+看板文件是「源」，UI 里的临时改动不会回写仓库（`allowUiUpdates: true`，文件变更 10s 内会覆盖回来）；要留住改动就改 `docker/grafana/dashboards/rag-custom.json`。`/var/lib/grafana` 挂在命名卷 `grafana-data` 上，容器删了 UI 里建的东西还在。
+
+> `admin`/`admin` 和匿名 Admin 只是本机 demo 用的，对外演示前自己换掉或关掉。
 
 ---
 
@@ -573,7 +612,7 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 
 ---
 
-# 🧪 单元测试（130 条，纯逻辑）
+# 🧪 单元测试（155 条，纯逻辑）
 
 全部在 `src/test/java/`，**不连数据库、不调模型、不依赖任何外部服务**。每条测试验证的是纯逻辑判定：
 
@@ -589,10 +628,14 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | `ChunkCitationTest` | 10 | 引用行形状：文件名排最前 + 块号列表 |
 | `PdfPageLocatorTest` | 23 | 块号→物理页 / 页脚印码：偏移不一致不给、歧义跳过、不猜 |
 | `SectionIndexTest` | 22 | 块号→章节号：形状闸门 + 大纲单调性 + 跨节给范围 |
-| `InventoryToolVerdictTest` | 5 | 库存工具三态：有货 N 件 / 未登记 / 查询不可用 |
+| `InventoryToolVerdictTest` | 5 | 库存工具返回值四态：有货 N 件 / 未登记 / 查询不可用 / 没给名称 |
 | `PhiAuditRowTest` | 7 | 审计行只有四列，任何一列**不许**出现原文 |
 | `Bm25RowBuilderTest` | 7 | 全量与增量共用同一套行构造、零 term 块也落 doc 行 |
 | `DemoExtractiveModelTest` | 8 | Demo 档本地模型守值：拒答逐字、2-gram 哈希向量可复现且 L2 归一 |
+| `InventoryToolSchemaTest` | 9 | 库存工具的**说明书**：名字字符集、描述不退化成方法名、参数进 `required`、schema 键名能映射到形参、缺参不许报出件数 |
+| `MultiHopRetrievalServiceTest` | 5 | 多跳触发与合并：单实体问句不触发、显式 AND 与「首轮跨 ≥2 份来源」必须触发、合并按 content_hash 去重、开关关了直接委托单跳 |
+| `ApiKeyFilterTest` | 8 | 白名单分档：只读免凭据 / 会花钱或会写要凭据、限流在鉴权之前、`/actuator` 不限流、`/app.js`+`/style.css` 必须放行 |
+| `EvaluationTaskServiceTest` | 3 | 异步评估回执：报告 JSON 与同步时代逐字一致、DONE 后取到全文、一轮在跑时重复提交不开第二份钱 |
 
 ---
 
@@ -608,7 +651,7 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | **answer-floor 只判向量 top1** | 闸门要在融合之前判（一旦 RRF 之后分数是名次凑出来的），且只判向量通道有意义的余弦 | `HybridRetrievalService.hasEvidence` |
 | **重排分不参与闸门** | gte-rerank-v2 的分数量纲和向量余弦不同，拿它当判据会错放错杀 | `application.yml` L122-124 |
 | **queryExpander 在检索侧补术语** | 患者口语（「坏胆固醇」「血糖偏高」）在指南里写的是规范术语；中英文桥让 WHO 那份英文指南能被中文问句召回 | `QueryExpander` |
-| **库存工具返回文字三态** | 以前异常一律吞成 0，模型答「缺货」，实则连错库；现在分「有货 N 件 / 未登记 / 查询不可用」 | `InventoryService` |
+| **库存工具返回文字分态** | 以前异常一律吞成 0，模型答「缺货」，实则连错库；现在分「有货 N 件 / 未登记 / 查询不可用 / 没给名称」——最后一条是 2026-11-04 补的，实测 Spring AI 1.1.2 不校验 schema 的 `required`，模型缺参调用照样进方法，空串名去查会被误报成「库里没登记」 | `InventoryService` |
 | **PHI 审计只存四列、不落原文** | 存原文=聊天日志，本身就是一次数据泄露；只存 message_hash + 类型:条数就够了 | `PhiAuditService` |
 | **弃用 QuestionAnswerAdvisor 改手动** | Advisor 只有一次 similaritySearch，本项目需要：闸门在 BM25 融合之前、引用落到块级、QueryExpander 介入、重排失败能退回 | `ChatController` L65-67 |
 | **页码/章节号读时现算不入库** | 入库是整篇抽成一条流再切块，metadata 只有 page_count；存页码要重灌库 | `PdfPageLocator` / `SectionIndex` |
@@ -677,15 +720,17 @@ System Prompt 没有「不要用 Markdown」约束，前端也**不渲染 Markdo
 
 | 优先级 | 方向 | 说明 |
 |---|---|---|
-| P0 | Maven Wrapper + CI | 仓库无 `mvnw`、无 CI 配置，130 条单测目前靠人记得跑 |
-| P0 | 前端引用块拆分 | `splitAnswer()` 标记串和后端对不上，引用整段留在气泡里 |
-| P1 | 流式响应（SSE） | `/chat` 现在 `GET` 一次性返回全文 |
-| P1 | 多轮对话上下文 | 引入对话历史管理 |
-| P2 | 句子级溯源 + 多跳题考卷 | 引用到块为止、多跳题没被测过（库只有 501 块） |
-| P2 | 知识库版本治理 | 多版指南并存时生效日期 / 取代关系 |
-| P2 | 删档钩子 | WatchService 只处理 CREATE/MODIFY，`ENTRY_DELETE` 不清理 |
-| P3 | 权限与鉴权 | 全部接口裸 HTTP，别公网直挂 |
+| P0 | CI 真正生效 | `mvnw` 与 `.github/workflows/ci.yml` 都已就位（`./mvnw test` 本机实测可用），**但 `origin` 是 Gitee，GitHub Actions 不会触发**——要么推 GitHub 镜像，要么换 Gitee Go |
+| P1 | 大库规模化 | 现在只有 4 份指南 / 501 块，BM25 已改按份增量，但没在千份级库上压过检索与重建 |
+| P2 | 句子级溯源 + 多跳题考卷 | 引用到块为止、多跳题没被测过（库太小，top-16 已经盖住全部答案块） |
+| P2 | 知识库版本治理 | metadata 里没有生效日期，也没有 `superseded_by`（已 grep 确认）：多版指南并存时检索把两份当平级来源，可能引过期那版且完全静默 |
+| P2 | 推荐类别 / 证据等级溯源 | 表格压平后「每条推荐 ↔ 它的等级」在抽取那一刻就丢了，做这个要换表格感知抽取 = 重灌库 |
+| P3 | 账号体系 | 用户来自配置文件里的内存 `InMemoryUserDetailsManager`，没有注册、角色、多租户；公网直挂仍需前置网关 |
 | P3 | 多格式文档 | Word / Markdown / Excel |
+
+已经不再是缺口（2026-11-04 对着代码逐条核过，别再当 TODO 列出来）：Maven Wrapper、CI 配置文件、
+SSE 流式（`GET /chat/stream`）、多轮上下文（`ChatMemoryManager`）、鉴权与限流收口（`ApiKeyFilter` + Spring Security）、
+删除文件时的向量/BM25 清理（`RagInitializer.handleSourceFileDelete`）、前端引用块拆分（`splitAnswer()` 的标记串与后端 `【引用来源】` 一致）。
 
 ---
 
