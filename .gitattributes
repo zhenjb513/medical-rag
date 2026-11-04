@@ -20,3 +20,4 @@
 *.pdf     binary
 *.jar     binary
 *.class   binary
+*.sh      text    eol=lf    encoding=utf-8
