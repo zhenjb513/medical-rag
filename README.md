@@ -9,6 +9,8 @@ table, pre code, code { font-size: 1.05em; }
 
 # 🏥 mkbAI · 医疗行业 RAG 智能助手
 
+![CI](https://github.com/zhenjb513/medical-rag/actions/workflows/ci.yml/badge.svg)
+
 > **生产级混合检索 RAG 系统** · 58 道医疗考题端到端准确率 **98.4%**（60/61）· 答案块检索 Hit@1 从 **39.7% → 58.6%**
 
 ```mermaid
@@ -227,8 +229,7 @@ PgVectorHikariPool - Start completed.          ← 向量库池
 ./mvnw test          # Linux / macOS；Windows PowerShell 用 .\mvnw.cmd test
 ```
 
-⚠️ 仓库里有 `.github/workflows/ci.yml`（三 OS 矩阵跑 `./mvnw test` + `package`），**但当前 `origin` 是 Gitee，GitHub Actions 不会在那儿触发**。
-所以这套门现在只在你手动跑、或把仓库镜像推到 GitHub 时才真的生效——别把它当成「有 CI 兜底」。
+CI 每次 push 自动跑：仓库镜像在 GitHub（`zhenjb513/medical-rag`），`.github/workflows/ci.yml` 在 ubuntu / windows / macos 三档跑 `./mvnw test` + `package`，最新状态见顶部徽章。国内主仓仍是 Gitee（`origin`），Gitee 那侧不触发 GitHub Actions，所以两边都要推：本地分支叫 `master`，GitHub 的默认分支叫 `main`，命令是 `git push github master:main`。
 
 ## 6️⃣ 访问 Web 界面
 
@@ -720,7 +721,6 @@ System Prompt 没有「不要用 Markdown」约束，前端也**不渲染 Markdo
 
 | 优先级 | 方向 | 说明 |
 |---|---|---|
-| P0 | CI 真正生效 | `mvnw` 与 `.github/workflows/ci.yml` 都已就位（`./mvnw test` 本机实测可用），**但 `origin` 是 Gitee，GitHub Actions 不会触发**——要么推 GitHub 镜像，要么换 Gitee Go |
 | P1 | 大库规模化 | 现在只有 4 份指南 / 501 块，BM25 已改按份增量，但没在千份级库上压过检索与重建 |
 | P2 | 句子级溯源 + 多跳题考卷 | 引用到块为止、多跳题没被测过（库太小，top-16 已经盖住全部答案块） |
 | P2 | 知识库版本治理 | metadata 里没有生效日期，也没有 `superseded_by`（已 grep 确认）：多版指南并存时检索把两份当平级来源，可能引过期那版且完全静默 |
@@ -728,7 +728,7 @@ System Prompt 没有「不要用 Markdown」约束，前端也**不渲染 Markdo
 | P3 | 账号体系 | 用户来自配置文件里的内存 `InMemoryUserDetailsManager`，没有注册、角色、多租户；公网直挂仍需前置网关 |
 | P3 | 多格式文档 | Word / Markdown / Excel |
 
-已经不再是缺口（2026-11-04 对着代码逐条核过，别再当 TODO 列出来）：Maven Wrapper、CI 配置文件、
+已经不再是缺口（2026-11-05 对着代码逐条核过，别再当 TODO 列出来）：Maven Wrapper、CI 真正生效（GitHub 镜像上三 OS 全绿）、
 SSE 流式（`GET /chat/stream`）、多轮上下文（`ChatMemoryManager`）、鉴权与限流收口（`ApiKeyFilter` + Spring Security）、
 删除文件时的向量/BM25 清理（`RagInitializer.handleSourceFileDelete`）、前端引用块拆分（`splitAnswer()` 的标记串与后端 `【引用来源】` 一致）。
 
