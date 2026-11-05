@@ -149,8 +149,8 @@ public class EvaluationService {
      * 判分前的文本归一：破折号/波浪号家族并成一个 '~'，并去掉所有空白（含全角空格 U+3000、软连字符 U+00AD）。
      * 依据是单题端到端实测（scratch/chat1.txt，2026-10-12）：库里原文「4~6周」用的是 U+007E，模型答成「4–6周」用的是 U+2013
      * （答案全文里逐字符验过码点）；库里「TG>4.5mmol/L」没有空格，模型写成「TG > 4.5 mmol/L」。
-     * 原来四道判定都是 answer.contains(...) 逐字比，考卷里 6 道带 ~ 的关键词
-     * （MedicalTestSet.java:126/138/144/218/230/236）会因为标点被判成准确性未通过。
+     * 原来四道判定都是 answer.contains(...) 逐字比，考卷里 6 道关键词带 ~ 的题
+     * （复查 4~6周、二手烟 20%~30%、转诊随访 2~4周，书面与口语各一遍）会因为标点被判成准确性未通过。
      */
     static String normalizeForMatch(String text) {
         if (text == null) {

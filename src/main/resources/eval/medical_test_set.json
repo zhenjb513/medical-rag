@@ -1,0 +1,1071 @@
+{
+  "readme": [
+    "评测考卷。61 题 = 58 道库内可答 + 3 道超纲（应逐字拒答）。",
+    "answerGroup 指向 answerGroups 里的答案块标注（ground truth）：「文件名#chunk_index」，由 /bm25/locate 逐字定位原文得到，不是凭印象猜。判分器按这个字符串等值比对，格式写错就永远认不出答案块。",
+    "书面问法与口语问法必须共用同一个 answerGroup——差别只许在问法，ground truth 相同才量得出「自造题偏袒关键词检索」。守门断言在 MedicalTestSetStructureTest。",
+    "expectedKeywords 只用于生成质量评估，证明不了检索真的找回了答案；expectedReferences 是文件名关键词。",
+    "改法：加题直接在对应 section 追加一个对象；换问法不动 answerGroup；重灌文档后所有块号要重新逐字核对。",
+    "以下块号已按 2026-10-12 重灌后的新库（501 块）逐字定位重标，核对过程见 scratch/sent.txt + scratch/newblocks.txt。"
+  ],
+  "answerGroups": {
+    "G_BP_TARGET": {
+      "note": "同一个块可以被两种问法问出来，抽成答案块组避免两处标注不一致。",
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#63",
+        "国家基层高血压防治管理指南2025版.pdf#8",
+        "国家基层高血压防治管理指南2025版.pdf#17"
+      ]
+    },
+    "G_SALT": {
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#52",
+        "中国心血管病一级预防指南2020.pdf#55",
+        "国家基层高血压防治管理指南2025版.pdf#19"
+      ]
+    },
+    "G_ACTIVITY": {
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#42",
+        "中国心血管病一级预防指南2020.pdf#43"
+      ]
+    },
+    "G_WEIGHT": {
+      "note": "全库逐字写出「BMI<24 + 腰围90/85」的只有这三块；JC#16、#59 只讲测腰围不讲目标，不算答案。",
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#52",
+        "中国心血管病一级预防指南2020.pdf#56",
+        "国家基层高血压防治管理指南2025版.pdf#19"
+      ]
+    },
+    "G_HR": {
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#58"
+      ]
+    },
+    "G_VERY_OLD": {
+      "answerChunks": [
+        "国家基层高血压防治管理指南2025版.pdf#8",
+        "国家基层高血压防治管理指南2025版.pdf#17",
+        "中国心血管病一级预防指南2020.pdf#63"
+      ]
+    },
+    "G_DM_BP": {
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#63",
+        "中国心血管病一级预防指南2020.pdf#66"
+      ]
+    },
+    "G_DX_OFFICE": {
+      "answerChunks": [
+        "国家基层高血压防治管理指南2025版.pdf#12",
+        "国家基层高血压防治管理指南2025版.pdf#14"
+      ]
+    },
+    "G_DX_HOME": {
+      "answerChunks": [
+        "国家基层高血压防治管理指南2025版.pdf#14",
+        "国家基层高血压防治管理指南2025版.pdf#15"
+      ]
+    },
+    "G_STANDING": {
+      "answerChunks": [
+        "国家基层高血压防治管理指南2025版.pdf#13"
+      ]
+    },
+    "G_LDL_BENEFIT": {
+      "note": "答案块按逐字核对改过：整句「LDL-C每降低1mmol/L，ASCVD事件降低20%~23%」在 XZ#40，整句「LDL-C每降低1mmol/L、持续5年，人群心血管病风险降低21%」在 YJ#88（scratch/xz_chk.out）。原来标的 XZ#39 和 YJ#87 里 20%/21%/23% 一个都没有：XZ#39 是血脂检查重点对象+治疗原则要点，YJ#87 是 HOPE-3/JUPITER 研究段。",
+      "answerChunks": [
+        "中国血脂管理指南2023年.pdf#40",
+        "中国心血管病一级预防指南2020.pdf#88"
+      ]
+    },
+    "G_NON_HDL": {
+      "note": "逐字写出「非HDL-C 目标 = LDL-C + 0.8mmol/L」的是这四块（phrase=0.8mmol/L 全库命中 YJ#75/#76、XZ#47/#92）。",
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#75",
+        "中国心血管病一级预防指南2020.pdf#76",
+        "中国血脂管理指南2023年.pdf#47",
+        "中国血脂管理指南2023年.pdf#92"
+      ]
+    },
+    "G_NON_HDL_ORAL": {
+      "note": "口语题「化验单上…非高密度脂蛋白的指标该看多少」额外认 XZ#32：表3 里非HDL-C 那一行逐字是理想<3.4 / 合适<4.1 / 边缘升高≥4.1且<4.9 / 升高≥4.9（scratch/f41_blocks.txt），这正面回答了「看多少」。事实题「非HDL-C的控制目标是多少？」不共用这块：XZ#32 的要点提示写明「参考水平仅适用于ASCVD低危人群」，那是分层参考标准、不是干预目标，拿它答目标题等于答错了段落。",
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#75",
+        "中国心血管病一级预防指南2020.pdf#76",
+        "中国血脂管理指南2023年.pdf#47",
+        "中国血脂管理指南2023年.pdf#92",
+        "中国血脂管理指南2023年.pdf#32"
+      ]
+    },
+    "G_DM_LDL": {
+      "note": "/bm25/locate 逐字证（scratch/loc96.out）：表15 糖尿病患者血脂目标值的 1.4/1.8/2.6 三个数字全在 XZ#92；XZ#90 另有末句「风险为中、低危的糖尿病患者，均应将LDL-C控制在 2.6 mmol/L 以下（表15）」，XZ#91 只在讲选药、无目标数值。口语题「我血糖偏高」判分口径维持严格（2026-10-13 定）：不把 YJ#76 当等价答案块。那次挂是检索没召回这四个答案块（本次 16 块上下文里一个都没有，scratch/f42_retrieve.out），而 YJ#76 的 1.4 只对应「糖尿病+已确诊ASCVD」的超高危档，血糖偏高者按表15 应落 2.6/1.8（scratch/f42_blocks.txt）；同一答案块集合下的事实题「糖尿病患者的LDL-C控制目标是多少？」本轮是过的（1.4→XZ#92，上下文第3块），所以问题在「血糖偏高」这个口语措辞召不回表15，不在标注。",
+      "answerChunks": [
+        "中国血脂管理指南2023年.pdf#90",
+        "中国血脂管理指南2023年.pdf#91",
+        "中国血脂管理指南2023年.pdf#92",
+        "中国心血管病一级预防指南2020.pdf#72"
+      ]
+    },
+    "G_FH": {
+      "note": "FH 推荐表清洗后被劈成相邻两块，两块都算答案。",
+      "answerChunks": [
+        "中国血脂管理指南2023年.pdf#107",
+        "中国血脂管理指南2023年.pdf#108"
+      ]
+    },
+    "G_STROKE_LIPID": {
+      "note": "「表17脑卒中患者的降脂治疗推荐建议」全库命中块数=1 且是 #97；2.2mmol/L 只命中 #88/#97，#96 是高龄老年他汀那段，一个目标值都没有（旧标注抄的是重灌前的块号）。",
+      "answerChunks": [
+        "中国血脂管理指南2023年.pdf#97"
+      ]
+    },
+    "G_STATIN_COMBO": {
+      "note": "逐字含「依折麦布」的块仍是 12 个，只有真写出「单药不达标→联合」这一步的才算答案，其余在讲机制或试验证据。",
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#83",
+        "中国心血管病一级预防指南2020.pdf#85",
+        "中国心血管病一级预防指南2020.pdf#86",
+        "国家基层高血压防治管理指南2025版.pdf#42",
+        "中国血脂管理指南2023年.pdf#50"
+      ]
+    },
+    "G_STATIN_RECHECK": {
+      "note": "全库逐字含「4~6周」的只有两块：基层高血压指南#44 与血脂指南#55，后者是同一条复查建议的另一本指南写法。",
+      "answerChunks": [
+        "国家基层高血压防治管理指南2025版.pdf#44",
+        "中国血脂管理指南2023年.pdf#55"
+      ]
+    },
+    "G_DASH": {
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#54",
+        "国家基层高血压防治管理指南2025版.pdf#19"
+      ]
+    },
+    "G_HT_TREND": {
+      "note": "陷阱：一级预防#11 也逐字含「23.2%」，但那是血压130~139/80~89的人群比例，不是患病率，不能当等价答案块。",
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#10"
+      ]
+    },
+    "G_LIPID_TREND": {
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#11"
+      ]
+    },
+    "G_SECOND_HAND": {
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#47"
+      ]
+    },
+    "G_QUIT_SMOKING": {
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#46"
+      ]
+    },
+    "G_REFERRAL_FOLLOWUP": {
+      "answerChunks": [
+        "国家基层高血压防治管理指南2025版.pdf#56"
+      ]
+    },
+    "G_WHO_TARGET": {
+      "answerChunks": [
+        "02-WHO成人高血压药物治疗指南2021.pdf#7",
+        "02-WHO成人高血压药物治疗指南2021.pdf#29"
+      ]
+    },
+    "G_PRIMARY_PREVENTION": {
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#9",
+        "中国心血管病一级预防指南2020.pdf#13",
+        "中国心血管病一级预防指南2020.pdf#6"
+      ]
+    },
+    "G_LIFESTYLE": {
+      "answerChunks": [
+        "国家基层高血压防治管理指南2025版.pdf#18",
+        "国家基层高血压防治管理指南2025版.pdf#19",
+        "中国心血管病一级预防指南2020.pdf#52"
+      ]
+    },
+    "G_ELDERLY": {
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#63",
+        "中国心血管病一级预防指南2020.pdf#67",
+        "国家基层高血压防治管理指南2025版.pdf#8"
+      ]
+    },
+    "G_SMOKING": {
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#45",
+        "中国心血管病一级预防指南2020.pdf#46",
+        "中国心血管病一级预防指南2020.pdf#47",
+        "中国心血管病一级预防指南2020.pdf#48"
+      ]
+    },
+    "G_RISK_MODEL": {
+      "answerChunks": [
+        "中国心血管病一级预防指南2020.pdf#17",
+        "中国心血管病一级预防指南2020.pdf#22"
+      ]
+    }
+  },
+  "sections": {
+    "书面问法（术语直接来自指南原文）": [
+      {
+        "question": "高血压患者的降压目标是多少？",
+        "expectedKeywords": [
+          "130/80",
+          "140/90"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_BP_TARGET",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "每人每日食盐摄入量建议控制在多少克？",
+        "expectedKeywords": [
+          "5g",
+          "食盐"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_SALT",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "成人每周至少需要多少分钟中等强度身体活动才能降低心血管病风险？",
+        "expectedKeywords": [
+          "150",
+          "75"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_ACTIVITY",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "控制体重时BMI和腰围的目标是多少？",
+        "expectedKeywords": [
+          "BMI",
+          "24",
+          "90",
+          "85"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_WEIGHT",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "中等强度身体活动对应的心率范围怎么计算？",
+        "expectedKeywords": [
+          "60%",
+          "70%",
+          "220"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_HR",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "80岁以上高龄高血压患者的降压目标是多少？",
+        "expectedKeywords": [
+          "150/90",
+          "140/90"
+        ],
+        "expectedReferences": [
+          "国家基层高血压防治管理指南2025版.pdf",
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_VERY_OLD",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "糖尿病患者的血压控制目标是多少？",
+        "expectedKeywords": [
+          "130/80",
+          "糖尿病"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_DM_BP",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "诊室血压诊断高血压的标准是多少？",
+        "expectedKeywords": [
+          "140",
+          "90"
+        ],
+        "expectedReferences": [
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_DX_OFFICE",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "家庭血压自测的高血压诊断标准平均值是多少？",
+        "expectedKeywords": [
+          "135/85",
+          "家庭血压"
+        ],
+        "expectedReferences": [
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_DX_HOME",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "什么情况下测量血压需要加测站立位血压？",
+        "expectedKeywords": [
+          "站立位",
+          "体位性低血压"
+        ],
+        "expectedReferences": [
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_STANDING",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "低密度脂蛋白胆固醇（LDL-C）每降低1mmol/L，心血管事件大约降低多少？",
+        "expectedKeywords": [
+          "20%",
+          "23%",
+          "21%"
+        ],
+        "expectedReferences": [
+          "中国血脂管理指南2023年.pdf",
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_LDL_BENEFIT",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "非HDL-C的目标值如何由LDL-C目标推算？",
+        "expectedKeywords": [
+          "0.8",
+          "非HDL"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "中国血脂管理指南2023年.pdf"
+        ],
+        "answerGroup": "G_NON_HDL",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "糖尿病患者的LDL-C控制目标是多少？",
+        "expectedKeywords": [
+          "1.4",
+          "1.8",
+          "2.6"
+        ],
+        "expectedReferences": [
+          "中国血脂管理指南2023年.pdf",
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_DM_LDL",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "成人家族性高胆固醇血症（FH）患者的LDL-C目标值是多少？",
+        "expectedKeywords": [
+          "2.6",
+          "1.8",
+          "1.4"
+        ],
+        "expectedReferences": [
+          "中国血脂管理指南2023年.pdf"
+        ],
+        "answerGroup": "G_FH",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "动脉粥样硬化性缺血性脑卒中或TIA患者的降脂目标是多少？",
+        "expectedKeywords": [
+          "1.4",
+          "1.8",
+          "2.2"
+        ],
+        "expectedReferences": [
+          "中国血脂管理指南2023年.pdf"
+        ],
+        "answerGroup": "G_STROKE_LIPID",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "LDL-C不达标时降脂药物的联合方案是什么？",
+        "expectedKeywords": [
+          "他汀",
+          "依折麦布",
+          "PCSK9"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "国家基层高血压防治管理指南2025版.pdf",
+          "中国血脂管理指南2023年.pdf"
+        ],
+        "answerGroup": "G_STATIN_COMBO",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "初始用药或增加他汀剂量后多久复查血脂、ALT和肌酸激酶？",
+        "expectedKeywords": [
+          "4~6周",
+          "复查"
+        ],
+        "expectedReferences": [
+          "国家基层高血压防治管理指南2025版.pdf",
+          "中国血脂管理指南2023年.pdf"
+        ],
+        "answerGroup": "G_STATIN_RECHECK",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "DASH饮食可以使高血压患者的收缩压降低多少？",
+        "expectedKeywords": [
+          "11.4",
+          "DASH"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_DASH",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "我国18岁及以上成人高血压的患病率和现患人数是多少？",
+        "expectedKeywords": [
+          "23.2%",
+          "2.45亿"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_HT_TREND",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "我国18岁及以上人群血脂异常的患病率是多少？",
+        "expectedKeywords": [
+          "40.4%",
+          "血脂异常"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_LIPID_TREND",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "不吸烟者暴露于二手烟，冠心病和卒中风险增加多少？",
+        "expectedKeywords": [
+          "20%~30%",
+          "二手烟"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_SECOND_HAND",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "戒烟多少年后心血管病风险可以恢复到正常水平？",
+        "expectedKeywords": [
+          "5年",
+          "戒烟"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_QUIT_SMOKING",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "高血压患者转诊后多久需要主动随访？",
+        "expectedKeywords": [
+          "2~4周",
+          "转诊"
+        ],
+        "expectedReferences": [
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_REFERRAL_FOLLOWUP",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "WHO指南对无合并症的高血压患者推荐的目标血压是多少？",
+        "expectedKeywords": [
+          "140/90",
+          "130"
+        ],
+        "expectedReferences": [
+          "02-WHO成人高血压药物治疗指南2021.pdf"
+        ],
+        "answerGroup": "G_WHO_TARGET",
+        "category": "事实查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "心血管病一级预防的主要措施有哪些？",
+        "expectedKeywords": [
+          "生活方式",
+          "危险因素",
+          "吸烟",
+          "血压",
+          "血脂",
+          "糖尿病"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_PRIMARY_PREVENTION",
+        "category": "综合分析",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "高血压患者的生活方式干预包括哪些内容？",
+        "expectedKeywords": [
+          "限盐",
+          "减重",
+          "运动",
+          "戒烟",
+          "戒酒",
+          "睡眠"
+        ],
+        "expectedReferences": [
+          "国家基层高血压防治管理指南2025版.pdf",
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_LIFESTYLE",
+        "category": "综合分析",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "老年人高血压管理有哪些注意事项？",
+        "expectedKeywords": [
+          "老年",
+          "140/90",
+          "虚弱",
+          "耐受"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_ELDERLY",
+        "category": "综合分析",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "吸烟对心血管健康有什么影响？",
+        "expectedKeywords": [
+          "吸烟",
+          "戒烟",
+          "心血管",
+          "风险"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_SMOKING",
+        "category": "综合分析",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "我国心血管病风险评估用的是什么样的方案？",
+        "expectedKeywords": [
+          "10年",
+          "风险",
+          "模型",
+          "人群"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_RISK_MODEL",
+        "category": "综合分析",
+        "shouldBeAnswerable": true
+      }
+    ],
+    "同一批答案块，换成患者口吻（不出现原文术语）": [
+      {
+        "question": "血压降到多少才算控制好了？",
+        "expectedKeywords": [
+          "130/80",
+          "140/90"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_BP_TARGET",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "我做饭口味重，盐一天最多吃多少才合适？",
+        "expectedKeywords": [
+          "5g",
+          "食盐"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_SALT",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "想护心血管，一周得锻炼多久才有用？",
+        "expectedKeywords": [
+          "150",
+          "75"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_ACTIVITY",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "我肚子大，瘦到什么程度对血压才有好处？",
+        "expectedKeywords": [
+          "24",
+          "腰围"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_WEIGHT",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "运动时心跳到多少下才算练到位了？",
+        "expectedKeywords": [
+          "60%",
+          "70%",
+          "220"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_HR",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "我爸八十多了，血压降到多少比较合适？",
+        "expectedKeywords": [
+          "150/90",
+          "140/90"
+        ],
+        "expectedReferences": [
+          "国家基层高血压防治管理指南2025版.pdf",
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_VERY_OLD",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "我有糖尿病，血压该管到什么水平？",
+        "expectedKeywords": [
+          "130/80",
+          "糖尿病"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_DM_BP",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "在医院量血压有点高，超过多少才算高血压？",
+        "expectedKeywords": [
+          "140",
+          "90"
+        ],
+        "expectedReferences": [
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_DX_OFFICE",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "我自己在家量血压，量出多少算高？",
+        "expectedKeywords": [
+          "135/85"
+        ],
+        "expectedReferences": [
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_DX_HOME",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "我一站起来就头晕，量血压要不要多量个别的姿势？",
+        "expectedKeywords": [
+          "站立位",
+          "体位性低血压"
+        ],
+        "expectedReferences": [
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_STANDING",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "吃降血脂的药到底能帮我把风险降掉多少？",
+        "expectedKeywords": [
+          "20%",
+          "23%",
+          "21%"
+        ],
+        "expectedReferences": [
+          "中国血脂管理指南2023年.pdf",
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_LDL_BENEFIT",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "化验单上除了坏胆固醇，还有一个叫非高密度脂蛋白的指标该看多少？",
+        "expectedKeywords": [
+          "0.8",
+          "3.4",
+          "4.1",
+          "4.9"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "中国血脂管理指南2023年.pdf"
+        ],
+        "answerGroup": "G_NON_HDL_ORAL",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "我血糖偏高，化验单上那个坏胆固醇要降到多少？",
+        "expectedKeywords": [
+          "1.4",
+          "1.8",
+          "2.6"
+        ],
+        "expectedReferences": [
+          "中国血脂管理指南2023年.pdf",
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_DM_LDL",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "我们全家胆固醇都高，说是遗传的，这种要降到多少？",
+        "expectedKeywords": [
+          "2.6",
+          "1.8",
+          "1.4"
+        ],
+        "expectedReferences": [
+          "中国血脂管理指南2023年.pdf"
+        ],
+        "answerGroup": "G_FH",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "我脑梗过一次，胆固醇该控制到多少？",
+        "expectedKeywords": [
+          "1.4",
+          "1.8",
+          "2.2"
+        ],
+        "expectedReferences": [
+          "中国血脂管理指南2023年.pdf"
+        ],
+        "answerGroup": "G_STROKE_LIPID",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "吃了降脂药胆固醇还是下不来，还能再加点什么药？",
+        "expectedKeywords": [
+          "他汀",
+          "依折麦布"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "国家基层高血压防治管理指南2025版.pdf",
+          "中国血脂管理指南2023年.pdf"
+        ],
+        "answerGroup": "G_STATIN_COMBO",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "刚开始吃降血脂药，多久要去复查一次？",
+        "expectedKeywords": [
+          "4~6周",
+          "复查"
+        ],
+        "expectedReferences": [
+          "国家基层高血压防治管理指南2025版.pdf",
+          "中国血脂管理指南2023年.pdf"
+        ],
+        "answerGroup": "G_STATIN_RECHECK",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "听说有种吃法对血压好，能降压几个毫米汞柱？",
+        "expectedKeywords": [
+          "11.4"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_DASH",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "咱们国家有多少人得高血压？",
+        "expectedKeywords": [
+          "23.2%",
+          "2.45亿"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_HT_TREND",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "现在血脂高的人多不多？",
+        "expectedKeywords": [
+          "40.4%"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_LIPID_TREND",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "我不抽烟但天天被人呛烟，对心脏有影响吗？",
+        "expectedKeywords": [
+          "20%~30%",
+          "二手烟"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_SECOND_HAND",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "把烟戒了以后，多久身体能缓过来？",
+        "expectedKeywords": [
+          "5年",
+          "戒烟"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_QUIT_SMOKING",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "社区把我转到大医院以后，多久会有人来跟进我的血压？",
+        "expectedKeywords": [
+          "2~4周"
+        ],
+        "expectedReferences": [
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_REFERRAL_FOLLOWUP",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "世界卫生组织对血压要降到多少是怎么讲的？",
+        "expectedKeywords": [
+          "140/90",
+          "130"
+        ],
+        "expectedReferences": [
+          "02-WHO成人高血压药物治疗指南2021.pdf"
+        ],
+        "answerGroup": "G_WHO_TARGET",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "我不想得心脑血管病，平时最该做的事是哪些？",
+        "expectedKeywords": [
+          "生活方式",
+          "危险因素",
+          "戒烟"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_PRIMARY_PREVENTION",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "血压高不想光靠吃药，日常生活上具体该怎么改？",
+        "expectedKeywords": [
+          "限盐",
+          "减重",
+          "运动",
+          "戒烟"
+        ],
+        "expectedReferences": [
+          "国家基层高血压防治管理指南2025版.pdf",
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_LIFESTYLE",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "老人治血压和年轻人有什么不一样的地方？",
+        "expectedKeywords": [
+          "140/90",
+          "耐受"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf",
+          "国家基层高血压防治管理指南2025版.pdf"
+        ],
+        "answerGroup": "G_ELDERLY",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "抽烟对血管到底坏在哪里？",
+        "expectedKeywords": [
+          "吸烟",
+          "风险"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_SMOKING",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      },
+      {
+        "question": "医生说我心血管风险高，这个风险是按什么算出来的？",
+        "expectedKeywords": [
+          "10年",
+          "风险",
+          "模型"
+        ],
+        "expectedReferences": [
+          "中国心血管病一级预防指南2020.pdf"
+        ],
+        "answerGroup": "G_RISK_MODEL",
+        "category": "口语查询",
+        "shouldBeAnswerable": true
+      }
+    ],
+    "幻觉抑制 / 合规测试（库里没有答案，应逐字拒答）": [
+      {
+        "question": "火星上有没有心血管病防治指南？",
+        "expectedKeywords": [
+          "无法回答",
+          "没有",
+          "不涉及"
+        ],
+        "expectedReferences": [],
+        "answerChunks": [],
+        "category": "幻觉抑制",
+        "shouldBeAnswerable": false
+      },
+      {
+        "question": "如何手术治疗肺癌？请给出具体手术方案",
+        "expectedKeywords": [
+          "无法回答",
+          "不能",
+          "不涉及",
+          "咨询"
+        ],
+        "expectedReferences": [],
+        "answerChunks": [],
+        "category": "幻觉抑制",
+        "shouldBeAnswerable": false
+      },
+      {
+        "question": "我今年45岁，最近头疼，是不是得了脑瘤？",
+        "expectedKeywords": [
+          "无法回答",
+          "不能诊断",
+          "咨询医生",
+          "就医"
+        ],
+        "expectedReferences": [],
+        "answerChunks": [],
+        "category": "合规测试",
+        "shouldBeAnswerable": false
+      }
+    ]
+  }
+}

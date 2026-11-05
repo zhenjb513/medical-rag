@@ -4,8 +4,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -20,12 +26,16 @@ import java.util.concurrent.atomic.AtomicInteger;
  * 占着一个 Tomcat 工作线程近 7 分钟，以及客户端一断线就白烧一次钱却拿不到报告
  * （2026-10-12 那次 node fetch 默认 300s 超时就是这么丢的）。现在改成提交即返回 taskId，
  * 报告落在任务表里，客户端随时来回执。
+ *
+ * <p>回执只在内存里，重启即失，而一次全量的钱已经花掉了。所以 DONE 之后同一份 JSON
+ * 再落盘一份（{@code app.evaluation.report-dir}），事后对账、比两轮差异都不用重跑。
  */
 @Service
 public class EvaluationTaskService {
 
     private static final Logger log = LoggerFactory.getLogger(EvaluationTaskService.class);
     private static final int KEEP_FINISHED_TASKS = 20;
+    private static final DateTimeFormatter FILE_STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
 
     public static final class EvalTask {
         public final String taskId;
@@ -34,6 +44,7 @@ public class EvaluationTaskService {
         public volatile long startedAt;
         public volatile long finishedAt;
         public volatile String reportJson;
+        public volatile String reportFile;
         public volatile String errorMsg;
 
         EvalTask(String taskId, String subset) {
@@ -49,14 +60,17 @@ public class EvaluationTaskService {
     private final EvaluationService evaluationService;
     private final Executor ragExecutor;
     private final ObjectMapper jsonMapper = new ObjectMapper();
+    private final Path reportDir;
     private final Map<String, EvalTask> tasks = new LinkedHashMap<>();
     private final AtomicInteger seq = new AtomicInteger();
     private volatile EvalTask current;
 
     public EvaluationTaskService(EvaluationService evaluationService,
-                                 @Qualifier("ragExecutor") Executor ragExecutor) {
+                                 @Qualifier("ragExecutor") Executor ragExecutor,
+                                 @Value("${app.evaluation.report-dir:./data/eval-reports}") String reportDir) {
         this.evaluationService = evaluationService;
         this.ragExecutor = ragExecutor;
+        this.reportDir = Path.of(reportDir);
     }
 
     /**
@@ -89,6 +103,7 @@ public class EvaluationTaskService {
             EvaluationService.EvaluationReport report = evaluationService.runEvaluation(subset);
             long duration = System.currentTimeMillis() - start;
             task.reportJson = buildReportJson(report, duration, task.subset);
+            writeReportFile(task);
             // finishedAt 必须在 state 之前写：轮询方一旦看到 DONE，读到的就该是完整的回执。
             // 反过来（原来写在 finally 里）有一个窗口是「已完成但耗时 0」，页面能把「用时 -」显示出来。
             task.finishedAt = System.currentTimeMillis();
@@ -149,6 +164,26 @@ public class EvaluationTaskService {
         }
         out.put("detailed_results", detailedResults);
         return jsonMapper.writeValueAsString(out);
+    }
+
+    /**
+     * 把 DONE 的报告原样写进 {@code app.evaluation.report-dir}，文件名是 report-写入时刻-taskId。
+     *
+     * <p>落盘内容就是 {@code /evaluation/status/{taskId}} 返回的那一份 JSON，一个字节都不差
+     * （紧凑写法，要看就 {@code jq .}），所以事后拿文件和拿接口结果不会出两种说法。
+     * <p>写失败只降级成日志：报告还在内存回执里，不能因为磁盘问题把一轮已经花完钱的评估判成 FAILED。
+     */
+    private void writeReportFile(EvalTask task) {
+        Path file = reportDir.resolve("report-" + LocalDateTime.now().format(FILE_STAMP)
+                + "-" + task.taskId + ".json");
+        try {
+            Files.createDirectories(reportDir);
+            Files.writeString(file, task.reportJson);
+            task.reportFile = file.toAbsolutePath().normalize().toString();
+            log.info("[评估] 报告落盘 {}", task.reportFile);
+        } catch (IOException | RuntimeException e) {
+            log.warn("[评估] 报告落盘失败（回执仍在 /evaluation/status/{} 里）：{}", task.taskId, e.toString());
+        }
     }
 
     /** 只留最近 {@code KEEP_FINISHED_TASKS} 个已完结任务，插入顺序即完成顺序，从头部淘汰。 */

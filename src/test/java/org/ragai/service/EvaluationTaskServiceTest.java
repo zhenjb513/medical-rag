@@ -1,9 +1,14 @@
 package org.ragai.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mockito;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
@@ -12,14 +17,19 @@ import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * 异步评估任务表：报告 JSON 的字段形状必须和同步时代逐字一致（前端照旧渲染），
  * 而且同一时刻只能有一轮在跑——一次全量是 61 题真金白银，连点两次等于烧两份。
+ * 另加一条：DONE 的报告要落盘，重启后钱已经花了但回执不能跟着没。
  */
 class EvaluationTaskServiceTest {
+
+    @TempDir
+    Path reportDir;
 
     private EvaluationService stubService(long sleepMs) {
         EvaluationService svc = Mockito.mock(EvaluationService.class);
@@ -72,7 +82,7 @@ class EvaluationTaskServiceTest {
     @Test
     @DisplayName("报告字段形状与同步时代一致：六维、按类别统计、挂题才带 fail_reason")
     void reportJsonKeepsLegacyShape() throws Exception {
-        EvaluationTaskService svc = new EvaluationTaskService(stubService(0), Runnable::run);
+        EvaluationTaskService svc = new EvaluationTaskService(stubService(0), Runnable::run, reportDir.toString());
         String json = svc.buildReportJson(oneReport(), 394_300L, "全量");
 
         // 同步时代这个 Map 是 Spring MVC 默认的紧凑序列化，落盘保持同样写法，别自创缩进格式
@@ -92,7 +102,7 @@ class EvaluationTaskServiceTest {
     @DisplayName("提交即返回、跑完落回执：DONE 后能取到报告全文")
     void submitRunsAsyncAndStoresReport() throws Exception {
         var executor = Executors.newSingleThreadExecutor();
-        EvaluationTaskService svc = new EvaluationTaskService(stubService(30), executor);
+        EvaluationTaskService svc = new EvaluationTaskService(stubService(30), executor, reportDir.toString());
         EvaluationTaskService.EvalTask task = svc.submit(List.of());
         assertEquals("全量", task.subset);
         assertNotNull(svc.find(task.taskId));
@@ -112,15 +122,49 @@ class EvaluationTaskServiceTest {
     }
 
     @Test
-    @DisplayName("一轮还在跑时重复 submit 拿回同一个任务，不开第二份钱")
-    void duplicateSubmitReturnsInFlightTask() throws Exception {
+    @DisplayName("DONE 之后报告落盘：文件名带 taskId，内容和回执逐字一致")
+    void doneReportLandsOnDisk() throws IOException {
+        EvaluationTaskService svc = new EvaluationTaskService(stubService(0), Runnable::run, reportDir.toString());
+        EvaluationTaskService.EvalTask task = svc.submit(List.of());
+
+        assertNotNull(task.reportFile, "state 已经 DONE，报告路径就该同时落地");
+        Path file = Path.of(task.reportFile);
+        assertTrue(file.getFileName().toString().startsWith("report-"),
+                () -> "文件名不对：" + file.getFileName());
+        assertTrue(file.getFileName().toString().endsWith(task.taskId + ".json"),
+                () -> "文件名要能回指 taskId：" + file.getFileName());
+        assertEquals(task.reportJson, Files.readString(file), "落盘的那份和接口给的那份必须同一个字节");
+        assertEquals(50.0, Double.parseDouble(new ObjectMapper()
+                .readTree(Files.readString(file)).path("pass_rate").asText().replace("%", "")), 0.001);
+    }
+
+    @Test
+    @DisplayName("落盘写不进去只降级成日志：不许把已经花完钱的一轮判成 FAILED")
+    void unwritableReportDirKeepsTaskDone() {
+        Path blocked = reportDir.resolve("not-a-dir");
+        try {
+            Files.writeString(blocked, "占位：同名文件挡住目录，createDirectories 必挂");
+        } catch (IOException e) {
+            throw new AssertionError(e);
+        }
+        EvaluationTaskService svc = new EvaluationTaskService(stubService(0), Runnable::run, blocked.toString());
+        EvaluationTaskService.EvalTask task = svc.submit(List.of());
+
+        assertEquals("DONE", task.state, () -> "落盘失败不该改判：" + task.errorMsg);
+        assertNull(task.reportFile);
+        assertNotNull(task.reportJson, "内存回执仍是完整的");
+    }
+
+    @Test
+    @DisplayName("一轮还在跑时重复 submit 拿回同一个任务，不开第二份钱")    void duplicateSubmitReturnsInFlightTask() throws Exception {
         CountDownLatch release = new CountDownLatch(1);
         EvaluationService svcMock = Mockito.mock(EvaluationService.class);
         Mockito.when(svcMock.runEvaluation(Mockito.anyList())).thenAnswer(inv -> {
             release.await(5, TimeUnit.SECONDS);
             return oneReport();
         });
-        EvaluationTaskService svc = new EvaluationTaskService(svcMock, Executors.newSingleThreadExecutor());
+        EvaluationTaskService svc = new EvaluationTaskService(svcMock, Executors.newSingleThreadExecutor(),
+                reportDir.toString());
 
         EvaluationTaskService.EvalTask first = svc.submit(List.of("胆固醇"));
         EvaluationTaskService.EvalTask second = svc.submit(List.of("胆固醇"));

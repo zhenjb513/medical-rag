@@ -107,7 +107,7 @@ class MedicalTestSetStructureTest {
                 .filter(e -> e.getValue().contains("口语查询"))
                 .count();
         // 实测 28 组：29 道口语题里只有 #41（非HDL-C 口语版）的答案块集合与书面版不同，
-        // 它额外认 XZ#32 表3，见 MedicalTestSet 的 G_NON_HDL_ORAL 注释。数字再动就是有人在偷偷拆对照。
+        // 它额外认 XZ#32 表3，见 eval/medical_test_set.json 里 G_NON_HDL_ORAL 的 note。数字再动就是有人在偷偷拆对照。
         assertEquals(28, paired, () -> "同时被书面和口语问法问到的答案块组数变了（现测 " + paired
                 + " 组，基线 28 组）：书面/口语两套问法必须共用同一份 ground truth");
     }

@@ -184,6 +184,14 @@ app:
         - trigger: 世界卫生组织
           terms: [hypertension, blood pressure, target]
 
+  evaluation:
+    # 端到端评估（GET /evaluation/run）跑完一轮，报告 JSON 顺手写到这个目录，
+    # 文件名 report-<写入时刻>-<taskId>.json，内容和 GET /evaluation/status/{taskId} 的回执逐字一致。
+    # 存在的理由：回执只在内存里，重启即失，而一次全量 61 题的钱已经花掉了（2026-10-12 那次就是这么丢的）。
+    # 相对路径按启动目录算。目录建不出来（权限/同名文件挡路）只打一条 warn，
+    # 不会把已经跑完、钱已经花掉的那一轮判成 FAILED，内存回执照样完整。
+    report-dir: ./data/eval-reports
+
   pgvector:
     # ✨ 关键开关 ✨
     #   false → SimpleVectorStore（内存向量库，默认，开箱即用，重启会清空向量）

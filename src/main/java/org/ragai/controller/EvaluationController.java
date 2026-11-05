@@ -142,6 +142,7 @@ public class EvaluationController {
         out.put("elapsed_ms", (task.finishedAt > 0 ? task.finishedAt : System.currentTimeMillis()) - task.startedAt);
         if ("DONE".equals(task.state)) {
             out.put("report", jsonMapper.readTree(task.reportJson));
+            out.put("report_file", task.reportFile);
         }
         if ("FAILED".equals(task.state)) {
             out.put("error", task.errorMsg);
