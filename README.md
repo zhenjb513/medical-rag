@@ -46,7 +46,7 @@ flowchart LR
 | HanLP | portable-1.8.4 | BM25 中文分词（词典打包在 jar 里，无需外部数据） |
 | LangChain4j | 1.0.0-beta3 | 并存实验链路（`/lc/*`），与 `/chat` 走两套框架 |
 | PDFBox | 随 Spring AI pdf-reader | PDF 文字层抽取 |
-| JUnit 5 | — | 155 条纯逻辑单测，不连库不打模型 |
+| JUnit 5 | — | 157 条纯逻辑单测，不连库不打模型 |
 
 > 版本配套硬约束：Spring AI Alibaba 1.1.2.3 的 pom 里直接硬编码了 Spring Boot 3.5.10 + Spring AI 1.1.2，不要随意升级。
 
@@ -181,6 +181,9 @@ app:
     rerank-window: 20                    # 送重排的候选数
     rerank-use-expanded-query: true      # 重排也看扩展后的术语串
 
+  evaluation:
+    report-dir: ./data/eval-reports      # 端到端评估跑完一轮，报告 JSON 顺手落这里（回执只在内存里，重启即失）
+
   pgvector:
     enabled: true                        # false = SimpleVectorStore 内存库
     dimensions: 1024                     # ⚠️ 必须严格匹配模型输出维度
@@ -190,7 +193,7 @@ app:
 ## 5️⃣ 启动应用
 
 ```powershell
-# 方式 A：IDEA Run 入口类 org.example.Main
+# 方式 A：IDEA Run 入口类 org.ragai.Main
 #   VM options: -Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8
 
 # 方式 B：打包可执行 jar
@@ -214,7 +217,7 @@ PgVectorHikariPool - Start completed.          ← 向量库池
 👁️ WatchService 已启动，监听目录：D:\ai-docs   ← 热监听
 ```
 
-跑测试（155 条纯逻辑单测，几秒完成）：
+跑测试（157 条纯逻辑单测，几秒完成）：
 
 ```bash
 ./mvnw test          # Linux / macOS；Windows PowerShell 用 .\mvnw.cmd test
@@ -540,8 +543,14 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | `GET /evaluation/recall?probeK=&mode=&expand=` | bm25 零调用，其余每题 1 次向量化；rerank 再加 1 次 | 检索级基线：答案块排第几名（Hit@K / MRR） |
 | `GET /evaluation/retrieve?q=&topK=` | 向量化（开重排时多 1 次） | 生产链路真实召回了哪些块 |
 | `GET /evaluation/select?only=` | **无** | 列出 `/evaluation/run` 会跑到哪些题（付费前预演） |
-| `GET /evaluation/run?only=` | 每题向量化 + 重排 + 生成 | 端到端四维评估（JSON 报告） |
+| `GET /evaluation/run?only=` | 每题向量化 + 重排 + 生成 | 端到端四维评估，提交即返回 taskId（异步，全量实测 394s） |
+| `GET /evaluation/status/{taskId}` | **无** | 取回执：RUNNING 只给已耗时，DONE 给完整报告 + 落盘路径 |
 | `GET /evaluation/summary?only=` | 同上 | ⚠️ 内部会**重跑一遍**评估（非缓存），必须带 `only=` |
+
+> `/evaluation/run` 跑完的那份报告**同时写文件**：`app.evaluation.report-dir`（默认 `./data/eval-reports`），
+> 文件名 `report-<时刻>-<taskId>.json`，内容与 `/evaluation/status` 的 `report` 字段逐字一致。
+> 理由很实在：回执只在内存里，重启即失，而一次全量的钱已经花掉了（2026-10-12 那次就是客户端超时丢了一整轮明细）。
+> 写不进去只打一条 warn，不会把跑完的评估判成 FAILED。
 
 > `/evaluation/recall?mode=` 分档说明：只有 `mode=bm25` 是零模型调用；`vector` / `hybrid` / `rerank` 都要打向量通道，`rerank` 再加一次重排。别一律当免费口子用。
 
@@ -572,7 +581,7 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 
 # 📊 评测体系
 
-## 测试集（`MedicalTestSet`）
+## 测试集（`src/main/resources/eval/medical_test_set.json`）
 
 61 题考卷，按问法成对覆盖。每份指南的答案块标注用 `/bm25/locate` 原文逐字定位得到（不是猜测）：
 
@@ -581,7 +590,9 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | 事实查询 | 书面问法，如「高血压降压目标是多少？」 |
 | 口语查询 | 患者口吻，如「血压一直高降不下去怎么办」—— 不带原文术语，用来量「自造题偏袒关键词检索」 |
 | 综合分析 | 多因素综合题 |
-| 超纲负样本 | 3 题（该拒答的：火星上有没有心血管指南、Java 冒泡排序、电影票房） |
+| 超纲负样本 | 3 题（该拒答的：火星上有没有心血管病防治指南、如何手术治疗肺癌、45 岁头疼是不是得了脑瘤） |
+
+考卷是数据文件不是 Java：`sections` 按问法分三段、`answerGroups` 存「文件名#块号」标注和每条标注当初是逐字核对出来的原因。书面题和口语题共用同一个 `answerGroup`，加题只在对应段落追加一个对象，别把 ground truth 抄两份。`MedicalTestSet.java` 只剩读 JSON 的 89 行。
 
 考卷覆盖 4 份临床指南，**共 501 块**（chunkSize=512 tokens）：
 
@@ -623,7 +634,7 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 
 ---
 
-# 🧪 单元测试（155 条，纯逻辑）
+# 🧪 单元测试（157 条，纯逻辑）
 
 全部在 `src/test/java/`，**不连数据库、不调模型、不依赖任何外部服务**。每条测试验证的是纯逻辑判定：
 
@@ -634,7 +645,7 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | `EvalNormalizeTest` | 5 | 匹配归一化只管空白和连字符家族，**不动标点** |
 | `EvalPromptGuardTest` | 5 | 拒答原话逐字命中、提示词与判分器共用同一常量 |
 | `EvalSummaryCaliberTest` | 4 | 报告 summary 里三条口径行 + 两类可疑计数 |
-| `MedicalTestSetStructureTest` | 6 | 考卷结构（58 可答 + 3 负样本）、题量、块主键格式 |
+| `MedicalTestSetStructureTest` | 6 | 考卷结构（58 可答 + 3 负样本）、题量、块主键格式、书面/口语共用同一份标注 |
 | `RetrievalModeGuardTest` | 8 | 模式降级表（bm25→hybrid、不认识→vector+警告） |
 | `ChunkCitationTest` | 10 | 引用行形状：文件名排最前 + 块号列表 |
 | `PdfPageLocatorTest` | 23 | 块号→物理页 / 页脚印码：偏移不一致不给、歧义跳过、不猜 |
@@ -646,7 +657,7 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | `InventoryToolSchemaTest` | 9 | 库存工具的**说明书**：名字字符集、描述不退化成方法名、参数进 `required`、schema 键名能映射到形参、缺参不许报出件数 |
 | `MultiHopRetrievalServiceTest` | 5 | 多跳触发与合并：单实体问句不触发、显式 AND 与「首轮跨 ≥2 份来源」必须触发、合并按 content_hash 去重、开关关了直接委托单跳 |
 | `ApiKeyFilterTest` | 8 | 白名单分档：只读免凭据 / 会花钱或会写要凭据、限流在鉴权之前、`/actuator` 不限流、`/app.js`+`/style.css` 必须放行 |
-| `EvaluationTaskServiceTest` | 3 | 异步评估回执：报告 JSON 与同步时代逐字一致、DONE 后取到全文、一轮在跑时重复提交不开第二份钱 |
+| `EvaluationTaskServiceTest` | 5 | 异步评估回执：报告 JSON 与同步时代逐字一致、DONE 后取到全文、一轮在跑时重复提交不开第二份钱、DONE 的报告落盘且与回执逐字一致、落盘写不进去不许改判 FAILED |
 
 ---
 
@@ -753,6 +764,17 @@ SSE 流式（`GET /chat/stream`）、多轮上下文（`ChatMemoryManager`）、
 
 # 📄 License
 
-本项目仅供学习与医疗行业内部知识库验证使用，不得用于商业用途。
+本仓库的代码、评测考卷与文档用 **PolyForm Noncommercial License 1.0.0** 授权（完整条款见 [LICENSE](LICENSE)，
+SPDX 标识 `PolyForm-Noncommercial-1.0.0`）：**可以读、可以改、可以拿去做研究和自托管验证，不得用于商业用途**。
+要商用得另外找我拿授权。
 
-**免责声明**：本软件按"原样"提供，不提供任何明示或暗示的保证。使用者自行承担使用风险。
+条款里几条实操上会碰到的，先翻译成人话：
+
+- **允许**：个人学习、研究、面试演示、以及学校 / 公益 / 公共卫生机构的使用（哪怕这些机构有经费来源也算非商业）。
+- **分发时**必须把这份条款（或它的 URL）一起给下去，并保留 `Required Notice` 那两行署名。
+- 改出来的新作品仍受同一份限制，不能商用，也不能再往下授权别人。
+- 按"原样"提供，不构成医疗建议，不是医疗器械，使用者自担风险。
+
+还有一层边界要说清楚：**临床指南原文不在这个仓库里**。`data/pdfs/` 那两份是脚本合成的示例 PDF，
+只用来让 demo 档开箱能跑出结果；评测实际依赖的 4 份正式指南（一级预防 / 基层高血压 / 血脂管理 / WHO）
+版权归各自发布机构所有，需要你自己合法取得后放进 `app.pdf-path` 指向的目录。本仓库的授权覆盖不到那些原文。
