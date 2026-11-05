@@ -215,6 +215,13 @@ function removeStreamingBubble() {
   if (t) t.remove();
 }
 
+// 流结束后这条消息要留在页面上，只摘掉「正在流」的标记；
+// 直接 remove() 会把刚打完的答案整条删掉，页面回到只有提问的状态。
+function finishStreamingBubble() {
+  const t = document.getElementById('streamingMsg');
+  if (t) t.removeAttribute('id');
+}
+
 async function sendMessage(text) {
   if (!text || !text.trim()) return;
 
@@ -277,14 +284,17 @@ async function sendRagStream(text) {
       for (const rawEvent of events) {
         const lines = rawEvent.split('\n');
         let eventName = '';
-        let data = '';
+        // 一个 data 里带换行时（引用块就是多行），Spring 按 SSE 规范拆成多行 data:，
+        // 行间要用 \n 接回去；直接 += 会把整块引用挤成一行。
+        const dataLines = [];
         for (const line of lines) {
           if (line.startsWith('event:')) {
             eventName = line.substring(6).trim();
           } else if (line.startsWith('data:')) {
-            data += line.substring(5).trim();
+            dataLines.push(line.substring(5).trim());
           }
         }
+        const data = dataLines.join('\n');
 
         if (data === '[DONE]') continue;
 
@@ -310,7 +320,7 @@ async function sendRagStream(text) {
       }
     }
 
-    removeStreamingBubble();
+    finishStreamingBubble();
   } catch (e) {
     removeStreamingBubble();
     addMsg('ai', '❌ 请求失败：' + e.message + '\n\n请检查后端是否已启动（默认端口 8080）。');
