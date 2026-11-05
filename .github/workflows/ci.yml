@@ -14,13 +14,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        include:
-          - os: ubuntu-latest
-            shell: bash
-          - os: windows-latest
-            shell: pwsh
-          - os: macos-latest
-            shell: bash
+
+    # step 级的 shell 拿不到 matrix 上下文（GitHub 解析期直接报 Unrecognized named-value），
+    # 所以三档统一用 bash：windows-latest 预装 Git Bash，跑 ./mvnw 这个 shell 脚本没问题。
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - name: Checkout source
@@ -38,14 +37,12 @@ jobs:
         run: chmod +x mvnw
 
       - name: Run tests
-        shell: ${{ matrix.shell }}
         run: |
           ./mvnw test -B --no-transfer-progress
         env:
           MAVEN_OPTS: "-Xmx1024m"
 
       - name: Build jar
-        shell: ${{ matrix.shell }}
         run: |
           ./mvnw package -DskipTests -B --no-transfer-progress
         env:
