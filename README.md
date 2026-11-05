@@ -1,12 +1,3 @@
-<style>
-body { font-size: 16px; line-height: 1.8; }
-h1 { font-size: 2.0em; }
-h2 { font-size: 1.6em; }
-h3 { font-size: 1.3em; }
-h4 { font-size: 1.1em; }
-table, pre code, code { font-size: 1.05em; }
-</style>
-
 # 🏥 mkbAI · 医疗行业 RAG 智能助手
 
 ![CI](https://github.com/zhenjb513/medical-rag/actions/workflows/ci.yml/badge.svg)
@@ -15,8 +6,8 @@ table, pre code, code { font-size: 1.05em; }
 
 ```mermaid
 flowchart LR
-    A[📄 PDF 指南库] --> B[🔄 混合检索]
-    subgraph B
+    A[📄 PDF 指南库] --> B1
+    subgraph B[🔄 混合检索]
       B1[向量通道<br>text-embedding-v3]
       B2[BM25 关键词通道<br>HanLP 分词]
       B1 & B2 --> B3[⚖️ 加权 RRF 融合]
