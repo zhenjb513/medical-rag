@@ -185,9 +185,14 @@ public class DemoModelConfig {
         return (b < 0 ? text.substring(a) : text.substring(a, b)).trim();
     }
 
-    /** 去掉【文档N】标记，再按中文句读切；短于 6 字的片段（页码、表头之类）不当答案候选。 */
+    /**
+     * 去掉【文档N】标记行，再按中文句读切；短于 6 字的片段（页码、表头之类）不当答案候选。
+     * <p>剥的是整行而不是「【文档N】」那四个字：上下文头部现在是「【文档1】某指南.pdf#块11」，
+     * 只切标记会把文件名和块号留在正文里，抽取式答案就会把这一行当原句抄出去（2026-11-05 就是这么被
+     * DemoExtractiveModelTest 判成「答案不是原文句，存在编造」的）。
+     */
     static List<String> splitSentences(String context) {
-        String body = context.replaceAll("【文档\\d+】", " ");
+        String body = context.replaceAll("【文档\\d+】[^\n]*", " ");
         List<String> out = new ArrayList<>();
         for (String part : body.split("[。！？；\\n\\r]")) {
             String s = part.replaceAll("\\s+", " ").trim();

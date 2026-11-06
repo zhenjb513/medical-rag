@@ -145,4 +145,23 @@ class ChunkCitationTest {
         // 引用行要是偷偷把这行丢掉，日志和引用就对不上了
         assertEquals(List.of("12345（块号 2）"), refs);
     }
+
+    @Test
+    @DisplayName("上下文头部带文件名#块号：模型抄得出真出处，才不会去抄提示词里的示例名")
+    void contextHeaderCarriesFileNameAndChunkIndex() {
+        String ctx = SVC.buildContext(List.of(doc(XZ, 12, "血脂那条正文"), doc(YJ, 5, "血压那条正文")));
+        assertTrue(ctx.contains("【文档1】" + XZ + "#块12"), ctx);
+        assertTrue(ctx.contains("【文档2】" + YJ + "#块5"), ctx);
+        // 展示序号和 chunk_index 是两套编号，头部给的是后者，正文前的序号仍是前者
+        assertEquals(2, ctx.split("【文档", -1).length - 1);
+    }
+
+    @Test
+    @DisplayName("元数据残缺就如实残缺：没块号只给文件名，全都没给「未知来源」，不许编一个")
+    void contextHeaderDegradesHonestly() {
+        assertTrue(SVC.buildContext(List.of(doc(XZ, null, "A"))).contains("【文档1】" + XZ + "\n"));
+        assertTrue(SVC.buildContext(List.of(new Document("id-e", "A", new LinkedHashMap<>())))
+                .contains("【文档1】未知来源"));
+        assertEquals("(无相关文档)", SVC.buildContext(List.of()));
+    }
 }

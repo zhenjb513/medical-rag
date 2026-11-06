@@ -93,6 +93,10 @@ public class RagReferenceService {
     /**
      * 构建上下文（将文档内容格式化为指定格式）
      * 组装上下文文本，将检索到的文件片段拼接成上下文
+     * <p>
+     * 头部从「【文档N】」改成「【文档N】文件名#块号」：以前只给一个序号，模型要自己从正文里猜这是哪份指南，
+     * 于是照抄提示词示例里那份根本不存在的《中国高血压防治指南》2023版（2026-11-05 拍问诊截图时抓到）。
+     * 名字和块号在这里给全，答案里的出处才有可抄的对象；块号用入库的 chunk_index，和【文档N】那个展示序号是两套，别混。
      */
     public String buildContext(List<Document> docs) {
         if (docs == null || docs.isEmpty()) {
@@ -101,10 +105,25 @@ public class RagReferenceService {
         StringBuilder context = new StringBuilder();
         for (int i = 0; i < docs.size(); i++) {
             Document doc = docs.get(i);
-            context.append("【文档").append(i + 1).append("】\n");
+            context.append("【文档").append(i + 1).append("】").append(describeBlock(doc)).append('\n');
             context.append(doc.getText()).append("\n");
         }
         return context.toString();
+    }
+
+    /** 上下文头部那半行：文件名#块号；元数据缺就退到能给出的部分，全缺则标「未知来源」。 */
+    static String describeBlock(Document doc) {
+        Map<String, Object> metadata = doc.getMetadata() == null ? Map.of() : doc.getMetadata();
+        String source = firstNonEmpty(metadata.get("source"), metadata.get("file_name"), metadata.get("filename"));
+        String fileName = source == null ? null : stripPath(source);
+        Integer chunkIndex = parseChunkIndex(metadata.get("chunk_index"));
+        if (fileName == null && chunkIndex == null) {
+            return "未知来源";
+        }
+        if (fileName == null) {
+            return "文件名未知#块" + chunkIndex;
+        }
+        return chunkIndex == null ? fileName : fileName + "#块" + chunkIndex;
     }
 
     /**

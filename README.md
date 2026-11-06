@@ -46,7 +46,7 @@ flowchart LR
 | HanLP | portable-1.8.4 | BM25 中文分词（词典打包在 jar 里，无需外部数据） |
 | LangChain4j | 1.0.0-beta3 | 并存实验链路（`/lc/*`），与 `/chat` 走两套框架 |
 | PDFBox | 随 Spring AI pdf-reader | PDF 文字层抽取 |
-| JUnit 5 | — | 157 条纯逻辑单测，不连库不打模型 |
+| JUnit 5 | — | 162 条纯逻辑单测，不连库不打模型 |
 
 > 版本配套硬约束：Spring AI Alibaba 1.1.2.3 的 pom 里直接硬编码了 Spring Boot 3.5.10 + Spring AI 1.1.2，不要随意升级。
 
@@ -217,7 +217,7 @@ PgVectorHikariPool - Start completed.          ← 向量库池
 👁️ WatchService 已启动，监听目录：D:\ai-docs   ← 热监听
 ```
 
-跑测试（157 条纯逻辑单测，几秒完成）：
+跑测试（162 条纯逻辑单测，几秒完成）：
 
 ```bash
 ./mvnw test          # Linux / macOS；Windows PowerShell 用 .\mvnw.cmd test
@@ -626,9 +626,11 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | 层次 | 衡量什么 | 现行基线 |
 |---|---|---|
 | **检索级** `/evaluation/recall` | 标注的答案块排第几名（Hit@K / MRR） | `mode=hybrid` 关重排：**Hit@1 39.7% / @8 96.6%，MRR 0.543**（58 题 ground-truth 实测，application.yml L73 注释）；开重排后 @1 提至 **58.6%**，MRR **0.691** |
-| **端到端** `/evaluation/run` | 最终答案过不过四维判定 | **60/61 = 98.4%**（2026-10-16；唯一挂的 1 道合规误伤已在口径修复后通过） |
+| **端到端** `/evaluation/run` | 最终答案过不过四维判定 | **60/61 = 98.4%**（2026-10-16；唯一挂的 1 道合规误伤已在口径修复后通过）⚠️ 2026-11-06 改过送进模型的上下文（见下），这个数是改前测的，改后还没重跑 |
 
 > ⚠️ 换口径前后的分数不可直接比较——是换了尺子不是模型退步。重排收益（@1 从 39.7% → 58.6%）是旧库 507 块 + 旧块号下量的，新库（501 块）同口径带重排的端到端数字还没跑。
+
+2026-11-06 那次改动动了模型看到的输入：上下文块头部从「【文档1】」改成「【文档1】中国心血管病一级预防指南2020.pdf#块11」，系统提示词第 3 条的示例也换掉了——旧示例拿了一份库里根本不存在的《中国高血压防治指南》2023版当范本，模型就照抄它给出处。拍问诊截图时抓到的是这条：答案写「（摘自《中国高血压防治指南》2023版文档1）」，而这份文件名在 501 块里 `/bm25/search` 零命中（只有参考文献条目里出现相近字样），同一次回答的引用行第一行给的是《中国心血管病一级预防指南2020.pdf》块 11、12、63。改完之后的端到端分数还没重跑，所以 98.4% 只在改前的提示词下成立。
 
 端到端评估一跑起来每道题是三次付费调用（向量化的查询 + 重排 + 生成），全卷 61 题实测 392 秒。所以先用 `/evaluation/select?only=` 零成本确认选中的到底是哪些题，再决定跑。
 
@@ -647,7 +649,8 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | `EvalSummaryCaliberTest` | 4 | 报告 summary 里三条口径行 + 两类可疑计数 |
 | `MedicalTestSetStructureTest` | 6 | 考卷结构（58 可答 + 3 负样本）、题量、块主键格式、书面/口语共用同一份标注 |
 | `RetrievalModeGuardTest` | 8 | 模式降级表（bm25→hybrid、不认识→vector+警告） |
-| `ChunkCitationTest` | 10 | 引用行形状：文件名排最前 + 块号列表 |
+| `ChunkCitationTest` | 12 | 引用行形状：文件名排最前 + 块号列表；上下文头部「【文档N】文件名#块号」的写法与缺元数据时的降级 |
+| `ChatMemoryManagerTest` | 3 | 多轮历史交给模型前逐个必须真是 `Message`：新会话不许塞占位空列表、Redis 里的旧脏元素要跳过而不是炸在 `ClassCastException` |
 | `PdfPageLocatorTest` | 23 | 块号→物理页 / 页脚印码：偏移不一致不给、歧义跳过、不猜 |
 | `SectionIndexTest` | 22 | 块号→章节号：形状闸门 + 大纲单调性 + 跨节给范围 |
 | `InventoryToolVerdictTest` | 5 | 库存工具返回值四态：有货 N 件 / 未登记 / 查询不可用 / 没给名称 |

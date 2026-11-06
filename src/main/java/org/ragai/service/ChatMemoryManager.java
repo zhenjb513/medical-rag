@@ -4,6 +4,8 @@ import com.fasterxml.jackson.annotation.JsonAutoDetect;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.fasterxml.jackson.annotation.PropertyAccessor;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -25,6 +27,8 @@ import java.util.UUID;
 
 @Component
 public class ChatMemoryManager {
+
+    private static final Logger log = LoggerFactory.getLogger(ChatMemoryManager.class);
 
     public static final String KEY_PREFIX = "mkbai:chat:";
     public static final String SESSION_SET = "mkbai:chat:sessions";
@@ -52,19 +56,38 @@ public class ChatMemoryManager {
         this.ttlSeconds = ttlSeconds;
     }
 
+    /**
+     * 只登记 sessionId，不往会话列表里塞任何东西。
+     * <p>早先这里右推过一个空 {@code ArrayList} 当占位，于是 {@link #getHistory} 第一次读就交出
+     * 一个不是 {@link Message} 的元素，DashScope 组装请求逐个强转 {@code Message} 时直接
+     * {@code ClassCastException}——新会话的第一条消息必挂（2026-11-05 拍问诊截图时撞上）。
+     * 键不需要预建：{@link #appendTurn} 写入时自然创建并续 TTL。
+     */
     public String newSessionId() {
         String id = UUID.randomUUID().toString().replace("-", "");
-        redisTemplate.opsForList().rightPush(key(id), new ArrayList<>());
-        redisTemplate.expire(key(id), Duration.ofSeconds(ttlSeconds));
         strTemplate.opsForSet().add(SESSION_SET, id);
         return id;
     }
 
-    @SuppressWarnings("unchecked")
+    /**
+     * 会话历史。只交出真的是 {@link Message} 的元素：Redis 里可能还躺着旧版本写进去的占位值，
+     * 反序列化出来的类型不受我们控制，脏一条不该把整轮对话打成 500。
+     */
     public List<Message> getHistory(String sessionId) {
         Object raw = redisTemplate.opsForList().range(key(sessionId), 0, -1);
-        if (raw == null) return new ArrayList<>();
-        return (List<Message>) raw;
+        if (!(raw instanceof List<?> list)) {
+            return new ArrayList<>();
+        }
+        List<Message> messages = new ArrayList<>();
+        for (Object item : list) {
+            if (item instanceof Message message) {
+                messages.add(message);
+            } else {
+                log.warn("[多轮] 会话 {} 里混进一个非 Message 元素（{}），已跳过",
+                        sessionId, item == null ? "null" : item.getClass().getName());
+            }
+        }
+        return messages;
     }
 
     public List<Message> buildPromptMessages(String sessionId, String systemPrompt, String userMessage) {
