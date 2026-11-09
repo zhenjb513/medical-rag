@@ -138,6 +138,7 @@ public class EvaluationTaskService {
         dimensions.put("合规性", report.compliancePassCount + "/" + report.totalCount);
         dimensions.put("库外背书（答案写了但上下文没有）", report.backfillSuspectCount + "/" + report.totalCount);
         dimensions.put("出处不在答案块（有出处但答错段落）", report.wrongBlockCount + "/" + report.totalCount);
+        dimensions.put("句子级出处编造（内联引用没落在送进模型的块上）", report.citationFabricatedCount + "/" + report.totalCount);
         out.put("dimensions", dimensions);
 
         out.put("category_stats", report.categoryStats);
@@ -153,6 +154,8 @@ public class EvaluationTaskService {
             item.put("accuracy_evidence", r.accuracyEvidence);
             item.put("backfill_suspect", r.backfillSuspect);
             item.put("wrong_block_suspect", r.wrongBlockSuspect);
+            item.put("citation_fabricated_suspect", r.citationFabricatedSuspect);
+            item.put("citation_evidence", r.citationEvidence);
             item.put("reference_pass", r.referencePass);
             item.put("hallucination_pass", r.hallucinationPass);
             item.put("compliance_pass", r.compliancePass);

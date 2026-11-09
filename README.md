@@ -46,7 +46,7 @@ flowchart LR
 | HanLP | portable-1.8.4 | BM25 中文分词（词典打包在 jar 里，无需外部数据） |
 | LangChain4j | 1.0.0-beta3 | 并存实验链路（`/lc/*`），与 `/chat` 走两套框架 |
 | PDFBox | 随 Spring AI pdf-reader | PDF 文字层抽取 |
-| JUnit 5 | — | 162 条纯逻辑单测，不连库不打模型 |
+| JUnit 5 | — | 171 条纯逻辑单测，不连库不打模型 |
 
 > 版本配套硬约束：Spring AI Alibaba 1.1.2.3 的 pom 里直接硬编码了 Spring Boot 3.5.10 + Spring AI 1.1.2，不要随意升级。
 
@@ -217,7 +217,7 @@ PgVectorHikariPool - Start completed.          ← 向量库池
 👁️ WatchService 已启动，监听目录：D:\ai-docs   ← 热监听
 ```
 
-跑测试（162 条纯逻辑单测，几秒完成）：
+跑测试（171 条纯逻辑单测，几秒完成）：
 
 ```bash
 ./mvnw test          # Linux / macOS；Windows PowerShell 用 .\mvnw.cmd test
@@ -616,12 +616,13 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | **幻觉抑制** | 答案里没有明显的外部知识（如电影名、流行语） | `EvaluationService` hallucinationPass |
 | **合规性** | 按小句判定：诊断措辞不用第一人称（「我觉得」「我推荐」）、高血压目标用「应控制在」等条件标记而不是「必须」 | `ComplianceJudgeTest` |
 
-两类可疑标记（帮助定位「看着像对其实不对」的情况）：
+三类可疑标记（都是诊断项，**不计入通过率**，帮助定位「看着像对其实不对」的情况）：
 
 | 标记 | 含义 |
 |---|---|
 | `backfillSuspect` | 关键词只在答案里出现、上下文里没有 → 模型在用自己的知识替库背书 |
 | `wrongBlockSuspect` | 关键词有出处、但出处落在考卷标注的答案块**之外**的块上 → 检索找回了同一份指南里无关的段落 |
+| `citationFabricatedSuspect` | 答案里「摘自《文件名》块N」式内联引用指向**没送进模型**的块 → 模型编造块号/文件名（2026-11-09 起，`InlineCitationJudgeTest`）。只验「引用的块真送过」，不验「句子内容真出自该块」；旧报告无 summary 口径行即为未核对 |
 
 ## 两套指标，口径不同
 
@@ -638,7 +639,7 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 
 ---
 
-# 🧪 单元测试（157 条，纯逻辑）
+# 🧪 单元测试（171 条，纯逻辑）
 
 全部在 `src/test/java/`，**不连数据库、不调模型、不依赖任何外部服务**。每条测试验证的是纯逻辑判定：
 
@@ -648,7 +649,8 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | `ComplianceJudgeTest` | 8 | 合规按小句判定诊断措辞（人称 + 条件标记） |
 | `EvalNormalizeTest` | 5 | 匹配归一化只管空白和连字符家族，**不动标点** |
 | `EvalPromptGuardTest` | 5 | 拒答原话逐字命中、提示词与判分器共用同一常量 |
-| `EvalSummaryCaliberTest` | 4 | 报告 summary 里三条口径行 + 两类可疑计数 |
+| `EvalSummaryCaliberTest` | 5 | 报告 summary 里四条口径行（含句子级出处）+ 三类可疑计数 |
+| `InlineCitationJudgeTest` | 8 | 句子级出处核对：内联「摘自《文件名》块N」必须落在当次送进模型的块上；编块号/编文件名判可疑、带 `-` 的文件名不被归一化打歪、页脚清单不算逐句出处、提示词模板与判分正则反射互钉 |
 | `MedicalTestSetStructureTest` | 6 | 考卷结构（58 可答 + 3 负样本）、题量、块主键格式、书面/口语共用同一份标注 |
 | `RetrievalModeGuardTest` | 8 | 模式降级表（bm25→hybrid、不认识→vector+警告） |
 | `ChunkCitationTest` | 12 | 引用行形状：文件名排最前 + 块号列表；上下文头部「【文档N】文件名#块号」的写法与缺元数据时的降级 |

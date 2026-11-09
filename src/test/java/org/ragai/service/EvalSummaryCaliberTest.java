@@ -74,6 +74,16 @@ class EvalSummaryCaliberTest {
     }
 
     @Test
+    @DisplayName("summary 里有句子级出处口径行（2026-11-09 诊断项）：旧报告无此行即为未核对")
+    void sentenceLevelCaliberIsMarked() {
+        String summary = EvaluationService.generateSummary(report(true));
+        assertTrue(summary.contains("句子级出处口径"), "summary 没写句子级口径，旧报告分不出有没有核对内联引用");
+        assertTrue(summary.contains("2026-11-09") && summary.contains("不计入通过率"));
+        assertTrue(summary.contains("摘自《文件名》块N"), "口径行要写清认的是哪种内联引用形状");
+        assertTrue(summary.contains("只验「引用的块真送过」"), "口径行要标明边界：不验句子内容真出自该块");
+    }
+
+    @Test
     @DisplayName("失败用例清单带上类别、题目和原因，报告不用翻日志就能读")
     void failedCasesAreListed() {
         String summary = EvaluationService.generateSummary(report(false));

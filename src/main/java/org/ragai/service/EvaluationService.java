@@ -7,9 +7,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 public class EvaluationService {
@@ -38,6 +42,10 @@ public class EvaluationService {
         public String accuracyEvidence;   // 准确性的出处：命中的关键词落在哪一块
         public boolean backfillSuspect;   // 关键词只在答案里出现、上下文里没有 → 模型自带知识
         public boolean wrongBlockSuspect; // 关键词有出处、但出处不是考卷标注的答案块 → 没答到这一段
+        public int inlineCitationTotal;   // 答案里「摘自《文件名》块N」式内联引用的条数
+        public int inlineCitationResolved;// 其中落在当次真正送进模型的块上的条数
+        public boolean citationFabricatedSuspect; // 有内联引用指向没送进模型的块 → 编造块号/文件名
+        public String citationEvidence;   // 句子级出处核对的一句话结论
         public String failReason;         // 失败原因
 
         public boolean isAllPass() {
@@ -58,6 +66,9 @@ public class EvaluationService {
         public int compliancePassCount;
         public int backfillSuspectCount;
         public int wrongBlockCount;
+        public int inlineCitationTotal;    // 全卷内联引用条数合计
+        public int inlineCitationResolved; // 全卷落在真块上的条数合计
+        public int citationFabricatedCount;// 有编造/抄错内联引用的题数
         public List<TestResult> results;
         public Map<String, Integer> categoryStats;
         public String summary;
@@ -86,6 +97,8 @@ public class EvaluationService {
         int backfillSuspect = 0;
         // 有出处，但出处落在别的块上：检索找回了同一份指南里无关的段落，答案看着像对、其实没答到考点
         int wrongBlock = 0;
+        // 句子级出处核对（诊断项）：内联引用条数、落在真块上的条数、有编造/抄错的题数
+        int inlineTotal = 0, inlineResolved = 0, citationFabricated = 0;
 
         // 逐题打印到标准输出：报告 body 只在 HTTP 响应里，客户端断线就拿不到了（2026-10-12 实测发生过一次），
         // 所以每题的判定和答案原文必须先落在服务端日志里，事后可以用脚本重建成报告。
@@ -109,6 +122,8 @@ public class EvaluationService {
             System.out.println("[逐题] #" + (i + 1) + "  出处=" + result.accuracyEvidence
                     + (result.backfillSuspect ? "  ⚠️模型自带知识" : "")
                     + (result.wrongBlockSuspect ? "  ⚠️出处不在答案块" : ""));
+            System.out.println("[逐题] #" + (i + 1) + "  出处核对=" + result.citationEvidence
+                    + (result.citationFabricatedSuspect ? "  ⚠️内联引用编造/抄错" : ""));
             System.out.println("[逐题] #" + (i + 1) + "  答案=" + flatten(result.answer));
             if (result.accuracyPass) accuracyPass++;
             if (result.referencePass) referencePass++;
@@ -116,6 +131,9 @@ public class EvaluationService {
             if (result.compliancePass) compliancePass++;
             if (result.backfillSuspect) backfillSuspect++;
             if (result.wrongBlockSuspect) wrongBlock++;
+            inlineTotal += result.inlineCitationTotal;
+            inlineResolved += result.inlineCitationResolved;
+            if (result.citationFabricatedSuspect) citationFabricated++;
         }
 
         // 统计分类
@@ -138,6 +156,9 @@ public class EvaluationService {
         report.compliancePassCount = compliancePass;
         report.backfillSuspectCount = backfillSuspect;
         report.wrongBlockCount = wrongBlock;
+        report.inlineCitationTotal = inlineTotal;
+        report.inlineCitationResolved = inlineResolved;
+        report.citationFabricatedCount = citationFabricated;
         report.results = results;
         report.categoryStats = categoryStats;
         report.summary = generateSummary(report);
@@ -330,6 +351,61 @@ public class EvaluationService {
     }
 
     /**
+     * 内联出处标记：提示词规则3（ChatController.SYSTEM_PROMPT）要求每条结论后写（摘自《文件名.pdf》块N）。
+     * 只认「摘自《...》块N」这一种——答案末尾模型自列的「引用来源清单」和代码拼的【引用来源】页脚不在其内，
+     * 它们是展示文本，不是逐句标注。正则与提示词教的那个形状由 InlineCitationJudgeTest 反射钉住。
+     */
+    private static final Pattern INLINE_CITATION = Pattern.compile("摘自《([^》]+)》块\\s*(\\d+)");
+
+    /** total=内联引用条数；resolved=落在当次送进模型的块上的条数；fabricated=没落上的块主键（去重）；evidence=报告用的一句话。 */
+    record InlineCitationVerdict(int total, int resolved, List<String> fabricated, String evidence) {
+    }
+
+    /**
+     * 句子级出处核对（2026-11-09 起，诊断项，暂不计入 isAllPass）：把答案里每条「摘自《文件名》块N」的内联引用，
+     * 对照本次真正送进模型的块（{@link #chunkKeyOf}）逐条核实。落在上下文块上=模型至少抄到了真送给它的出处；
+     * 落不上=编造块号/文件名（或抄错），记为可疑。这补的是「引用行是代码拼的、判分只查文档名子串」证明不了模型真读了资料那个口子。
+     * <p>
+     * 为什么用原始答案而不是 {@link #normalizeForMatch}：文件名里含 '-'（如 02-WHO成人高血压药物治疗指南2021.pdf），
+     * 归一会把 '-' 并成 '~'，块主键就对不上了。块号是纯数字、文件名照抄上下文头，所以原始文本逐字比即可。
+     * <p>
+     * 边界（别当全量保证）：这一层只验「引用的块真送过」，不验「那句话的内容真出自该块」——内容级核对是下一层，
+     *  paraphrase 会让逐字比失效，没拿到全量数据前不拍一个易误伤的判据。负样本拒答没有内联引用，total=0 如实报。
+     */
+    static InlineCitationVerdict judgeInlineCitations(String rawAnswer,
+                                                      List<org.springframework.ai.document.Document> docs) {
+        Set<String> contextKeys = new HashSet<>();
+        if (docs != null) {
+            for (org.springframework.ai.document.Document d : docs) {
+                contextKeys.add(chunkKeyOf(d));
+            }
+        }
+        int total = 0;
+        int resolved = 0;
+        List<String> fabricated = new ArrayList<>();
+        Matcher m = INLINE_CITATION.matcher(rawAnswer == null ? "" : rawAnswer);
+        while (m.find()) {
+            total++;
+            String key = m.group(1).trim() + "#" + m.group(2);
+            if (contextKeys.contains(key)) {
+                resolved++;
+            } else if (!fabricated.contains(key)) {
+                fabricated.add(key);
+            }
+        }
+        String evidence;
+        if (total == 0) {
+            evidence = "答案没有「摘自《文件名》块N」式内联引用（旧格式或拒答），句子级出处无从核对";
+        } else if (fabricated.isEmpty()) {
+            evidence = "内联引用 " + total + " 条全部落在当次送进模型的块上";
+        } else {
+            evidence = "内联引用 " + total + " 条，" + resolved + " 条落在真块上，"
+                    + (total - resolved) + " 条编造/抄错，涉及块（没送进模型）" + fabricated;
+        }
+        return new InlineCitationVerdict(total, resolved, fabricated, evidence);
+    }
+
+    /**
      * 评估单个测试用例
      */
     private TestResult evaluateSingle(TestCase testCase) {
@@ -419,6 +495,13 @@ public class EvaluationService {
             failReasons.append("合规性未通过：答案包含诊断结论；");
         }
 
+        // 5. 句子级出处核对（诊断项，不计入 isAllPass）：内联引用是否落在当次真正送进模型的块上
+        InlineCitationVerdict cv = judgeInlineCitations(answer, trace.docs());
+        result.inlineCitationTotal = cv.total();
+        result.inlineCitationResolved = cv.resolved();
+        result.citationFabricatedSuspect = !cv.fabricated().isEmpty();
+        result.citationEvidence = cv.evidence();
+
         result.failReason = failReasons.toString();
         return result;
     }
@@ -486,6 +569,11 @@ public class EvaluationService {
                 .append(report.backfillSuspectCount).append("/").append(report.totalCount).append("\n");
         sb.append("有出处但出处不是答案块（没答到这道题对应的原文）：")
                 .append(report.wrongBlockCount).append("/").append(report.totalCount).append("\n");
+        sb.append("句子级出处口径（2026-11-09 起，诊断项不计入通过率）：答案里「摘自《文件名》块N」式内联引用共")
+                .append(report.inlineCitationTotal).append(" 条，落在当次送进模型的块上 ")
+                .append(report.inlineCitationResolved).append(" 条；有编造/抄错块（引用的块没送进模型）的题 ")
+                .append(report.citationFabricatedCount).append("/").append(report.totalCount)
+                .append("。此层只验「引用的块真送过」，不验「句子内容真出自该块」；旧报告无此行即为未核对。\n");
 
         // 列出失败用例
         List<TestResult> failed = new ArrayList<>();
