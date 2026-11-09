@@ -50,12 +50,6 @@ spring:
       chat:
         api-key: ${DASHSCOPE_API_KEY:demo-placeholder-not-sent}
 
-  langchain4j:
-    community:
-      dashscope:
-        chat-model:
-          api-key: ${DASHSCOPE_API_KEY:demo-placeholder-not-sent}
-
 app:
   pdf-path: ${DEMO_PDF_PATH:./data/pdfs}
 
