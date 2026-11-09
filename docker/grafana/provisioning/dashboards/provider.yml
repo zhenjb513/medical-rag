@@ -1,0 +1,13 @@
+apiVersion: 1
+
+providers:
+  - name: mkbai
+    orgId: 1
+    type: file
+    folder: ''
+    disableDeletion: false
+    updateIntervalSeconds: 10
+    # 看板在 UI 里改完不会回写这个文件，所以 UI 上的临时试验别当真——要留住就改仓库里这份再重启栈。
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

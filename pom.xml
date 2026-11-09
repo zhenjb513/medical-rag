@@ -12,7 +12,7 @@
     </parent>
 
     <groupId>org.example</groupId>
-    <artifactId>demoAI</artifactId>
+    <artifactId>mkbAI</artifactId>
     <version>1.0-SNAPSHOT</version>
 
     <properties>
@@ -27,9 +27,6 @@
         -->
         <spring-ai.version>1.1.2</spring-ai.version>
         <spring-ai-alibaba.version>1.1.2.3</spring-ai-alibaba.version>
-
-        <!-- LangChain4j 版本：使用阿里百炼官方文档推荐的 1.0.0-beta3 -->
-        <langchain4j.version>1.0.0-beta3</langchain4j.version>
     </properties>
 
     <dependencyManagement>
@@ -54,22 +51,6 @@
                 <scope>import</scope>
             </dependency>
 
-            <!-- LangChain4j BOM：统一管理 LangChain4j 核心模块版本 -->
-            <dependency>
-                <groupId>dev.langchain4j</groupId>
-                <artifactId>langchain4j-bom</artifactId>
-                <version>${langchain4j.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
-            <!-- LangChain4j Community BOM：社区维护的模块（DashScope 等）版本管理 -->
-            <dependency>
-                <groupId>dev.langchain4j</groupId>
-                <artifactId>langchain4j-community-bom</artifactId>
-                <version>${langchain4j.version}</version>
-                <type>pom</type>
-                <scope>import</scope>
-            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -79,7 +60,28 @@
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
 
-        <!-- ========== Spring AI 核心：ChatClient（必须！显式 version，防止 BOM 失效） ========== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
+        <!-- ========== Resilience4j 高可用：限流/熔断/重试，与 Micrometer 自动打通 ========== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.github.resilience4j</groupId>
+            <artifactId>resilience4j-spring-boot3</artifactId>
+            <version>2.3.0</version>
+        </dependency>
+
+        <!-- ========== Spring AI 核心：ChatClient ========== -->
         <!--
           经过对 spring-ai-client-chat-1.1.2.jar 的实际解压验证：
           org/springframework/ai/chat/client/ChatClient.class
@@ -130,7 +132,7 @@
             <version>${spring-ai-alibaba.version}</version>
         </dependency>
 
-        <!-- ========== JDBC + MySQL 驱动（连接本地 demoAI 数据库） ========== -->
+        <!-- ========== JDBC + MySQL 驱动（连接本地 mkbAI 数据库） ========== -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-jdbc</artifactId>
@@ -203,31 +205,58 @@
             <version>${spring-ai.version}</version>
         </dependency>
 
-        <!-- ========== LangChain4j 学习实验：核心 + DashScope + PgVector ========== -->
-        <!--
-          版本管理：langchain4j-bom 1.0.0-beta3（阿里百炼官方文档推荐版本）。
-          注意：此分支是 langchain4j-exp，Spring AI 原有依赖保留但不再主导，
-          两套框架并存，通过不同 Controller 路径（/chat vs /lc/chat）区分。
-        -->
+        <!-- ========== 多格式文档读取器（Word / Excel / Markdown） ========== -->
         <dependency>
-            <groupId>dev.langchain4j</groupId>
-            <artifactId>langchain4j</artifactId>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+            <version>5.2.5</version>
         </dependency>
         <dependency>
-            <groupId>dev.langchain4j</groupId>
-            <artifactId>langchain4j-community-dashscope</artifactId>
+            <groupId>com.vladsch.flexmark</groupId>
+            <artifactId>flexmark-all</artifactId>
+            <version>0.64.8</version>
+        </dependency>
+
+        <!-- ========== Spring Security：session 级登录鉴权 ========== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
+        </dependency>
+
+        <!-- ========== Redis + 连接池：缓存 Embedding / BM25 / 多轮对话 ========== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-redis</artifactId>
         </dependency>
         <dependency>
-            <groupId>dev.langchain4j</groupId>
-            <artifactId>langchain4j-community-dashscope-spring-boot-starter</artifactId>
+            <groupId>org.apache.commons</groupId>
+            <artifactId>commons-pool2</artifactId>
         </dependency>
+
+        <!-- ========== JSR-303 参数校验：@NotBlank / @Min / @Valid ========== -->
         <dependency>
-            <groupId>dev.langchain4j</groupId>
-            <artifactId>langchain4j-pgvector</artifactId>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-validation</artifactId>
         </dependency>
+
+        <!-- ========== Swagger / OpenAPI 3.0 接口文档 ========== -->
         <dependency>
-            <groupId>dev.langchain4j</groupId>
-            <artifactId>langchain4j-spring-boot-starter</artifactId>
+            <groupId>org.springdoc</groupId>
+            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
+            <version>2.8.8</version>
+        </dependency>
+
+        <!-- ========== RabbitMQ 异步消息 ========== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+
+        <!-- ========== Spring Boot Test（集成测试用） ========== -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
         </dependency>
 
         <!-- ========== 中文分词：BM25 关键词召回用（portable 版把词典打包在 jar 里，不需要 external data） ========== -->
@@ -244,6 +273,67 @@
             <scope>test</scope>
         </dependency>
     </dependencies>
+
+    <!--
+      没有这一段时 mvn package 只出普通 thin jar（依赖不在里面），既不能 java -jar 也做不了镜像，
+      唯一能跑的方式是 IDEA 里执行 org.example.Main —— 别人 clone 完是跑不起来的（2026-10-22 补）。
+      版本和 repackage 执行都由 spring-boot-starter-parent 托管，这里只点名主类。
+    -->
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <mainClass>org.ragai.Main</mainClass>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.12</version>
+                <executions>
+                    <execution>
+                        <id>default-prepare-agent</id>
+                        <goals>
+                            <goal>prepare-agent</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>default-report</id>
+                        <phase>test</phase>
+                        <goals>
+                            <goal>report</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>default-check</id>
+                        <goals>
+                            <goal>check</goal>
+                        </goals>
+                        <configuration>
+                            <rules>
+                                <rule>
+                                    <limits>
+                                        <limit>
+                                            <counter>LINE</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.20</minimum>
+                                        </limit>
+                                        <limit>
+                                            <counter>BRANCH</counter>
+                                            <value>COVEREDRATIO</value>
+                                            <minimum>0.15</minimum>
+                                        </limit>
+                                    </limits>
+                                </rule>
+                            </rules>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
 
     <repositories>
         <repository>

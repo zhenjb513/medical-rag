@@ -1,0 +1,57 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build:
+    name: Build & Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    # step 级的 shell 拿不到 matrix 上下文（GitHub 解析期直接报 Unrecognized named-value），
+    # 所以三档统一用 bash：windows-latest 预装 Git Bash，跑 ./mvnw 这个 shell 脚本没问题。
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      - name: Make mvnw executable (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: chmod +x mvnw
+
+      - name: Run tests
+        run: |
+          ./mvnw test -B --no-transfer-progress
+        env:
+          MAVEN_OPTS: "-Xmx1024m"
+
+      - name: Build jar
+        run: |
+          ./mvnw package -DskipTests -B --no-transfer-progress
+        env:
+          MAVEN_OPTS: "-Xmx1024m"
+
+      - name: Upload jar artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mkbAI-${{ runner.os }}
+          path: target/*.jar
+          if-no-files-found: error

@@ -44,3 +44,6 @@ build/
 src/main/resources/application-local.yml
 src/main/resources/application-local.properties
 scratch/
+
+### 评测报告落盘（跑一轮全量是真金白银，文件别混进提交）###
+/data/eval-reports/

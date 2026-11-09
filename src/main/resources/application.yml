@@ -19,8 +19,44 @@ spring:
 
   # ====== 主数据源：本地 MySQL（业务数据：耗材库存 consumables 表） ======
   datasource:
-    url: jdbc:mysql://localhost:3306/demoAI?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    url: jdbc:mysql://localhost:3306/mkbAI?useUnicode=true&characterEncoding=utf8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
     driver-class-name: com.mysql.cj.jdbc.Driver
+
+  # ====== Redis 缓存（Embedding / BM25 检索结果 / 多轮对话上下文） ======
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      database: 0
+      timeout: 5000ms
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+          max-wait: 3000ms
+
+  # ====== Spring Cache 启用 Redis 实现 ======
+  cache:
+    type: redis
+
+  # ====== RabbitMQ 异步消息 ======
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
+    virtual-host: /
+    listener:
+      simple:
+        ack-mode: manual
+        prefetch: 1
+        concurrency: 2
+        max-concurrency: 4
+        retry:
+          enabled: true
+          max-attempts: 3
+          initial-interval: 2000ms
 
   # ====== 阿里云百炼 DashScope AI 配置 ======
   ai:
@@ -123,6 +159,39 @@ app:
     #    而「火星上有没有心血管病指南」这种明显域外的问题 top1 有 0.194，两者分不开。
     #    判定能不能答只用上面那个 answer-floor（看向量通道第一名），重排分只负责排序。
 
+    # ====== 查询扩展（口语→指南术语映射，只作用于召回通道）======
+    #不配时用代码内置 6 条规则（坏胆固醇/血糖/全家/遗传/WHO/世界卫生组织），
+    #配置了就完全覆盖内置规则（不是追加）。trigger 是触发子串，terms 是补进去的指南术语列表。
+    #示例（全部 3 条字段）：
+    # query-expander:
+    #   rules:
+    #     - trigger: 坏胆固醇
+    #       terms: [低密度脂蛋白胆固醇, LDL-C]
+    #     - trigger: 血糖
+    #       terms: [糖尿病]
+    query-expander:
+      rules:
+        - trigger: 坏胆固醇
+          terms: [低密度脂蛋白胆固醇, LDL-C]
+        - trigger: 血糖
+          terms: [糖尿病]
+        - trigger: 全家
+          terms: [家族性高胆固醇血症, FH]
+        - trigger: 遗传
+          terms: [家族性高胆固醇血症, FH]
+        - trigger: WHO
+          terms: [hypertension, blood pressure, target]
+        - trigger: 世界卫生组织
+          terms: [hypertension, blood pressure, target]
+
+  evaluation:
+    # 端到端评估（GET /evaluation/run）跑完一轮，报告 JSON 顺手写到这个目录，
+    # 文件名 report-<写入时刻>-<taskId>.json，内容和 GET /evaluation/status/{taskId} 的回执逐字一致。
+    # 存在的理由：回执只在内存里，重启即失，而一次全量 61 题的钱已经花掉了（2026-10-12 那次就是这么丢的）。
+    # 相对路径按启动目录算。目录建不出来（权限/同名文件挡路）只打一条 warn，
+    # 不会把已经跑完、钱已经花掉的那一轮判成 FAILED，内存回执照样完整。
+    report-dir: ./data/eval-reports
+
   pgvector:
     # ✨ 关键开关 ✨
     #   false → SimpleVectorStore（内存向量库，默认，开箱即用，重启会清空向量）
@@ -130,10 +199,10 @@ app:
     enabled: true
 
     # --- 以下仅当 enabled=true 才生效 ---
-    jdbc-url: jdbc:postgresql://localhost:5432/postgres?charSet=UTF8&stringtype=unspecified&prepareThreshold=0
+    jdbc-url: jdbc:postgresql://127.0.0.1:5432/postgres?charSet=UTF8&stringtype=unspecified&prepareThreshold=0
       # 参数说明：
       #   charSet=UTF8             → PostgreSQL JDBC 驱动强制 UTF-8（和 MySQL 的 characterEncoding 参数名不同！）
-      #   stringtype=unspecified   → 传 String 给 setString 不声明 varchar 类型，让 PG 按目标列类型隐式转换，避免一次多余的编码转换
+    #   stringtype=unspecified   → 传 String 给 setString 不声明 varchar 类型，让 PG 按目标列类型隐式转换，避免一次多余的编码转换
     #   prepareThreshold=0       → 关闭服务器端预编译语句缓存，避免一些旧版 PG JDBC 驱动和 pgvector 扩展的缓存串话问题
     driver-class-name: org.postgresql.Driver
     schema-name: public
@@ -146,3 +215,79 @@ app:
     schema-validation: false
     # 重建 vector_store 表开关：true=启动时先清空并重建表（重新入库所有 PDF），false=保留现有数据增量入库
     reset-table: false
+
+  # ====== 安全鉴权 ======
+  # API Key 鉴权（和 Spring Security session 二选一，任一通过即可放行 API）
+  security:
+    # 逗号分隔的 API Key 列表（为空时只允许 session 登录）
+    api-keys: ""
+    # 内置账号（demo 级，不建数据库表）
+    users:
+      - username: admin
+        password: admin123
+        roles: [ADMIN]
+      - username: doctor
+        password: doctor123
+        roles: [USER]
+    # 是否开启 Spring Security 登录鉴权（false=完全关闭，只靠 ApiKeyFilter）
+    form-login-enabled: true
+
+  # ====== 应用级限流 ======
+  rate-limit:
+    enabled: true
+    rpm: 60
+
+resilience4j:
+  # ====== 限流：接口级令牌桶 ======
+  ratelimiter:
+    configs:
+      default:
+        limit-for-period: 20          # 每个周期（1s）允许 20 个请求
+        limit-refresh-period: 1s       # 1 秒一个周期
+        timeout-duration: 0            # 超过直接拒绝，不等待
+    instances:
+      chatRateLimiter:
+        base-config: default
+
+  # ====== 熔断：LLM 连续失败 → 熔断降级 ======
+  circuitbreaker:
+    configs:
+      default:
+        sliding-window-type: COUNT_BASED      # 按请求数统计
+        sliding-window-size: 20              # 20 个请求为一个窗口
+        minimum-number-of-calls: 5           # 至少 5 个请求才开始算失败率
+        failure-rate-threshold: 50            # 失败率 ≥ 50% → 打开
+        wait-duration-in-open-state: 30s      # 打开 30 秒后进入半开
+        permitted-number-of-calls-in-half-open-state: 5  # 半开放行 5 个请求探测
+        automatic-transition-from-open-to-half-open-enabled: true
+    instances:
+      llmCircuitBreaker:
+        base-config: default
+
+  # ====== 重试：向量检索偶发失败 → 指数退避 ======
+  retry:
+    configs:
+      default:
+        max-attempts: 3                      # 共 3 次（1 原试 + 2 重试）
+        wait-duration: 1s                    # 初始间隔 1s
+        enable-exponential-backoff: true     # 指数退避
+        exponential-backoff-multiplier: 2    # 间隔翻倍：1s → 2s
+        retry-exceptions:
+          - java.net.SocketTimeoutException
+          - org.springframework.dao.DataAccessException
+    instances:
+      retrievalRetry:
+        base-config: default
+
+  # ====== 与 Micrometer 自动打通 ======
+  metrics:
+    enabled: true
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus,resilience4j
+  endpoint:
+    health:
+      show-details: when-authorized
