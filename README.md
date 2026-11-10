@@ -37,18 +37,17 @@ flowchart LR
 |---|---|---|
 | JDK | 21 LTS | 编译运行 |
 | Spring Boot | 3.5.10 | 后端框架（父 POM） |
-| Spring AI | 1.1.2 | ChatClient、VectorStore 抽象、`@Tool`、TokenTextSplitter、PagePdfDocumentReader |
-| Spring AI Alibaba | 1.1.2.3 | DashScope 实现（ChatModel + EmbeddingModel） |
+| LangChain4j | 1.0.0-beta3 | ChatLanguageModel、EmbeddingStore 抽象、`@Tool`/`@P`、DocumentSplitters、AiServices |
+| LangChain4j Community | 1.0.0-beta3 | DashScope 实现（ChatLanguageModel + EmbeddingModel） |
 | 阿里云百炼 | qwen-plus / text-embedding-v3(1024维) / gte-rerank-v2 | 生成 / 向量化 / 交叉编码重排 |
 | PostgreSQL + pgvector | PG 17 + pgvector 扩展 | 向量库（vector_store 表）+ 自建 BM25 倒排（bm25_docs / bm25_postings） |
 | MySQL | 8.0 | 业务库（耗材库存 consumables 表 + PHI 审计 phi_audit_log 表） |
 | Tesseract OCR | 5.x (chi_sim+eng) | 扫描件图像识别兜底 |
 | HanLP | portable-1.8.4 | BM25 中文分词（词典打包在 jar 里，无需外部数据） |
-| LangChain4j | 1.0.0-beta3 | 并存实验链路（`/lc/*`），与 `/chat` 走两套框架 |
-| PDFBox | 随 Spring AI pdf-reader | PDF 文字层抽取 |
+| PDFBox | 2.0.32（随 langchain4j-document-parser-apache-pdfbox） | PDF 文字层抽取 |
 | JUnit 5 | — | 171 条纯逻辑单测，不连库不打模型 |
 
-> 版本配套硬约束：Spring AI Alibaba 1.1.2.3 的 pom 里直接硬编码了 Spring Boot 3.5.10 + Spring AI 1.1.2，不要随意升级。
+> 版本配套硬约束：LangChain4j 1.0.0-beta3 是较早期的 beta 版本，API 与 1.0.0 稳定版有差异（如 `ChatModel` 接口方法名为 `chat()` 而非 `generate()`，返回 `ChatResponse` 而非 `Response<AiMessage>`），升级前需逐文件核对。
 
 ---
 
@@ -133,9 +132,16 @@ spring:
   datasource:
     username: root
     password: <你的 MySQL 密码>
-  ai:
+
+langchain4j:
+  community:
     dashscope:
-      api-key: <你的阿里云百炼 API Key>
+      chat-model:
+        api-key: <你的阿里云百炼 API Key>
+        model-name: qwen-plus
+      embedding-model:
+        api-key: <你的阿里云百炼 API Key>
+        model-name: text-embedding-v3
 
 app:
   pgvector:
@@ -151,16 +157,15 @@ app:
 server:
   port: 8080
 
-spring:
-  ai:
+langchain4j:
+  community:
     dashscope:
-      chat:
-        options:
-          model: qwen-plus
-          temperature: 0.7
-      embedding:
-        options:
-          model: text-embedding-v3       # ⚠️ 默认 1024 维（v2 才是 1536 维）
+      chat-model:
+        api-key: ${DASHSCOPE_API_KEY:}
+        model-name: qwen-plus
+      embedding-model:
+        api-key: ${DASHSCOPE_API_KEY:}
+        model-name: text-embedding-v3       # ⚠️ 默认 1024 维（v2 才是 1536 维）
 
 app:
   pdf-path: D:/ai-docs                   # PDF 目录（启动扫描 + 运行热监听）
@@ -185,7 +190,7 @@ app:
     report-dir: ./data/eval-reports      # 端到端评估跑完一轮，报告 JSON 顺手落这里（回执只在内存里，重启即失）
 
   pgvector:
-    enabled: true                        # false = SimpleVectorStore 内存库
+    enabled: true                        # false = 内存 EmbeddingStore（无持久化）
     dimensions: 1024                     # ⚠️ 必须严格匹配模型输出维度
     reset-table: false                   # 清空重建改 true 启动一次即可
 ```
@@ -256,7 +261,7 @@ CI 每次 push 自动跑：仓库镜像在 GitHub（`zhenjb513/medical-rag`）�
 
 ![运行诊断界面](docs/web-diag-new.png)
 
-2026-11-05 本机真实后端的 `/rag/diag` 响应原文渲染：PgVectorStore、501 块 / 4 份、BM25 501 docs、OCR 就绪，逐份体检的 `77/77 184/184 167/167 73/73` 是「库里块数 / 磁盘重抽块数」对上了才算齐。
+2026-11-05 本机真实后端的 `/rag/diag` 响应原文渲染：PgVectorEmbeddingStore、501 块 / 4 份、BM25 501 docs、OCR 就绪，逐份体检的 `77/77 184/184 167/167 73/73` 是「库里块数 / 磁盘重抽块数」对上了才算齐。
 
 ---
 
@@ -325,7 +330,7 @@ flowchart TD
 
     subgraph "大模型生成 (qwen-plus)"
         K --> L["buildSystemPrompt<br>5 条医疗合规规则"]
-        L --> M["ChatClient.call<br>.tools(inventoryService)"]
+        L --> M["ChatLanguageModel.chat<br>+ ToolSpecifications.toolSpecificationsFrom"]
     end
 
     M -->|模型决定调工具| N[("MySQL consumables 表")]
@@ -381,13 +386,13 @@ flowchart TD
 
     F["sanitizeExtractedText<br>清控制字符/水印/fmx_…连字符归一→'-'"]
 
-    F --> G["TokenTextSplitter<br>chunkSize=512 tokens"]
+    F --> G["DocumentSplitters.recursive<br>chunkSize=512 字"]
     G --> H{"② content_hash + chunk 数<br>正文没变?"}
     H -->|是| I["⏭️ 跳过重灌<br>只回写 file_hash"]
     H -->|否| J["③ 真重灌<br>deleteStoredSourceRows 先按 source 删旧块<br>删除数≤0 直接中止"]
 
     J --> K["DashScope Embedding<br>text-embedding-v3<br>每批≤10 chunks（官方硬限制）"]
-    K --> L[("PgVector vector_store")]
+    K --> L[("PgVector EmbeddingStore<br>PgVectorEmbeddingStore")]
     L --> M["BM25 倒排刷新<br>启动: rebuildAll 全量对账<br>热监听: refreshSource 按份增量"]
 
     style C fill:#d1e7dd,stroke:#0f5132
@@ -475,9 +480,9 @@ score = Σ weight / (rrfK + rank)
 
 指南里「140/90」这类数值常在表格里被切开，命中块本身句子不完整。把命中块的前后各一块补进上下文，总块数不超过 `max-context-chunks: 16`，名额不够时按命中块名次优先。
 
-## 为什么弃用 QuestionAnswerAdvisor 改手动控制
+## 为什么不用 RAG Advisor 改手动控制
 
-Spring AI 自带的 `QuestionAnswerAdvisor` 只有一次 `similaritySearch`，阈值和上下文组装全吞进去了。而本项目需要：
+LangChain4j 自带的 `RetrievalAugmentor` / `RetrievalAdvisor` 只有单次 `retrieve`，阈值和上下文组装全吞进去了。而本项目需要：
 
 - 闸门在 BM25 融合**之前**判
 - 引用落到**块级**（chunk_index）
@@ -536,7 +541,7 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 |---|---|---|
 | `GET /chat?message=` | 向量化 + 重排 + 生成（过闸门时） | 主问答：PHI 脱敏 → 混合检索 → 闸门 → 重排 → 邻居扩展 → 生成 + 引用拼接 |
 | `GET /rag/chunk?file=&chunk=` | **无** | 引用回读：原文 + PDF 物理页 + 页脚印码 + 章节号 |
-| `GET /rag/diag?deep=` | **无** | 运行时体检 JSON：VectorStore 类型、OCR 就绪、入库流水、BM25 对账、PHI 审计表、库存 DB 连通、PgVector 状态 |
+| `GET /rag/diag?deep=` | **无** | 运行时体检 JSON：EmbeddingStore 类型、OCR 就绪、入库流水、BM25 对账、PHI 审计表、库存 DB 连通、PgVector 状态 |
 
 ## 评测
 
@@ -565,12 +570,15 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | `GET /bm25/locate?phrase=&limit=` | **原文逐字定位**（考卷答案块标注用的） |
 | `GET /bm25/rebuild` | 手动全量重建兜底 |
 
-## LangChain4j 并存实验（`/lc/*`）
+## LangChain4j RAG 实验链路（`/lc/*`）
 
-> 这组**不接 RAG 检索链路**，是 LangChain4j AiServices + `@Tool` 用法演示，和 `/chat` 走两套框架。
+> 这组是 LangChain4j 独立 RAG 实现（`service/langchain4j/`），与 `/chat` 主链路功能等价但代码独立，用于框架对照与演进验证。
 
 | 接口 | 场景 |
 |---|---|
+| `/lc/rag/ask` | 端到端 RAG 问答（混合检索 + 重排 + 生成） |
+| `/lc/rag/ingest` | 文档入库（PDF → 切块 → Embedding → PgVector） |
+| `/lc/rag/health` | 向量库健康检查 |
 | `/lc/chat` | 医疗耗材助手角色 |
 | `/lc/chat/doctor` | 心内科主治医师（纯模型知识） |
 | `/lc/chat/safe` | Prompt Injection 防御（红队测试） |
@@ -605,7 +613,7 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | 中国血脂管理指南2023年.pdf | 含 LDL-C / 非 HDL-C 目标值 |
 | 02-WHO成人高血压药物治疗指南2021.pdf | 英文指南，QueryExpander 中英文桥命中用 |
 
-每份指南的实际块数按入库时 TokenTextSplitter 的切分结果为准，重灌库会变化——考卷的答案块标注（`文件名#块号`）每次重灌后用 `/bm25/locate` 原文逐字重标。
+每份指南的实际块数按入库时 DocumentSplitters.recursive 的切分结果为准，重灌库会变化——考卷的答案块标注（`文件名#块号`）每次重灌后用 `/bm25/locate` 原文逐字重标。
 
 ## 四维判定口径
 
@@ -680,14 +688,14 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | **answer-floor 只判向量 top1** | 闸门要在融合之前判（一旦 RRF 之后分数是名次凑出来的），且只判向量通道有意义的余弦 | `HybridRetrievalService.hasEvidence` |
 | **重排分不参与闸门** | gte-rerank-v2 的分数量纲和向量余弦不同，拿它当判据会错放错杀 | `application.yml` L122-124 |
 | **queryExpander 在检索侧补术语** | 患者口语（「坏胆固醇」「血糖偏高」）在指南里写的是规范术语；中英文桥让 WHO 那份英文指南能被中文问句召回 | `QueryExpander` |
-| **库存工具返回文字分态** | 以前异常一律吞成 0，模型答「缺货」，实则连错库；现在分「有货 N 件 / 未登记 / 查询不可用 / 没给名称」——最后一条是 2026-11-04 补的，实测 Spring AI 1.1.2 不校验 schema 的 `required`，模型缺参调用照样进方法，空串名去查会被误报成「库里没登记」 | `InventoryService` |
+| **库存工具返回文字分态** | 以前异常一律吞成 0，模型答「缺货」，实则连错库；现在分「有货 N 件 / 未登记 / 查询不可用 / 没给名称」——最后一条是 2026-11-04 补的，实测 LangChain4j 1.0.0-beta3 不校验 schema 的 `required`，模型缺参调用照样进方法，空串名去查会被误报成「库里没登记」 | `InventoryService` |
 | **PHI 审计只存四列、不落原文** | 存原文=聊天日志，本身就是一次数据泄露；只存 message_hash + 类型:条数就够了 | `PhiAuditService` |
-| **弃用 QuestionAnswerAdvisor 改手动** | Advisor 只有一次 similaritySearch，本项目需要：闸门在 BM25 融合之前、引用落到块级、QueryExpander 介入、重排失败能退回 | `ChatController` L65-67 |
+| **弃用 RAG Advisor 改手动** | Advisor 只有一次 retrieve，本项目需要：闸门在 BM25 融合之前、引用落到块级、QueryExpander 介入、重排失败能退回 | `ChatController` |
 | **页码/章节号读时现算不入库** | 入库是整篇抽成一条流再切块，metadata 只有 page_count；存页码要重灌库 | `PdfPageLocator` / `SectionIndex` |
 | **章节号宁缺毋滥** | 认不出来就明说、绝不猜；4 块顺序存疑就整行不给号——给错号比不给更坏 | `SectionIndex.describe` |
 | **WatchService 处理 CREATE/MODIFY，不处理 ENTRY_DELETE** | 删档钩子没实现，PDF 被外部删掉后向量库和 BM25 倒排里的旧块不会自动清理 | WatchService 线程 |
 | **DashScope Embedding 每批 ≤10** | 官方硬限制，`DASHSCOPE_EMBEDDING_MAX_BATCH = 10` | `RagInitializer` L98 |
-| **PDF 不用 Spring AI 的 PagePdfDocumentReader** | 其版面坐标排序 Comparator 不满足 Java TimSort 合约，复杂 PDF（双栏/表格/OCR 扫描件）会抛 `Comparison method violates its general contract` | `RagInitializer` 类头 |
+| **PDF 不用 PagePdfDocumentReader** | 其版面坐标排序 Comparator 不满足 Java TimSort 合约，复杂 PDF（双栏/表格/OCR 扫描件）会抛 `Comparison method violates its general contract` | `RagInitializer` 类头 |
 
 ---
 
@@ -744,9 +752,7 @@ System Prompt 没有「不要用 Markdown」约束，前端也**不渲染 Markdo
 |---|---|---|
 | JDK | 21 | 必须 |
 | Spring Boot | 3.5.10 | 父 POM，硬约束 |
-| Spring AI | 1.1.2 | ChatClient / VectorStore / @Tool |
-| Spring AI Alibaba | 1.1.2.3 | DashScope 实现，**硬编码依赖 Boot 3.5.10 + Spring AI 1.1.2** |
-| LangChain4j | 1.0.0-beta3 | `/lc/*` 实验链路；社区 BOM |
+| LangChain4j | 1.0.0-beta3 | 主框架（`/chat` + `/lc/*`）；社区 BOM |
 | pgvector JDBC | 0.1.6 | 客户端驱动版本 |
 | MySQL Connector | 9.5.0 | |
 
