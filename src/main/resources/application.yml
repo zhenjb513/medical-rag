@@ -58,25 +58,7 @@ spring:
           max-attempts: 3
           initial-interval: 2000ms
 
-  # ====== 阿里云百炼 DashScope AI 配置 ======
-  ai:
-    dashscope:
-      chat:
-        options:
-          model: qwen-plus
-          temperature: 0.7
-      # 百炼平台的 Embedding 模型（用于把文字变向量）
-      # ⚠️ 注意维度必须和 app.pgvector.dimensions 严格一致：
-      #     text-embedding-v3  默认 1024 维（可选 512/1024/2048，**不支持 1536**！）
-      #     text-embedding-v2  默认 1536 维
-      embedding:
-        options:
-          model: text-embedding-v3
-
   # ====== LangChain4j 配置（本分支主框架）======
-  # 与上面的 spring.ai.alibaba.dashscope 并存但互不干扰：
-  #   Spring AI 侧前缀 spring.ai.alibaba.dashscope
-  #   LangChain4j 侧前缀 langchain4j.community.dashscope
   langchain4j:
     community:
       dashscope:
