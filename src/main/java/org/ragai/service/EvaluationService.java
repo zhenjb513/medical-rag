@@ -46,6 +46,8 @@ public class EvaluationService {
         public int inlineCitationResolved;// 其中落在当次真正送进模型的块上的条数
         public boolean citationFabricatedSuspect; // 有内联引用指向没送进模型的块 → 编造块号/文件名
         public String citationEvidence;   // 句子级出处核对的一句话结论
+        public boolean templateLeakSuspect;  // 答案把提示词示例（《文件名.pdf》块N、【文档N】）当内容抄了
+        public String templateLeakEvidence;  // 模板占位字核对的一句话结论
         public String failReason;         // 失败原因
 
         public boolean isAllPass() {
@@ -69,6 +71,7 @@ public class EvaluationService {
         public int inlineCitationTotal;    // 全卷内联引用条数合计
         public int inlineCitationResolved; // 全卷落在真块上的条数合计
         public int citationFabricatedCount;// 有编造/抄错内联引用的题数
+        public int templateLeakCount;      // 答案里漏出提示词模板占位字的题数
         public List<TestResult> results;
         public Map<String, Integer> categoryStats;
         public String summary;
@@ -99,6 +102,8 @@ public class EvaluationService {
         int wrongBlock = 0;
         // 句子级出处核对（诊断项）：内联引用条数、落在真块上的条数、有编造/抄错的题数
         int inlineTotal = 0, inlineResolved = 0, citationFabricated = 0;
+        // 模板占位字核对（诊断项）：模型把提示词里的示例格式当内容抄进答案的题数
+        int templateLeak = 0;
 
         // 逐题打印到标准输出：报告 body 只在 HTTP 响应里，客户端断线就拿不到了（2026-10-12 实测发生过一次），
         // 所以每题的判定和答案原文必须先落在服务端日志里，事后可以用脚本重建成报告。
@@ -124,6 +129,8 @@ public class EvaluationService {
                     + (result.wrongBlockSuspect ? "  ⚠️出处不在答案块" : ""));
             System.out.println("[逐题] #" + (i + 1) + "  出处核对=" + result.citationEvidence
                     + (result.citationFabricatedSuspect ? "  ⚠️内联引用编造/抄错" : ""));
+            System.out.println("[逐题] #" + (i + 1) + "  占位字核对=" + result.templateLeakEvidence
+                    + (result.templateLeakSuspect ? "  ⚠️抄了提示词模板" : ""));
             System.out.println("[逐题] #" + (i + 1) + "  答案=" + flatten(result.answer));
             if (result.accuracyPass) accuracyPass++;
             if (result.referencePass) referencePass++;
@@ -134,6 +141,7 @@ public class EvaluationService {
             inlineTotal += result.inlineCitationTotal;
             inlineResolved += result.inlineCitationResolved;
             if (result.citationFabricatedSuspect) citationFabricated++;
+            if (result.templateLeakSuspect) templateLeak++;
         }
 
         // 统计分类
@@ -159,6 +167,7 @@ public class EvaluationService {
         report.inlineCitationTotal = inlineTotal;
         report.inlineCitationResolved = inlineResolved;
         report.citationFabricatedCount = citationFabricated;
+        report.templateLeakCount = templateLeak;
         report.results = results;
         report.categoryStats = categoryStats;
         report.summary = generateSummary(report);
@@ -406,6 +415,41 @@ public class EvaluationService {
     }
 
     /**
+     * 提示词里的模板占位字：规则3 教的示例是（摘自《文件名.pdf》块N），上下文头长这样【文档1】xxx.pdf#块11。
+     * 只认这三种确定的占位形状。「上下文」这个词不认——正文正常说话也会用到，认了必误伤。
+     */
+    private static final Pattern TEMPLATE_PLACEHOLDER = Pattern.compile(
+            "《文件名(?:\\.pdf)?》|块\\s*[NnXx](?![0-9A-Za-z])|【文档\\s*\\d*】");
+
+    /** suspect=答案漏出了模板占位字；leaks=漏出的原样片段（去重）；evidence=报告用的一句话。 */
+    record TemplateLeakVerdict(boolean suspect, List<String> leaks, String evidence) {
+    }
+
+    /**
+     * 模板占位字核对（2026-11-09 起，诊断项，不计入 isAllPass）。
+     * 补的是 {@link #judgeInlineCitations} 的漏检：那条正则要求「块」后面跟数字，而模型抄出来的占位字是「块N」，
+     * 匹配不上，于是既不算引用也不算编造，报表上完全隐形。实测漏过一次：库存问答的答案里跟着
+     * 一行「（摘自《文件名.pdf》块N）」，而库存数来自工具、根本没有指南块可引（scratch/t10_answer2.txt）。
+     * <p>
+     * 边界：这一层只判「有没有把示例当内容抄」，不判内容级出处，也不因为命中就判该题挂——
+     * 命中频次和它跟哪类问题相关，留给全量跑的数据说话。
+     */
+    static TemplateLeakVerdict judgeTemplateLeak(String rawAnswer) {
+        List<String> leaks = new ArrayList<>();
+        Matcher m = TEMPLATE_PLACEHOLDER.matcher(rawAnswer == null ? "" : rawAnswer);
+        while (m.find()) {
+            String hit = m.group();
+            if (!leaks.contains(hit)) {
+                leaks.add(hit);
+            }
+        }
+        String evidence = leaks.isEmpty()
+                ? "答案里没有提示词模板占位字"
+                : "答案把提示词里的示例格式当内容抄了：" + leaks + "（不是真出处）";
+        return new TemplateLeakVerdict(!leaks.isEmpty(), leaks, evidence);
+    }
+
+    /**
      * 评估单个测试用例
      */
     private TestResult evaluateSingle(TestCase testCase) {
@@ -501,6 +545,9 @@ public class EvaluationService {
         result.inlineCitationResolved = cv.resolved();
         result.citationFabricatedSuspect = !cv.fabricated().isEmpty();
         result.citationEvidence = cv.evidence();
+        TemplateLeakVerdict tv = judgeTemplateLeak(answer);
+        result.templateLeakSuspect = tv.suspect();
+        result.templateLeakEvidence = tv.evidence();
 
         result.failReason = failReasons.toString();
         return result;
@@ -574,6 +621,10 @@ public class EvaluationService {
                 .append(report.inlineCitationResolved).append(" 条；有编造/抄错块（引用的块没送进模型）的题 ")
                 .append(report.citationFabricatedCount).append("/").append(report.totalCount)
                 .append("。此层只验「引用的块真送过」，不验「句子内容真出自该块」；旧报告无此行即为未核对。\n");
+        sb.append("模板占位字口径（2026-11-09 起，诊断项不计入通过率）：答案里漏出提示词示例格式（《文件名.pdf》/块N/【文档N】）的题 ")
+                .append(report.templateLeakCount).append("/").append(report.totalCount)
+                .append("。补的是内联引用核对的漏检——那条正则要求「块」后跟数字，抄出来的「块N」认不出，既不算引用也不算编造；")
+                .append("「上下文」一词不判，正文正常说话也会用到，判了必误伤。旧报告无此行即为未核对。\n");
 
         // 列出失败用例
         List<TestResult> failed = new ArrayList<>();

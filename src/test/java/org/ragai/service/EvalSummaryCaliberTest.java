@@ -84,6 +84,17 @@ class EvalSummaryCaliberTest {
     }
 
     @Test
+    @DisplayName("summary 里有模板占位字口径行（2026-11-09 诊断项）：写清补的是哪个漏检、哪个词刻意不判")
+    void templateLeakCaliberIsMarked() {
+        String summary = EvaluationService.generateSummary(report(true));
+        assertTrue(summary.contains("模板占位字口径"), "summary 没写这一行，旧报告分不出有没有核对占位字");
+        assertTrue(summary.contains("不计入通过率"));
+        assertTrue(summary.contains("《文件名.pdf》/块N/【文档N】"), "口径行要列出认哪三种占位形状");
+        assertTrue(summary.contains("那条正则要求「块」后跟数字"), "口径行要说明补的是内联引用核对的漏检");
+        assertTrue(summary.contains("「上下文」一词不判"), "刻意留的边界要写进报告，别以后当成漏判");
+    }
+
+    @Test
     @DisplayName("失败用例清单带上类别、题目和原因，报告不用翻日志就能读")
     void failedCasesAreListed() {
         String summary = EvaluationService.generateSummary(report(false));
