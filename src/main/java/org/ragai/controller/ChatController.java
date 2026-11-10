@@ -129,6 +129,22 @@ public class ChatController {
     }
 
     /**
+     * 引用列表为空就不拼页脚。检索闸门判定「这问题指南答不了」时 docs/refs 都是空的，
+     * 原来无条件拼标题，答案末尾会挂一个光杆「【引用来源】」（2026-11-09 库存问答实测，scratch/t10_answer2.txt）。
+     */
+    static String buildRefsBlock(List<String> refs) {
+        return refs == null || refs.isEmpty() ? "" : "\n\n【引用来源】\n" + String.join("\n", refs);
+    }
+
+    /** 前端一收到 refs 事件就画引用框（static/app.js 的 eventName === 'refs' 分支），所以空列表连事件都不发。 */
+    static Flux<ServerSentEvent<String>> refsAndDone(String refsBlock) {
+        ServerSentEvent<String> done = ServerSentEvent.<String>builder().data("[DONE]").event("done").build();
+        return refsBlock.isEmpty()
+                ? Flux.just(done)
+                : Flux.just(ServerSentEvent.<String>builder().data(refsBlock).event("refs").build(), done);
+    }
+
+    /**
      * 给评估链路用：跑完整 RAG 流程，但同时返回送进模型的 docs。
      * 这里刻意不挂工具——61 题考卷全是指南问答，挂上会让每题多走一次工具选择，历史基线就不再是同一口径。
      */
@@ -178,8 +194,7 @@ public class ChatController {
             String answer = chatClient.prompt(new Prompt(promptMessages)).tools(inventoryService).call().content();
             String finalAnswer = (answer == null || answer.isBlank())
                     ? RAG_REFUSAL_PHRASE : answer.trim();
-            String finalText = finalAnswer + "\n\n【引用来源】\n"
-                    + String.join("\n", refs);
+            String finalText = finalAnswer + buildRefsBlock(refs);
 
             if (sessionId != null && !sessionId.isBlank()) {
                 chatMemoryManager.appendTurn(sessionId, message, finalText);
@@ -240,14 +255,11 @@ public class ChatController {
                         return Flux.just("\n\n[生成中断：" + e.getMessage() + "]");
                     });
 
-            String refsBlock = "\n\n【引用来源】\n" + String.join("\n", refs);
+            String refsBlock = buildRefsBlock(refs);
 
             return tokenFlux
                     .map(token -> ServerSentEvent.<String>builder().data(token).build())
-                    .concatWith(Flux.just(
-                            ServerSentEvent.<String>builder().data(refsBlock).event("refs").build(),
-                            ServerSentEvent.<String>builder().data("[DONE]").event("done").build()
-                    ))
+                    .concatWith(refsAndDone(refsBlock))
                     .doOnCancel(() -> {
                         cancelled.set(true);
                         streamCancelCounter.increment();
@@ -327,7 +339,7 @@ public class ChatController {
             String ragContext = ragReferenceService.buildContext(docs);
             List<String> refs = ragReferenceService.extractReferences(docs);
             return "【服务降级】LLM 暂时不可用，以下为检索到的相关内容：\n\n"
-                    + ragContext + "\n\n【引用来源】\n" + String.join("\n", refs);
+                    + ragContext + buildRefsBlock(refs);
         } catch (Exception retryFail) {
             log.error("[CircuitBreaker] 降级也失败了", retryFail);
             return RAG_REFUSAL_PHRASE + "（检索也暂时不可用）";
@@ -352,12 +364,8 @@ public class ChatController {
             String ragContext = ragReferenceService.buildContext(docs);
             List<String> refs = ragReferenceService.extractReferences(docs);
             String fallbackText = "【服务降级】LLM 暂时不可用，以下为检索到的相关内容：\n\n" + ragContext;
-            String refsBlock = "\n\n【引用来源】\n" + String.join("\n", refs);
-            return Flux.just(
-                    ServerSentEvent.<String>builder().data(fallbackText).build(),
-                    ServerSentEvent.<String>builder().data(refsBlock).event("refs").build(),
-                    ServerSentEvent.<String>builder().data("[DONE]").event("done").build()
-            );
+            return Flux.just(ServerSentEvent.<String>builder().data(fallbackText).build())
+                    .concatWith(refsAndDone(buildRefsBlock(refs)));
         } catch (Exception retryFail) {
             log.error("[CircuitBreaker] 流式降级也失败了", retryFail);
             return Flux.just(
