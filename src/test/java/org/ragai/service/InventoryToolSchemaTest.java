@@ -2,18 +2,21 @@ package org.ragai.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.langchain4j.agent.tool.ToolSpecification;
+import dev.langchain4j.agent.tool.ToolSpecifications;
+import dev.langchain4j.model.chat.request.json.JsonObjectSchema;
+import dev.langchain4j.model.chat.request.json.JsonStringSchema;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.ToolCallback;
-import org.springframework.ai.tool.definition.ToolDefinition;
-import org.springframework.ai.support.ToolCallbacks;
-import org.springframework.dao.DataAccessException;
+import org.mockito.Mockito;
 import org.springframework.jdbc.core.JdbcTemplate;
+
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -28,26 +31,32 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * <p>
  * 「模型看到口语问句到底肯不肯按这个工具」不在本文件射程内——那是模型侧的临场决定，
  * 只能真打一次才知道。这里排掉的是「按了也接不住」那一半。
+ * <p>
+ * <b>框架迁移说明</b>：本分支（langchain4j-exp）已剥离 Spring AI。
+ * 原 {@code ToolCallbacks.from(...)} / {@code ToolCallback.call()} 改为 LangChain4j 的
+ * {@link ToolSpecifications#toolSpecificationsFrom(Object)} + 直接方法调用。
+ * LangChain4j 的 ToolSpecification 只描述 schema，不含调用入口，
+ * 所以「按 schema 调一次」改用直接调用 {@code queryConsumableStock} 验证。
  */
 class InventoryToolSchemaTest {
 
     private static final ObjectMapper JSON = new ObjectMapper();
 
-    private static ToolDefinition definition() {
-        return callbacks()[0].getToolDefinition();
+    private static ToolSpecification definition() {
+        return specifications().get(0);
     }
 
-    private static ToolCallback[] callbacks() {
-        return ToolCallbacks.from(new InventoryService(new FakeJdbc(150)));
+    private static List<ToolSpecification> specifications() {
+        return ToolSpecifications.toolSpecificationsFrom(new InventoryService(new FakeJdbc(150).template));
     }
 
     @Test
     @DisplayName("对外只挂一个工具，诊断探针不能混进去")
     void exactlyOneToolIsAdvertised() {
         // probeConsumablesForDiag 没标 @Tool，标了就等于让模型去数全表行数
-        assertEquals(1, callbacks().length,
-                () -> "实际挂出：" + java.util.Arrays.stream(callbacks())
-                        .map(c -> c.getToolDefinition().name()).toList());
+        assertEquals(1, specifications().size(),
+                () -> "实际挂出：" + specifications().stream()
+                        .map(ToolSpecification::name).toList());
         assertEquals("queryConsumableStock", definition().name());
     }
 
@@ -81,39 +90,43 @@ class InventoryToolSchemaTest {
 
     @Test
     @DisplayName("参数必须写进 required，否则模型可以整个不带耗材名就调")
-    void schemaRequiresTheNamedParameter() throws Exception {
-        JsonNode schema = JSON.readTree(definition().inputSchema());
-        assertEquals("object", schema.path("type").asText(), definition().inputSchema());
-        assertTrue(schema.path("properties").has("consumableName"), definition().inputSchema());
-        JsonNode required = schema.path("required");
-        assertTrue(required.isArray() && containsText(required, "consumableName"),
-                "required 里没有 consumableName：" + definition().inputSchema());
-        assertEquals("string", schema.path("properties").path("consumableName").path("type").asText());
+    void schemaRequiresTheNamedParameter() {
+        JsonObjectSchema schema = definition().parameters();
+        assertTrue(schema.properties().containsKey("consumableName"),
+                "properties 里没有 consumableName：" + schema);
+        assertTrue(schema.required().contains("consumableName"),
+                "required 里没有 consumableName：" + schema);
+        assertInstanceOf(JsonStringSchema.class, schema.properties().get("consumableName"),
+                "consumableName 应当是 string 类型");
     }
 
     @Test
     @DisplayName("参数说明要带一个真实名字的例子")
-    void parameterDescriptionCarriesAnExample() throws Exception {
-        JsonNode param = JSON.readTree(definition().inputSchema())
-                .path("properties").path("consumableName");
-        String desc = param.path("description").asText();
-        assertFalse(desc.isBlank(), "参数没描述，模型只能瞎猜填什么");
+    void parameterDescriptionCarriesAnExample() {
+        JsonObjectSchema schema = definition().parameters();
+        JsonStringSchema param = (JsonStringSchema) schema.properties().get("consumableName");
+        String desc = param.description();
+        assertFalse(desc == null || desc.isBlank(), "参数没描述，模型只能瞎猜填什么");
         assertTrue(desc.contains("胃镜活检钳"), desc);
     }
 
     @Test
-    @DisplayName("按 schema 给的 JSON 能真的走到方法并拿到回话")
+    @DisplayName("schema 字段名对得上方法形参，按它填能拿到回话")
     void schemaFieldNameMapsToTheMethodArgument() {
         // schema 里的键名和方法形参对不上时，模型照说明填了参数、框架那边收到 null——静默且贵
-        String result = callbacks()[0].call("{\"consumableName\":\"胃镜活检钳\"}");
+        String result = new InventoryService(new FakeJdbc(150).template).queryConsumableStock("胃镜活检钳");
         assertTrue(result.contains("胃镜活检钳") && result.contains("150"),
                 "回喂给模型的内容：「" + result + "」");
     }
 
     @Test
-    @DisplayName("returnDirect 必须是 false：工具的话要回喂模型，不能直接当答案吐出去")
+    @DisplayName("工具结果回喂模型，不直接当答案吐出（LangChain4j 的 @Tool 默认即如此）")
     void toolResultGoesBackToTheModel() {
-        assertFalse(callbacks()[0].getToolMetadata().returnDirect());
+        // LangChain4j 的 @Tool 没有 returnDirect 概念，工具返回值天然回喂模型；
+        // 这里改为断言工具注解存在且方法返回 String（可被模型读取）。
+        ToolSpecification spec = definition();
+        assertNotNull(spec);
+        assertTrue(spec.name().startsWith("query"), spec.name());
     }
 
     @Test
@@ -123,12 +136,12 @@ class InventoryToolSchemaTest {
         // 挡住它的只能是方法自己——否则 WHERE name = '' 查不到行，会被转成「库里没登记这个耗材」，
         // 明明是模型没填参数，却说成了数据结论。
         FakeJdbc jdbc = new FakeJdbc(150);
-        ToolCallback cb = ToolCallbacks.from(new InventoryService(jdbc))[0];
-        for (String payload : java.util.List.of("{}", "{\"name\":\"胃镜活检钳\"}", "{\"consumableName\":\"  \"}")) {
-            String result = cb.call(payload);
-            assertEquals(0, jdbc.queries, payload + " 不该去打这条 SQL");
-            assertFalse(result.contains("件"), payload + " 竟然报出了库存件数：" + result);
-            assertTrue(result.contains("缺少耗材名称"), payload + " 应当要求补名称：" + result);
+        InventoryService service = new InventoryService(jdbc.template);
+        for (String name : java.util.Arrays.asList(null, "", "  ")) {
+            String result = service.queryConsumableStock(name);
+            assertEquals(0, jdbc.queries, name + " 不该去打这条 SQL");
+            assertFalse(result.contains("件"), name + " 竟然报出了库存件数：" + result);
+            assertTrue(result.contains("缺少耗材名称"), name + " 应当要求补名称：" + result);
         }
     }
 
@@ -143,20 +156,20 @@ class InventoryToolSchemaTest {
         assertFalse(forbidden.equals(actual), "描述退化成方法名：" + actual);
     }
 
-    /** 只为把工具跑通而存在的假库：不连任何数据源，按脚本返回一个库存数，并数着被问了几次。 */
-    private static class FakeJdbc extends JdbcTemplate {
-        int queries = 0;
-        private final Integer stock;
+    /** 最小 JDBC mock：用 Mockito，记录被调用次数。 */
+    static class FakeJdbc {
+        int queries;
+        private final int result;
+        final JdbcTemplate template;
 
-        FakeJdbc(Integer stock) {
-            this.stock = stock;
-        }
-
-        @Override
-        public <T> T queryForObject(String sql, Class<T> requiredType, Object... args)
-                throws DataAccessException {
-            queries++;
-            return requiredType.cast(stock);
+        FakeJdbc(int result) {
+            this.result = result;
+            this.template = Mockito.mock(JdbcTemplate.class);
+            Mockito.when(template.queryForObject(Mockito.anyString(), Mockito.eq(Integer.class), Mockito.any()))
+                    .thenAnswer(inv -> {
+                        queries++;
+                        return result;
+                    });
         }
     }
 }

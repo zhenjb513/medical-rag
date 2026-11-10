@@ -3,7 +3,8 @@ package org.ragai.config;
 import org.ragai.service.RagReferenceService;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.document.Document;
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.segment.TextSegment;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -30,7 +31,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class DemoExtractiveModelTest {
 
-    private static final RagReferenceService REF_SVC = new RagReferenceService(null);
+    private static final RagReferenceService REF_SVC = new RagReferenceService();
     private static final DemoModelConfig.ExtractiveChatModel GEN = new DemoModelConfig.ExtractiveChatModel();
 
     private static Document doc(String file, long chunkIndex, String text) {
@@ -38,7 +39,7 @@ class DemoExtractiveModelTest {
         meta.put("source", "/data/pdf/" + file);
         meta.put("file_name", file);
         meta.put("chunk_index", chunkIndex);
-        return new Document("id-" + file + "-" + chunkIndex, text, meta);
+        return Document.from(text, metaWithId("id-" + file + "-" + chunkIndex, meta));
     }
 
     /** 走和 ChatController 一样的两步：buildContext → buildSystemPrompt，再把整段喂给假生成。 */
@@ -114,16 +115,16 @@ class DemoExtractiveModelTest {
     @DisplayName("假向量确定可复现：同串两次一致、非空向量 L2 归一化、空串全零不 NaN")
     void hashingEmbeddingIsDeterministicAndNormalized() {
         DemoModelConfig.HashingEmbeddingModel model = new DemoModelConfig.HashingEmbeddingModel(1024);
-        float[] a = model.embed("血压达标后每 3 个月随访一次");
-        float[] b = model.embed("血压达标后每 3 个月随访一次");
+        float[] a = model.embedAll(List.of(TextSegment.from("血压达标后每 3 个月随访一次"))).content().get(0).vector();
+        float[] b = model.embedAll(List.of(TextSegment.from("血压达标后每 3 个月随访一次"))).content().get(0).vector();
         assertArrayEquals(a, b, "同一句算出两个向量，说明假向量不可复现，换机器重灌会让已有向量全作废");
-        assertEquals(1024, model.dimensions());
+        assertEquals(1024, model.dimension());
 
         double sum = 0;
         for (float x : a) sum += (double) x * x;
         assertEquals(1.0, Math.sqrt(sum), 1e-5, "没归一化的话余弦会被句长带偏，闸门阈值就没法按实测定");
 
-        float[] zero = model.embed("");
+        float[] zero = DemoModelConfig.vectorize("", 1024);
         for (float x : zero) {
             assertFalse(Float.isNaN(x), "空文本必须给全零向量，不能出 NaN");
             assertEquals(0f, x);
@@ -137,5 +138,21 @@ class DemoExtractiveModelTest {
         assertTrue(two.contains("血压"), () -> "双字组丢了：" + two);
         assertTrue(two.contains("压"), () -> "末尾单字没补一元组：" + two);
         assertEquals(Set.of("血"), DemoModelConfig.grams(" 血 "));
+    }
+
+    /** 测试辅助：把 Map 元数据 + 文档 id 合成 LangChain4j Metadata（id 存进 "id" 键）。 */
+    static dev.langchain4j.data.document.Metadata metaWithId(Object id, java.util.Map<String, ?> meta) {
+        dev.langchain4j.data.document.Metadata m = new dev.langchain4j.data.document.Metadata();
+        if (id != null) {
+            m.put("id", String.valueOf(id));
+        }
+        if (meta != null) {
+            for (java.util.Map.Entry<String, ?> e : meta.entrySet()) {
+                if (e.getValue() != null) {
+                    m.put(e.getKey(), String.valueOf(e.getValue()));
+                }
+            }
+        }
+        return m;
     }
 }

@@ -71,7 +71,7 @@ class ComplianceJudgeTest {
     @Test
     @DisplayName("生产提示词里的正面范例，判分器不能判挂（否则模型照抄必挂）")
     void promptExampleIsNotViolation() {
-        String prompt = new RagReferenceService(null).buildSystemPrompt("【测试上下文块】");
+        String prompt = new RagReferenceService().buildSystemPrompt("【测试上下文块】");
         int from = prompt.indexOf("例如「");
         assertTrue(from >= 0, "提示词里找不到正面范例「例如「…」」");
         int to = prompt.indexOf('」', from);

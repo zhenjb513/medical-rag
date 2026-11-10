@@ -4,7 +4,8 @@ import io.github.resilience4j.retry.annotation.Retry;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.document.Document;
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.document.Metadata;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -236,7 +237,7 @@ public class HybridRetrievalService {
         }
         java.util.List<Document> filtered = new java.util.ArrayList<>();
         for (Document d : docs) {
-            Object v = d.getMetadata() == null ? null : d.getMetadata().get("version");
+            String v = d.metadata() == null ? null : d.metadata().getString("version");
             if (v != null && versionFilter.contains(String.valueOf(v))) {
                 filtered.add(d);
             }
@@ -278,7 +279,7 @@ public class HybridRetrievalService {
      */
     private boolean hasEvidence(List<Document> vectorDocs) {
         if (vectorDocs == null || vectorDocs.isEmpty()) return false;
-        Double top = vectorDocs.get(0).getScore();
+        Double top = vectorDocs.get(0).metadata().getDouble("score");
         return top != null && top >= answerFloor;
     }
 
@@ -394,7 +395,7 @@ public class HybridRetrievalService {
         int rank = 0;
         for (Document d : docs) {
             rank++;
-            String id = d.getId();
+            String id = d.metadata().getString("id");
             if (id == null) continue;
             rrf.merge(id, weight / (rrfK + rank), Double::sum);
             // 向量侧的 Document 带 score 和完整 metadata，能覆盖就优先留它的
@@ -405,11 +406,11 @@ public class HybridRetrievalService {
     private List<Document> fromHits(List<Bm25IndexService.Hit> hits) {
         List<Document> out = new ArrayList<>();
         for (Bm25IndexService.Hit h : hits) {
-            Map<String, Object> meta = new LinkedHashMap<>();
+            Metadata meta = new Metadata();
             meta.put("source", h.source() == null ? "" : h.source());
             meta.put("file_name", h.fileName() == null ? "" : h.fileName());
             if (h.chunkIndex() != null) meta.put("chunk_index", h.chunkIndex());
-            out.add(new Document(h.id(), h.content(), meta));
+            out.add(Document.from(h.content(), meta));
         }
         return out;
     }
@@ -427,11 +428,17 @@ public class HybridRetrievalService {
         List<String[]> pairs = new ArrayList<>();
         for (Document d : selected) {
             have.put(keyOf(d), d);
-            Object src = d.getMetadata().get("source");
-            Object ci = d.getMetadata().get("chunk_index");
-            if (src == null || !(ci instanceof Number n)) continue;
+            String src = d.metadata().getString("source");
+            String ci = d.metadata().getString("chunk_index");
+            if (src == null || ci == null) continue;
+            final int chunkIndex;
+            try {
+                chunkIndex = Integer.parseInt(ci.trim());
+            } catch (NumberFormatException ex) {
+                continue;
+            }
             for (int delta : new int[]{-1, 1}) {
-                pairs.add(new String[]{String.valueOf(src), String.valueOf(n.intValue() + delta)});
+                pairs.add(new String[]{String.valueOf(src), String.valueOf(chunkIndex + delta)});
             }
         }
         pairs.removeIf(p -> have.containsKey(p[0] + "#" + p[1]));
@@ -458,9 +465,9 @@ public class HybridRetrievalService {
     }
 
     private static String keyOf(Document d) {
-        Object src = d.getMetadata() == null ? null : d.getMetadata().get("source");
-        Object ci = d.getMetadata() == null ? null : d.getMetadata().get("chunk_index");
-        if (src == null) src = d.getMetadata() == null ? null : d.getMetadata().get("file_name");
+        String src = d.metadata() == null ? null : d.metadata().getString("source");
+        String ci = d.metadata() == null ? null : d.metadata().getString("chunk_index");
+        if (src == null) src = d.metadata() == null ? null : d.metadata().getString("file_name");
         return src + "#" + ci;
     }
 }

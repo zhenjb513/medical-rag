@@ -2,7 +2,7 @@ package org.ragai.service;
 
 import org.ragai.model.MedicalTestSet;
 import org.ragai.model.TestCase;
-import org.springframework.ai.document.Document;
+import dev.langchain4j.data.document.Document;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -285,9 +285,9 @@ public class RecallEvaluationService {
         if (docs != null) {
             for (Document d : docs) {
                 String file = fileNameOf(d);
-                texts.add(d.getText() == null ? "" : d.getText());
+                texts.add(d.text() == null ? "" : d.text());
                 files.add(file);
-                scores.add(d.getScore() == null ? -1 : d.getScore());
+                scores.add(d.metadata().getDouble("score") == null ? -1 : d.metadata().getDouble("score"));
                 chunks.add(chunkKey(file, metaValue(d, "chunk_index")));
             }
         }
@@ -360,8 +360,8 @@ public class RecallEvaluationService {
     }
 
     private static Object metaValue(Document d, String key) {
-        Map<String, Object> meta = d.getMetadata();
-        return meta == null ? null : meta.get(key);
+        dev.langchain4j.data.document.Metadata meta = d.metadata();
+        return meta == null ? null : meta.getString(key);
     }
 
     /** 第一个落在标注答案块里的名次（1 起），0 = probeK 内一个答案块都没召回。 */
@@ -478,9 +478,9 @@ public class RecallEvaluationService {
     private static String rankText(int r) { return r == 0 ? "无" : String.valueOf(r); }
 
     private static String fileNameOf(Document d) {
-        Map<String, Object> meta = d.getMetadata();
-        Object v = meta == null ? null : meta.get("source");
-        if (v == null && meta != null) v = meta.get("file_name");
+        dev.langchain4j.data.document.Metadata meta = d.metadata();
+        String v = meta == null ? null : meta.getString("source");
+        if (v == null && meta != null) v = meta.getString("file_name");
         return v == null ? "" : String.valueOf(v);
     }
 

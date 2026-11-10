@@ -1,21 +1,36 @@
 package org.ragai.service;
 
-import org.springframework.ai.document.Document;
-import org.springframework.ai.vectorstore.SearchRequest;
-import org.springframework.ai.vectorstore.VectorStore;
-import org.springframework.beans.factory.annotation.Autowired;
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.document.Metadata;
+import dev.langchain4j.rag.content.Content;
+import dev.langchain4j.rag.content.ContentMetadata;
+import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
+import dev.langchain4j.rag.query.Query;
+import dev.langchain4j.store.embedding.pgvector.PgVectorEmbeddingStore;
+import org.ragai.service.langchain4j.LcEmbeddingStoreService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
 
 /**
- * RAG检索与引用溯源服务
- * 负责向量检索、上下文组装、引用来源提取、格式化引用来源（System prompt组装）
- * <p>
- * 核心价值：医疗答案可追溯，明确标注答案基于哪些文档生成
+ * RAG检索与引用溯源服务（LangChain4j 实现）。
+ *
+ * <p>负责向量检索、上下文组装、引用来源提取、格式化引用来源（System prompt组装）。
+ * 核心价值：医疗答案可追溯，明确标注答案基于哪些文档生成。
+ *
+ * <p><b>框架迁移说明</b>：本分支（langchain4j-exp）已彻底剥离 Spring AI，
+ * 原 {@code org.springframework.ai.vectorstore.VectorStore} 检索改为 LangChain4j
+ * 的 {@link EmbeddingStoreContentRetriever}。对外行为保持不变：仍返回
+ * {@code List<Document>}，分数写进 metadata 的 {@code score} 键，
+ * 下游的可答性闸门、日志、引用溯源逻辑无需改动。
  */
 @Service
 public class RagReferenceService {
+
+    private static final Logger log = LoggerFactory.getLogger(RagReferenceService.class);
 
     /**
      * 超纲题的固定拒答原话：提示词规则 2、判分器（{@code EvaluationService}）的幻觉抑制判据、
@@ -23,11 +38,27 @@ public class RagReferenceService {
      */
     public static final String REFUSAL_PHRASE = "根据现有知识库资料，无法回答该问题";
 
-    private final VectorStore vectorStore;
+    private final PgVectorEmbeddingStore embeddingStore;
+    private final dev.langchain4j.model.embedding.EmbeddingModel embeddingModel;
 
-    @Autowired
-    public RagReferenceService(VectorStore vectorStore) {
-        this.vectorStore = vectorStore;
+    /** 相似度阈值低于此值的块不参与检索（0.0 表示不设下限）。 */
+    @Value("${app.rag.vector-floor:0.0}")
+    private double vectorFloor;
+
+    public RagReferenceService(LcEmbeddingStoreService storeService,
+                               dev.langchain4j.model.embedding.EmbeddingModel embeddingModel) {
+        this.embeddingStore = storeService.store();
+        this.embeddingModel = embeddingModel;
+    }
+
+    /**
+     * 无参构造器：只用于纯逻辑方法的单元测试（buildContext / extractReferences /
+     * formatReferences / buildSystemPrompt）。这些方法不碰向量库，
+     * 测试不需要真库连接，迁移前传 null VectorStore 也是同一语义。
+     */
+    public RagReferenceService() {
+        this.embeddingStore = null;
+        this.embeddingModel = null;
     }
 
     /**
@@ -39,55 +70,75 @@ public class RagReferenceService {
     }
 
     /**
-     * 搜索相似文档（向量检索，返回top-k相关文档）
-     * 双保险：同时在 DB 层（similarityThreshold）和 Java 层手动过滤 score，
-     * 防止部分 VectorStore 实现的 DB 层阈值不生效。
+     * 搜索相似文档（向量检索，返回top-k相关文档）。
+     *
+     * <p>LangChain4j 的 {@link EmbeddingStoreContentRetriever} 在 minScore 层面
+     * 做 DB 侧过滤，这里再在 Java 层二次过滤一次，与迁移前的双保险语义一致。
      *
      * @param query               用户查询
      * @param topk                最多返回数量
      * @param similarityThreshold 相似度阈值（0.0~1.0），低于此值的结果被过滤；null 表示不设阈值
      */
     public List<Document> search(String query, int topk, Double similarityThreshold) {
-        if (vectorStore == null) {
+        if (embeddingStore == null) {
             return Collections.emptyList();
         }
-        SearchRequest.Builder builder = SearchRequest.builder()
-                .query(query)
-                .topK(topk);
-        if (similarityThreshold != null) {
-            builder.similarityThreshold(similarityThreshold);
-        }
-        List<Document> rawResults;
+
+        double minScore = similarityThreshold != null ? similarityThreshold : vectorFloor;
+
+        List<Content> rawResults;
         try {
-            rawResults = vectorStore.similaritySearch(builder.build());
+            EmbeddingStoreContentRetriever retriever = EmbeddingStoreContentRetriever.builder()
+                    .embeddingStore(embeddingStore)
+                    .embeddingModel(embeddingModel)
+                    .maxResults(topk)
+                    .minScore(minScore)
+                    .displayName("lc-vector")
+                    .build();
+            rawResults = retriever.retrieve(Query.from(query));
         } catch (RuntimeException e) {
-            System.err.println("[向量检索] 调用失败（向量化或数据库层异常），降级为空："
-                    + e.getClass().getSimpleName() + " " + e.getMessage());
+            log.warn("[向量检索] 调用失败（向量化或数据库层异常），降级为空：{} {}",
+                    e.getClass().getSimpleName(), e.getMessage());
             return Collections.emptyList();
         }
 
-        System.out.print("[RAG原始分数] Top " + (rawResults == null ? 0 : rawResults.size())
-                + " score=[ ");
-        if (rawResults != null) {
-            for (Document d : rawResults) {
-                Double s = d.getScore();
-                System.out.printf("%.4f ", s != null ? s : -1.0);
-            }
-        }
-        System.out.println("]  阈值=" + similarityThreshold);
+        // LangChain4j 的分数在 Content.metadata() 的 ContentMetadata.SCORE 上（不是 TextSegment 的 metadata）。
+        // 这里把分数转存到 Document 的 metadata "score" 键，下游的可答性闸门（answerFloor）
+        // 和日志都按这个键读，迁移前后语义一致。
+        List<Document> docs = new ArrayList<>();
+        for (Content content : rawResults) {
+            String text = content.textSegment().text();
+            Metadata segmentMetadata = content.textSegment().metadata() == null
+                    ? new Metadata()
+                    : content.textSegment().metadata().copy();
 
-        // Java 层二次过滤：防止 DB 层阈值未生效
-        if (similarityThreshold != null && rawResults != null && !rawResults.isEmpty()) {
+            Object score = content.metadata() == null ? null : content.metadata().get(ContentMetadata.SCORE);
+            if (score instanceof Number n) {
+                segmentMetadata.put("score", n.doubleValue());
+            }
+
+            docs.add(Document.from(text, segmentMetadata));
+        }
+
+        StringBuilder scores = new StringBuilder("[ ");
+        for (Document d : docs) {
+            Double s = d.metadata().getDouble("score");
+            scores.append(String.format("%.4f ", s == null ? -1.0 : s));
+        }
+        log.info("[RAG原始分数] Top {} score={}] 阈值={}", docs.size(), scores, similarityThreshold);
+
+        // Java 层二次过滤：有分数且低于阈值的块剔除（与迁移前双保险语义一致）
+        if (similarityThreshold != null && !docs.isEmpty()) {
             List<Document> filtered = new ArrayList<>();
-            for (Document doc : rawResults) {
-                Double score = doc.getScore();
-                if (score != null && score >= similarityThreshold) {
+            for (Document doc : docs) {
+                Double score = doc.metadata().getDouble("score");
+                if (score == null || score >= similarityThreshold) {
                     filtered.add(doc);
                 }
             }
             return filtered;
         }
-        return rawResults == null ? Collections.emptyList() : rawResults;
+        return docs;
     }
 
     /**
@@ -106,17 +157,18 @@ public class RagReferenceService {
         for (int i = 0; i < docs.size(); i++) {
             Document doc = docs.get(i);
             context.append("【文档").append(i + 1).append("】").append(describeBlock(doc)).append('\n');
-            context.append(doc.getText()).append("\n");
+            context.append(doc.text()).append("\n");
         }
         return context.toString();
     }
 
     /** 上下文头部那半行：文件名#块号；元数据缺就退到能给出的部分，全缺则标「未知来源」。 */
     static String describeBlock(Document doc) {
-        Map<String, Object> metadata = doc.getMetadata() == null ? Map.of() : doc.getMetadata();
-        String source = firstNonEmpty(metadata.get("source"), metadata.get("file_name"), metadata.get("filename"));
+        Metadata metadata = doc.metadata();
+        String source = firstNonEmpty(metadata.getString("source"), metadata.getString("file_name"),
+                metadata.getString("filename"));
         String fileName = source == null ? null : stripPath(source);
-        Integer chunkIndex = parseChunkIndex(metadata.get("chunk_index"));
+        Integer chunkIndex = parseChunkIndex(metadata.getString("chunk_index"));
         if (fileName == null && chunkIndex == null) {
             return "未知来源";
         }
@@ -161,14 +213,15 @@ public class RagReferenceService {
         Map<String, Integer> missingByFile = new LinkedHashMap<>();
         Map<String, String> versionByFile = new LinkedHashMap<>();
         for (Document doc : docs) {
-            Map<String, Object> metadata = doc.getMetadata() == null ? Map.of() : doc.getMetadata();
-            String source = firstNonEmpty(metadata.get("source"), metadata.get("file_name"), metadata.get("filename"));
+            Metadata metadata = doc.metadata();
+            String source = firstNonEmpty(metadata.getString("source"), metadata.getString("file_name"),
+                    metadata.getString("filename"));
             if (source == null) {
                 continue;
             }
             String fileName = stripPath(source);
-            Integer chunkIndex = parseChunkIndex(metadata.get("chunk_index"));
-            String version = metadata.get("version") == null ? null : String.valueOf(metadata.get("version"));
+            Integer chunkIndex = parseChunkIndex(metadata.getString("chunk_index"));
+            String version = metadata.getString("version");
             versionByFile.putIfAbsent(fileName, version);
             if (chunkIndex == null) {
                 missingByFile.merge(fileName, 1, Integer::sum);
@@ -189,7 +242,7 @@ public class RagReferenceService {
     /**
      * 引用行的展示文本。三种形态：
      * 「x.pdf（块号 3、4、12）」／「x.pdf（块号 3、4；另有 2 块未记录块号）」／「x.pdf（本批块未记录块号）」。
-     * 最后一行是退路：SimpleVectorStore 模式下 metadata 里没有 chunk_index，宁可承认查不到也不编造编号。
+     * 最后一行是退路：metadata 里没有 chunk_index 时，宁可承认查不到也不编造编号。
      */
     static String formatCitation(Citation c) {
         StringBuilder sb = new StringBuilder(c.fileName());

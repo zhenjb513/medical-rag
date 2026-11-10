@@ -3,7 +3,7 @@ package org.ragai.service;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.ragai.controller.ChatController;
-import org.springframework.ai.document.Document;
+import dev.langchain4j.data.document.Document;
 
 import java.lang.reflect.Field;
 import java.util.LinkedHashMap;
@@ -32,7 +32,11 @@ class InlineCitationJudgeTest {
         meta.put("source", "/data/pdf/" + file);
         meta.put("file_name", file);
         meta.put("chunk_index", chunkIndex);
-        return new Document("id-" + file + "-" + chunkIndex, "正文", meta);
+        dev.langchain4j.data.document.Metadata m = new dev.langchain4j.data.document.Metadata();
+        m.put("id", "id-" + file + "-" + chunkIndex);
+        m.put("source", file);
+        m.put("chunk_index", String.valueOf(chunkIndex));
+        return Document.from("正文", m);
     }
 
     @Test

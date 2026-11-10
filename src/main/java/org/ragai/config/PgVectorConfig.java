@@ -2,9 +2,6 @@ package org.ragai.config;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
-import org.springframework.ai.embedding.EmbeddingModel;
-import org.springframework.ai.vectorstore.VectorStore;
-import org.springframework.ai.vectorstore.pgvector.PgVectorStore;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -15,10 +12,16 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import javax.sql.DataSource;
 
 /**
- * PgVector 持久化向量库配置，仅当 app.pgvector.enabled=true 时激活。
+ * PgVector 数据源配置，仅当 app.pgvector.enabled=true 时激活。
  *
- * 默认不启用（本机 PostgreSQL 18 暂无对应 pgvector 预编译 dll），走 SimpleVectorStoreConfig（内存版）；
- * 当安装好 pgvector 扩展后，在 application.yml 设置 app.pgvector.enabled=true 即可切换。
+ * <p><b>框架迁移说明</b>：本分支（langchain4j-exp）已剥离 Spring AI。
+ * 原 {@code vectorStore}（Spring AI 的 {@code PgVectorStore}）Bean 已删除，
+ * 向量库改由 LangChain4j 的
+ * {@link org.ragai.service.langchain4j.LcEmbeddingStoreService} 接管。
+ *
+ * <p>但 {@code pgVectorDataSource} 与 {@code pgVectorJdbcTemplate} 必须保留：
+ * BM25 索引、PHI 审计、库内分布统计等框架无关的功能仍在直连这张表，
+ * 它们不依赖向量库框架，只依赖这个数据源。
  */
 @Configuration
 @EnableConfigurationProperties(PgVectorConfigProperties.class)
@@ -48,23 +51,5 @@ public class PgVectorConfig {
     public JdbcTemplate pgVectorJdbcTemplate(
             @Qualifier("pgVectorDataSource") DataSource pgVectorDataSource) {
         return new JdbcTemplate(pgVectorDataSource);
-    }
-
-    @Bean
-    public VectorStore vectorStore(
-            @Qualifier("pgVectorJdbcTemplate") JdbcTemplate pgVectorJdbcTemplate,
-            EmbeddingModel embeddingModel,
-            PgVectorConfigProperties props) {
-        return PgVectorStore
-                .builder(pgVectorJdbcTemplate, embeddingModel)
-                .schemaName(props.getSchemaName())
-                .vectorTableName(props.getTableName())
-                .dimensions(props.getDimensions())
-                .indexType(PgVectorStore.PgIndexType.valueOf(props.getIndexType()))
-                .distanceType(PgVectorStore.PgDistanceType.valueOf(props.getDistanceType()))
-                .idType(PgVectorStore.PgIdType.valueOf(props.getIdType()))
-                .initializeSchema(props.isInitializeSchema())
-                .vectorTableValidationsEnabled(props.isSchemaValidation())
-                .build();
     }
 }

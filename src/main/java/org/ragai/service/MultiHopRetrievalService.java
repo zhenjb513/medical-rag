@@ -1,6 +1,6 @@
 package org.ragai.service;
 
-import org.springframework.ai.document.Document;
+import dev.langchain4j.data.document.Document;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -82,7 +82,7 @@ public class MultiHopRetrievalService {
         List<ScoredDoc> mergedWithScore = new ArrayList<>();
         Set<String> seenHashes = contentHashesOf(primary);
         for (Document d : primary) {
-            mergedWithScore.add(new ScoredDoc(d, d.getScore() != null ? d.getScore() : 0.0));
+            mergedWithScore.add(new ScoredDoc(d, d.metadata().getDouble("score") != null ? d.metadata().getDouble("score") : 0.0));
         }
 
         int hopCount = 0;
@@ -97,7 +97,7 @@ public class MultiHopRetrievalService {
             for (Document d : hopResult) {
                 String hash = contentHashOf(d);
                 if (!seenHashes.contains(hash)) {
-                    double rawScore = d.getScore() != null ? d.getScore() : 0.0;
+                    double rawScore = d.metadata().getDouble("score") != null ? d.metadata().getDouble("score") : 0.0;
                     mergedWithScore.add(new ScoredDoc(d, rawScore * decay));
                     seenHashes.add(hash);
                 }
@@ -194,8 +194,8 @@ public class MultiHopRetrievalService {
     private Set<String> sourceThemesOf(List<Document> docs) {
         Set<String> themes = new LinkedHashSet<>();
         for (Document d : docs) {
-            Object source = d.getMetadata() == null ? null : d.getMetadata().get("source");
-            Object fileName = d.getMetadata() == null ? null : d.getMetadata().get("file_name");
+            String source = d.metadata() == null ? null : d.metadata().getString("source");
+            String fileName = d.metadata() == null ? null : d.metadata().getString("file_name");
             if (source != null) themes.add(source.toString());
             else if (fileName != null) themes.add(fileName.toString());
         }
@@ -205,7 +205,7 @@ public class MultiHopRetrievalService {
     private Set<String> distinctSources(List<Document> docs) {
         Set<String> sources = new LinkedHashSet<>();
         for (Document d : docs) {
-            Object s = d.getMetadata() == null ? null : d.getMetadata().get("source");
+            String s = d.metadata() == null ? null : d.metadata().getString("source");
             if (s != null) sources.add(s.toString());
         }
         return sources;
@@ -215,7 +215,7 @@ public class MultiHopRetrievalService {
         Map<String, Long> counts = docs.stream()
                 .collect(Collectors.groupingBy(
                         d -> {
-                            Object s = d.getMetadata() == null ? null : d.getMetadata().get("source");
+                            String s = d.metadata() == null ? null : d.metadata().getString("source");
                             return s != null ? s.toString() : "?";
                         },
                         Collectors.counting()
@@ -232,10 +232,11 @@ public class MultiHopRetrievalService {
     }
 
     private String contentHashOf(Document d) {
-        if (d.getMetadata() != null && d.getMetadata().get("content_hash") != null) {
-            return d.getMetadata().get("content_hash").toString();
+        if (d.metadata() != null && d.metadata().getString("content_hash") != null) {
+            return d.metadata().getString("content_hash");
         }
-        return d.getId() != null ? d.getId() : d.getText();
+        String id = d.metadata().getString("id");
+        return id != null ? id : d.text();
     }
 
     private List<Document> take(List<Document> docs, int k) {

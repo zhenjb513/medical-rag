@@ -5,8 +5,8 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
 import org.springframework.dao.EmptyResultDataAccessException;
-import org.springframework.ai.tool.annotation.Tool;
-import org.springframework.ai.tool.annotation.ToolParam;
+import dev.langchain4j.agent.tool.Tool;
+import dev.langchain4j.agent.tool.P;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
@@ -45,11 +45,11 @@ public class InventoryService {
      * 模型据此答「这个耗材没货了，建议联系采购」。更要命的是 {@code LangChain4jChatController}
      * 的提示词教模型「返回 -1 表示耗材不存在」，而服务里根本没有 -1 这条路（两处已一起改成文字三态）。
      */
-    @Tool(description = "查询指定医疗耗材的当前库存数量。当用户询问某个耗材还有多少库存时使用此工具，"
+    @Tool("查询指定医疗耗材的当前库存数量。当用户询问某个耗材还有多少库存时使用此工具，"
             + "必须带上耗材名称。返回值是一句话：有库存会写数量，没登记会说明未录入，查询失败会说明系统不可用，"
             + "没给名称会要求补名称。")
     public String queryConsumableStock(
-            @ToolParam(description = "耗材的名称，例如：胃镜活检钳") String consumableName) {
+            @P("耗材的名称，例如：胃镜活检钳") String consumableName) {
 
         String name = consumableName == null ? "" : consumableName.trim();
         // schema 里 consumableName 是 required，但实测框架不 enforce：模型少给参数或把键名写错时
@@ -86,7 +86,7 @@ public class InventoryService {
     }
 
     /** 没给名字：这是调用方的问题，不许转成「库里没登记」这种听起来像数据结论的说法。 */
-    static String missingName() {
+    public static String missingName() {
         return "缺少耗材名称，无法查询。请先确认用户问的是哪一种耗材，再带上名称重新调用；不要据此说缺货或库存为 0";
     }
 

@@ -7,7 +7,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.ai.document.Document;
+import dev.langchain4j.data.document.Document;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.*;
@@ -40,7 +40,13 @@ class MultiHopRetrievalServiceTest {
         meta.put("source", source);
         meta.put("file_name", source + ".pdf");
         meta.put("content_hash", UUID.randomUUID().toString());
-        return new Document(UUID.randomUUID().toString(), text, meta);
+        dev.langchain4j.data.document.Metadata m = new dev.langchain4j.data.document.Metadata();
+        m.put("id", UUID.randomUUID().toString());
+        m.put("source", source);
+        m.put("file_name", source);
+        m.put("chunk_index", "1");
+        m.put("content_hash", "hash-" + text.hashCode());
+        return Document.from(text, m);
     }
 
     private List<Document> docsFrom(String... sources) {
@@ -53,7 +59,7 @@ class MultiHopRetrievalServiceTest {
 
     private Set<String> sourcesOf(List<Document> docs) {
         return docs.stream()
-                .map(d -> d.getMetadata().get("source").toString())
+                .map(d -> d.metadata().getString("source"))
                 .collect(Collectors.toSet());
     }
 
@@ -133,7 +139,7 @@ class MultiHopRetrievalServiceTest {
         List<Document> result = service.search("高血压和血脂目标", 10, null);
 
         long uniqueHashes = result.stream()
-                .map(d -> d.getMetadata().get("content_hash").toString())
+                .map(d -> d.metadata().getString("content_hash"))
                 .distinct()
                 .count();
 

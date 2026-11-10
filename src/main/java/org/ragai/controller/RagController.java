@@ -9,7 +9,7 @@ import org.ragai.service.PdfPageLocator;
 import org.ragai.service.PhiAuditService;
 import org.ragai.service.RagInitializer;
 import org.ragai.service.SectionIndex;
-import org.springframework.ai.vectorstore.VectorStore;
+import dev.langchain4j.store.embedding.pgvector.PgVectorEmbeddingStore;
 import org.springframework.context.ApplicationContext;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -30,7 +30,7 @@ public class RagController {
     private final PhiAuditService phiAuditService;
     private final InventoryService inventoryService;
     private final RagInitializer ragInitializer;
-    private final VectorStore vectorStore;
+    private final PgVectorEmbeddingStore vectorStore;
     private final ApplicationContext applicationContext;
     private final ObjectMapper jsonMapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
 
@@ -38,7 +38,7 @@ public class RagController {
                          PhiAuditService phiAuditService,
                          InventoryService inventoryService,
                          RagInitializer ragInitializer,
-                         VectorStore vectorStore,
+                         PgVectorEmbeddingStore vectorStore,
                          ApplicationContext applicationContext) {
         this.bm25IndexService = bm25IndexService;
         this.phiAuditService = phiAuditService;

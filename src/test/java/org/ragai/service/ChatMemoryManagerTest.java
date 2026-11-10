@@ -3,9 +3,10 @@ package org.ragai.service;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.UserMessage;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
 import org.springframework.data.redis.core.ListOperations;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.SetOperations;
@@ -49,31 +50,31 @@ class ChatMemoryManagerTest {
                 .thenReturn(List.of());
         ChatMemoryManager mgr = manager();
 
-        List<Message> messages = mgr.buildPromptMessages("sess-new", "你是助手", "降压目标是多少？");
+        List<ChatMessage> messages = mgr.buildPromptMessages("sess-new", "你是助手", "降压目标是多少？");
 
         assertEquals(2, messages.size());
-        // 模型侧就是这么用的：逐个强转，任何一个元素不是 Message 就整轮炸
-        for (Message m : messages) {
-            assertInstanceOf(Message.class, m);
+        // 模型侧就是这么用的：逐个强转，任何一个元素不是 ChatMessage 就整轮炸
+        for (ChatMessage m : messages) {
+            assertInstanceOf(ChatMessage.class, m);
         }
-        assertEquals("你是助手", messages.get(0).getText());
-        assertTrue(messages.get(1).getText().contains("降压目标是多少？"));
+        assertEquals("你是助手", ((SystemMessage) messages.get(0)).text());
+        assertTrue(((UserMessage) messages.get(1)).singleText().contains("降压目标是多少？"));
     }
 
     @Test
     @DisplayName("Redis 里躺着旧版写进去的 ArrayList 占位：跳过脏元素，保留真历史的顺序")
     void legacySentinelIsSkippedNotPassedThrough() {
-        // 旧 newSessionId() 往会话列表右推过一个空 ArrayList，反序列化回来就不是 Message
+        // 旧 newSessionId() 往会话列表右推过一个空 ArrayList，反序列化回来就不是 ChatMessage
         List<Object> polluted = new ArrayList<>();
         polluted.add(new ArrayList<>());
-        UserMessage earlier = new UserMessage("上一轮问题");
-        AssistantMessage earlierAnswer = new AssistantMessage("上一轮回答");
+        UserMessage earlier = UserMessage.from("上一轮问题");
+        AiMessage earlierAnswer = AiMessage.from("上一轮回答");
         polluted.add(earlier);
         polluted.add(earlierAnswer);
         Mockito.when(listOps.range(Mockito.anyString(), Mockito.anyLong(), Mockito.anyLong()))
                 .thenReturn(polluted);
 
-        List<Message> history = manager().getHistory("sess-dirty");
+        List<ChatMessage> history = manager().getHistory("sess-dirty");
 
         assertEquals(2, history.size(), "脏元素该被跳掉，而不是原样交给模型");
         assertSame(earlier, history.get(0));

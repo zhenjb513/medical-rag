@@ -59,10 +59,10 @@ public class EvaluationController {
                 .append("  耗时").append(System.currentTimeMillis() - start).append("ms\n");
         int i = 0;
         for (var d : docs) {
-            Object ci = d.getMetadata().get("chunk_index");
-            sb.append("  ").append(++i).append(". ").append(d.getMetadata().get("file_name"))
-                    .append("#").append(ci).append("  score=").append(d.getScore() == null ? "n/a"
-                            : String.format("%.3f", d.getScore())).append('\n');
+            Object ci = d.metadata().getString("chunk_index");
+            sb.append("  ").append(++i).append(". ").append(d.metadata().getString("file_name"))
+                    .append("#").append(ci).append("  score=").append(d.metadata().getDouble("score") == null ? "n/a"
+                            : String.format("%.3f", d.metadata().getDouble("score"))).append('\n');
         }
         return sb.toString();
     }

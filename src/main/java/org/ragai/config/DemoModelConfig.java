@@ -1,16 +1,17 @@
 package org.ragai.config;
 
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.model.Generation;
-import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.document.Document;
-import org.springframework.ai.embedding.Embedding;
-import org.springframework.ai.embedding.EmbeddingModel;
-import org.springframework.ai.embedding.EmbeddingRequest;
-import org.springframework.ai.embedding.EmbeddingResponse;
+import dev.langchain4j.data.embedding.Embedding;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.request.ChatRequest;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.embedding.EmbeddingModel;
+import dev.langchain4j.model.output.Response;
+import dev.langchain4j.model.output.TokenUsage;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -54,7 +55,7 @@ public class DemoModelConfig {
 
     @Bean
     @Primary
-    public ChatModel demoChatModel() {
+    public ChatLanguageModel demoChatModel() {
         return new ExtractiveChatModel();
     }
 
@@ -73,27 +74,16 @@ public class DemoModelConfig {
         }
 
         @Override
-        public EmbeddingResponse call(EmbeddingRequest request) {
-            List<String> texts = request.getInstructions();
-            List<Embedding> vectors = new ArrayList<>(texts.size());
-            for (int i = 0; i < texts.size(); i++) {
-                vectors.add(new Embedding(vectorize(texts.get(i), dim), i));
+        public Response<List<Embedding>> embedAll(List<TextSegment> segments) {
+            List<Embedding> vectors = new ArrayList<>(segments.size());
+            for (TextSegment segment : segments) {
+                vectors.add(Embedding.from(vectorize(segment.text(), dim)));
             }
-            return new EmbeddingResponse(vectors);
+            return Response.from(vectors, new TokenUsage(0, 0));
         }
 
         @Override
-        public float[] embed(Document document) {
-            return vectorize(document.getText(), dim);
-        }
-
-        @Override
-        public float[] embed(String text) {
-            return vectorize(text, dim);
-        }
-
-        @Override
-        public int dimensions() {
+        public int dimension() {
             return dim;
         }
     }
@@ -108,18 +98,23 @@ public class DemoModelConfig {
      * 这是这一档的已知粗糙处，不是链路坏了：它的用途是让人看到
      * 「上下文 → 答案 → 引用行」怎么对上，而不是给人读的答案质量。
      */
-    static final class ExtractiveChatModel implements ChatModel {
+    static final class ExtractiveChatModel implements ChatLanguageModel {
 
         private static final String CONTEXT_HEAD = "【知识库上下文】";
         private static final String RULES_HEAD = "【回答规则】";
         private static final int MAX_SENTENCES = 3;
 
         @Override
-        public ChatResponse call(Prompt prompt) {
-            String system = textOf(prompt.getSystemMessage());
-            String question = textOf(prompt.getUserMessage());
-            return new ChatResponse(List.of(
-                    new Generation(new AssistantMessage(answer(question, system)))));
+        public ChatResponse chat(ChatRequest chatRequest) {
+            String system = "";
+            String question = "";
+            for (ChatMessage m : chatRequest.messages()) {
+                if (m instanceof SystemMessage sm) system = sm.text();
+                else if (m instanceof UserMessage um) question = um.singleText();
+            }
+            return ChatResponse.builder()
+                    .aiMessage(AiMessage.from(answer(question, system)))
+                    .build();
         }
 
         String answer(String question, String systemPrompt) {
@@ -172,9 +167,6 @@ public class DemoModelConfig {
             return sb + "\n\n（demo 档：上面这几句是从本次送入模型的上下文里按字面重叠挑出来的原文，没有调用大模型）";
         }
 
-        private static String textOf(Message message) {
-            return message == null || message.getText() == null ? "" : message.getText();
-        }
     }
 
     static String between(String text, String from, String to) {

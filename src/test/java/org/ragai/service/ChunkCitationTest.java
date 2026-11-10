@@ -2,7 +2,7 @@ package org.ragai.service;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
-import org.springframework.ai.document.Document;
+import dev.langchain4j.data.document.Document;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,7 +27,7 @@ class ChunkCitationTest {
     private static final String XZ = "中国血脂管理指南2023年.pdf";
     private static final String YJ = "中国心血管病一级预防指南2020.pdf";
 
-    private static final RagReferenceService SVC = new RagReferenceService(null);
+    private static final RagReferenceService SVC = new RagReferenceService();
 
     private static Document doc(String file, Object chunkIndex, String text) {
         Map<String, Object> meta = new LinkedHashMap<>();
@@ -36,7 +36,7 @@ class ChunkCitationTest {
         if (chunkIndex != null) {
             meta.put("chunk_index", chunkIndex);
         }
-        return new Document("id-" + file + "-" + chunkIndex, text, meta);
+        return Document.from(text, metaWithId("id-" + file + "-" + chunkIndex, meta));
     }
 
     /** 只有 file_name（没有 source）：入库走 SimpleVectorStore 时就是这个形态。 */
@@ -44,7 +44,7 @@ class ChunkCitationTest {
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("file_name", file);
         meta.put("chunk_index", chunkIndex);
-        return new Document("id-" + file + "-" + chunkIndex, "正文", meta);
+        return Document.from("正文", metaWithId("id-" + file + "-" + chunkIndex, meta));
     }
 
     @Test
@@ -72,7 +72,7 @@ class ChunkCitationTest {
         meta.put("filename", "C:\\kb\\" + YJ);
         meta.put("chunk_index", 0);
         assertEquals(List.of(YJ + "（块号 0）"),
-                SVC.extractReferences(List.of(new Document("id-1", "正文", meta))));
+                SVC.extractReferences(List.of(Document.from("正文", metaWithId("id-1", meta)))));
     }
 
     @Test
@@ -102,7 +102,7 @@ class ChunkCitationTest {
         onlyName.put("file_name", XZ);
         onlyName.put("chunk_index", 1);
         List<String> refs = SVC.extractReferences(List.of(
-                new Document("id-a", "正文", onlyName), doc(XZ, 2, "正文"), docFileNameOnly(XZ, 3)));
+                Document.from("正文", metaWithId("id-a", onlyName)), doc(XZ, 2, "正文"), docFileNameOnly(XZ, 3)));
         assertEquals(List.of(XZ + "（块号 1、2、3）"), refs);
     }
 
@@ -130,7 +130,7 @@ class ChunkCitationTest {
     @DisplayName("metadata 整个为空的块不进引用列表（以前会把 null 直接写进文件名里）")
     void skipsDocsWithoutAnyFileName() {
         List<String> refs = SVC.extractReferences(List.of(
-                new Document("id-x", "正文", new LinkedHashMap<>()), doc(XZ, 3, "正文")));
+                Document.from("正文", metaWithId("id-x", new LinkedHashMap<>())), doc(XZ, 3, "正文")));
         assertEquals(List.of(XZ + "（块号 3）"), refs);
     }
 
@@ -140,7 +140,7 @@ class ChunkCitationTest {
         Map<String, Object> meta = new LinkedHashMap<>();
         meta.put("source", 12345);
         meta.put("chunk_index", 2);
-        List<String> refs = SVC.extractReferences(List.of(new Document("id-n", "正文", meta)));
+        List<String> refs = SVC.extractReferences(List.of(Document.from("正文", metaWithId("id-n", meta))));
         // ChatController.extractFileName 打的是 String.valueOf(source)，EvaluationService.chunkKeyOf 也一样，
         // 引用行要是偷偷把这行丢掉，日志和引用就对不上了
         assertEquals(List.of("12345（块号 2）"), refs);
@@ -160,8 +160,24 @@ class ChunkCitationTest {
     @DisplayName("元数据残缺就如实残缺：没块号只给文件名，全都没给「未知来源」，不许编一个")
     void contextHeaderDegradesHonestly() {
         assertTrue(SVC.buildContext(List.of(doc(XZ, null, "A"))).contains("【文档1】" + XZ + "\n"));
-        assertTrue(SVC.buildContext(List.of(new Document("id-e", "A", new LinkedHashMap<>())))
+        assertTrue(SVC.buildContext(List.of(Document.from("A", metaWithId("id-e", new LinkedHashMap<>()))))
                 .contains("【文档1】未知来源"));
         assertEquals("(无相关文档)", SVC.buildContext(List.of()));
+    }
+
+    /** 测试辅助：把 Map 元数据 + 文档 id 合成 LangChain4j Metadata（id 存进 "id" 键）。 */
+    static dev.langchain4j.data.document.Metadata metaWithId(Object id, java.util.Map<String, ?> meta) {
+        dev.langchain4j.data.document.Metadata m = new dev.langchain4j.data.document.Metadata();
+        if (id != null) {
+            m.put("id", String.valueOf(id));
+        }
+        if (meta != null) {
+            for (java.util.Map.Entry<String, ?> e : meta.entrySet()) {
+                if (e.getValue() != null) {
+                    m.put(e.getKey(), String.valueOf(e.getValue()));
+                }
+            }
+        }
+        return m;
     }
 }

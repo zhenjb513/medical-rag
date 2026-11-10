@@ -1,10 +1,11 @@
 package org.ragai;
 
-import org.springframework.ai.vectorstore.pgvector.autoconfigure.PgVectorStoreAutoConfiguration;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
-@SpringBootApplication(exclude = PgVectorStoreAutoConfiguration.class)
+// 框架迁移：原 exclude = PgVectorStoreAutoConfiguration（Spring AI 的 PgVector 自动配置）
+// 已随 Spring AI 一起移除；向量库由 LangChain4j 的 LcEmbeddingStoreService 显式接管。
+@SpringBootApplication
 public class Main {
     public static void main(String[] args) {
         // 中文 Windows 默认 file.encoding = GBK，须在 Spring 启动前强制全局 UTF-8，

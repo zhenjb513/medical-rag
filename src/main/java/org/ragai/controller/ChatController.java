@@ -8,10 +8,15 @@ import io.micrometer.core.instrument.Timer;
 import org.ragai.service.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.document.Document;
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.StreamingChatLanguageModel;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
@@ -63,7 +68,8 @@ public class ChatController {
             5. 回复结构：先给结论，再列依据，最后附引用来源。
             """;
 
-    private final ChatClient chatClient;
+    private final ChatLanguageModel chatModel;
+    private final StreamingChatLanguageModel streamingChatModel;
     private final HybridRetrievalService hybridRetrievalService;
     private final MultiHopRetrievalService multiHopRetrievalService;
     private final RagReferenceService ragReferenceService;
@@ -80,14 +86,16 @@ public class ChatController {
     @Value("${app.retrieval.chat-top-k:8}")
     private int chatTopK;
 
-    public ChatController(ChatClient chatClient,
+    public ChatController(ChatLanguageModel chatModel,
+                          StreamingChatLanguageModel streamingChatModel,
                           HybridRetrievalService hybridRetrievalService,
                           MultiHopRetrievalService multiHopRetrievalService,
                           RagReferenceService ragReferenceService,
                           ChatMemoryManager chatMemoryManager,
                           InventoryService inventoryService,
                           MeterRegistry meterRegistry) {
-        this.chatClient = chatClient;
+        this.chatModel = chatModel;
+        this.streamingChatModel = streamingChatModel;
         this.hybridRetrievalService = hybridRetrievalService;
         this.multiHopRetrievalService = multiHopRetrievalService;
         this.ragReferenceService = ragReferenceService;
@@ -139,13 +147,14 @@ public class ChatController {
         List<String> refs = ragReferenceService.extractReferences(docs);
         String fullPrompt = SYSTEM_PROMPT + "\n\n【知识库上下文】\n" + ragContext + "\n\n【用户问题】\n" + message;
 
-        List<Message> promptMessages = List.of(
-                new org.springframework.ai.chat.messages.SystemMessage(SYSTEM_PROMPT),
-                new org.springframework.ai.chat.messages.UserMessage(fullPrompt)
+        List<ChatMessage> promptMessages = List.of(
+                SystemMessage.from(SYSTEM_PROMPT),
+                UserMessage.from(fullPrompt)
         );
         String answer;
         try {
-            answer = chatClient.prompt(new Prompt(promptMessages)).call().content();
+            ChatResponse response = chatModel.chat(promptMessages);
+            answer = response.aiMessage().text();
         } catch (Exception e) {
             answer = RAG_REFUSAL_PHRASE + "（服务暂时不可用：" + e.getMessage() + "）";
         }
@@ -165,17 +174,17 @@ public class ChatController {
             List<String> refs = ragReferenceService.extractReferences(docs);
             String fullPrompt = SYSTEM_PROMPT + "\n\n【知识库上下文】\n" + ragContext + "\n\n【用户问题】\n" + message;
 
-            List<Message> promptMessages;
+            List<ChatMessage> promptMessages;
             if (sessionId != null && !sessionId.isBlank()) {
                 promptMessages = chatMemoryManager.buildPromptMessages(sessionId, SYSTEM_PROMPT, fullPrompt);
             } else {
                 promptMessages = List.of(
-                        new org.springframework.ai.chat.messages.SystemMessage(SYSTEM_PROMPT),
-                        new org.springframework.ai.chat.messages.UserMessage(fullPrompt)
+                        SystemMessage.from(SYSTEM_PROMPT),
+                        UserMessage.from(fullPrompt)
                 );
             }
 
-            String answer = chatClient.prompt(new Prompt(promptMessages)).tools(inventoryService).call().content();
+            String answer = chatWithTools(promptMessages);
             String finalAnswer = (answer == null || answer.isBlank())
                     ? RAG_REFUSAL_PHRASE : answer.trim();
             String finalText = finalAnswer + "\n\n【引用来源】\n"
@@ -205,17 +214,16 @@ public class ChatController {
             List<String> refs = ragReferenceService.extractReferences(docs);
             String fullPrompt = SYSTEM_PROMPT + "\n\n【知识库上下文】\n" + ragContext + "\n\n【用户问题】\n" + message;
 
-            List<Message> promptMessages;
+            List<ChatMessage> promptMessages;
             if (sessionId != null && !sessionId.isBlank()) {
                 promptMessages = chatMemoryManager.buildPromptMessages(sessionId, SYSTEM_PROMPT, fullPrompt);
             } else {
                 promptMessages = List.of(
-                        new org.springframework.ai.chat.messages.SystemMessage(SYSTEM_PROMPT),
-                        new org.springframework.ai.chat.messages.UserMessage(fullPrompt)
+                        SystemMessage.from(SYSTEM_PROMPT),
+                        UserMessage.from(fullPrompt)
                 );
             }
 
-            Prompt prompt = new Prompt(promptMessages);
             StringBuilder answerBuilder = new StringBuilder();
 
             long startNanos = System.nanoTime();
@@ -223,7 +231,34 @@ public class ChatController {
             AtomicLong firstTokenNanos = new AtomicLong(0);
             AtomicBoolean cancelled = new AtomicBoolean(false);
 
-            Flux<String> tokenFlux = chatClient.prompt(prompt).tools(inventoryService).stream().content()
+            Flux<String> tokenFlux = Flux.<String>create(sink -> {
+                try {
+                    streamingChatModel.chat(
+                            dev.langchain4j.model.chat.request.ChatRequest.builder()
+                                    .messages(promptMessages)
+                                    .build(),
+                            new StreamingChatResponseHandler() {
+                                @Override
+                                public void onPartialResponse(String partial) {
+                                    if (partial != null && !partial.isEmpty()) {
+                                        sink.next(partial);
+                                    }
+                                }
+
+                                @Override
+                                public void onCompleteResponse(ChatResponse response) {
+                                    sink.complete();
+                                }
+
+                                @Override
+                                public void onError(Throwable error) {
+                                    sink.error(error);
+                                }
+                            });
+                } catch (Exception e) {
+                    sink.error(e);
+                }
+            })
                     .timeout(Duration.ofSeconds(120))
                     .doOnNext(token -> {
                         if (firstTokenObserved.compareAndSet(false, true)) {
@@ -309,6 +344,67 @@ public class ChatController {
         r.put("maxRoundsPerSession", ChatMemoryManager.DEFAULT_MAX_ROUNDS);
         r.put("sessionTtlMs", ChatMemoryManager.DEFAULT_TTL_MS);
         return r;
+    }
+
+    /**
+     * 带工具调用的对话。
+     * <p>
+     * LangChain4j 的工具调用分两轮：先让模型决定是否调工具，拿到 {@code toolExecutionRequests}
+     * 后本地执行（本分支的工具只有库存查询），再把结果作为 ToolExecutionResultMessage 回喂，
+     * 让模型基于结果生成最终回答。Spring AI 侧的 {@code .tools(inventoryService)} 把这步藏起来了，
+     * 迁移后需要显式走两轮。
+     */
+    private String chatWithTools(List<ChatMessage> promptMessages) {
+        try {
+            ChatResponse first = chatModel.chat(
+                    dev.langchain4j.model.chat.request.ChatRequest.builder()
+                            .messages(promptMessages)
+                            .toolSpecifications(dev.langchain4j.agent.tool.ToolSpecifications
+                                    .toolSpecificationsFrom(inventoryService))
+                            .build());
+
+            AiMessage aiMessage = first.aiMessage();
+            if (aiMessage.hasToolExecutionRequests()) {
+                List<ChatMessage> messages = new java.util.ArrayList<>(promptMessages);
+                messages.add(aiMessage);
+                for (dev.langchain4j.agent.tool.ToolExecutionRequest req : aiMessage.toolExecutionRequests()) {
+                    String result = executeTool(req);
+                    messages.add(dev.langchain4j.data.message.ToolExecutionResultMessage.from(req, result));
+                }
+                ChatResponse second = chatModel.chat(
+                        dev.langchain4j.model.chat.request.ChatRequest.builder()
+                                .messages(messages)
+                                .toolSpecifications(dev.langchain4j.agent.tool.ToolSpecifications
+                                        .toolSpecificationsFrom(inventoryService))
+                                .build());
+                return second.aiMessage().text();
+            }
+            return aiMessage.text();
+        } catch (Exception e) {
+            log.warn("[工具调用] 失败，降级为无工具直答：{}", e.getMessage());
+            try {
+                return chatModel.chat(promptMessages).aiMessage().text();
+            } catch (Exception e2) {
+                return RAG_REFUSAL_PHRASE + "（服务暂时不可用：" + e2.getMessage() + "）";
+            }
+        }
+    }
+
+    /** 执行库存工具：从请求参数里取耗材名，调用 InventoryService。 */
+    private String executeTool(dev.langchain4j.agent.tool.ToolExecutionRequest req) {
+        try {
+            String args = req.arguments();
+            if (args == null || args.isBlank()) {
+                return InventoryService.missingName();
+            }
+            com.fasterxml.jackson.databind.JsonNode node =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(args);
+            String name = node.has("consumableName") ? node.get("consumableName").asText() : null;
+            return inventoryService.queryConsumableStock(name);
+        } catch (Exception e) {
+            log.warn("[工具执行] 解析参数失败：{}", e.getMessage());
+            return InventoryService.missingName();
+        }
     }
 
     // ========== Resilience4j Fallback 方法 ==========

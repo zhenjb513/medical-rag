@@ -6,10 +6,10 @@ import com.fasterxml.jackson.annotation.PropertyAccessor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.ai.chat.messages.AssistantMessage;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
+import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
@@ -59,7 +59,7 @@ public class ChatMemoryManager {
     /**
      * 只登记 sessionId，不往会话列表里塞任何东西。
      * <p>早先这里右推过一个空 {@code ArrayList} 当占位，于是 {@link #getHistory} 第一次读就交出
-     * 一个不是 {@link Message} 的元素，DashScope 组装请求逐个强转 {@code Message} 时直接
+     * 一个不是 {@link ChatMessage} 的元素，DashScope 组装请求逐个强转 {@code ChatMessage} 时直接
      * {@code ClassCastException}——新会话的第一条消息必挂（2026-11-05 拍问诊截图时撞上）。
      * 键不需要预建：{@link #appendTurn} 写入时自然创建并续 TTL。
      */
@@ -70,17 +70,17 @@ public class ChatMemoryManager {
     }
 
     /**
-     * 会话历史。只交出真的是 {@link Message} 的元素：Redis 里可能还躺着旧版本写进去的占位值，
+     * 会话历史。只交出真的是 {@link ChatMessage} 的元素：Redis 里可能还躺着旧版本写进去的占位值，
      * 反序列化出来的类型不受我们控制，脏一条不该把整轮对话打成 500。
      */
-    public List<Message> getHistory(String sessionId) {
+    public List<ChatMessage> getHistory(String sessionId) {
         Object raw = redisTemplate.opsForList().range(key(sessionId), 0, -1);
         if (!(raw instanceof List<?> list)) {
             return new ArrayList<>();
         }
-        List<Message> messages = new ArrayList<>();
+        List<ChatMessage> messages = new ArrayList<>();
         for (Object item : list) {
-            if (item instanceof Message message) {
+            if (item instanceof ChatMessage message) {
                 messages.add(message);
             } else {
                 log.warn("[多轮] 会话 {} 里混进一个非 Message 元素（{}），已跳过",
@@ -90,20 +90,20 @@ public class ChatMemoryManager {
         return messages;
     }
 
-    public List<Message> buildPromptMessages(String sessionId, String systemPrompt, String userMessage) {
-        List<Message> messages = new ArrayList<>();
+    public List<ChatMessage> buildPromptMessages(String sessionId, String systemPrompt, String userMessage) {
+        List<ChatMessage> messages = new ArrayList<>();
         if (systemPrompt != null && !systemPrompt.isBlank()) {
             messages.add(new SystemMessage(systemPrompt));
         }
         messages.addAll(getHistory(sessionId));
-        messages.add(new UserMessage(userMessage));
+        messages.add(UserMessage.from(userMessage));
         return messages;
     }
 
     public void appendTurn(String sessionId, String userMessage, String assistantMessage) {
         String k = key(sessionId);
-        redisTemplate.opsForList().rightPush(k, new UserMessage(userMessage));
-        redisTemplate.opsForList().rightPush(k, new AssistantMessage(assistantMessage));
+        redisTemplate.opsForList().rightPush(k, UserMessage.from(userMessage));
+        redisTemplate.opsForList().rightPush(k, AiMessage.from(assistantMessage));
 
         Long size = redisTemplate.opsForList().size(k);
         if (size != null && size > maxRounds * 2) {

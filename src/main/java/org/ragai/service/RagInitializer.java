@@ -1,7 +1,6 @@
 package org.ragai.service;
 
 import jakarta.annotation.PostConstruct;
-import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.cos.*;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPageTree;
@@ -9,9 +8,9 @@ import org.apache.pdfbox.pdmodel.interactive.annotation.PDAnnotation;
 import org.apache.pdfbox.rendering.ImageType;
 import org.apache.pdfbox.rendering.PDFRenderer;
 import org.apache.pdfbox.text.PDFTextStripper;
-import org.springframework.ai.document.Document;
-import org.springframework.ai.transformer.splitter.TokenTextSplitter;
-import org.springframework.ai.vectorstore.VectorStore;
+import dev.langchain4j.data.document.Document;
+import dev.langchain4j.data.document.splitter.DocumentSplitters;
+import dev.langchain4j.data.document.DocumentSplitter;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -80,16 +79,16 @@ public class RagInitializer {
      */
     private static final int DASHSCOPE_EMBEDDING_MAX_BATCH = 10;
 
-    private final VectorStore vectorStore;
+    private final dev.langchain4j.store.embedding.pgvector.PgVectorEmbeddingStore vectorStore;
+    private final dev.langchain4j.model.embedding.EmbeddingModel embeddingModel;
 
     private final Bm25IndexService bm25IndexService;
     /**
      * PGVector JDBC：用于「PDF 已入库」去重（PGVector 未启用时为 null）
      */
     private final org.springframework.jdbc.core.JdbcTemplate pgJdbc;
-    private final TokenTextSplitter splitter = TokenTextSplitter.builder()
-            .withChunkSize(512)
-            .build();
+    /** LangChain4j 分块器：512 字/块，0 重叠（与迁移前 TokenTextSplitter 的默认参数对齐）。 */
+    private final DocumentSplitter splitter = DocumentSplitters.recursive(512, 0);
 
     @Value("${app.pdf-path:D:/ai-docs}")
     private String pdfPath;
@@ -121,14 +120,16 @@ public class RagInitializer {
     private int ocrPageTimeoutSec;
 
     public RagInitializer(
-            @Autowired(required = false) VectorStore vectorStore,
+            @Autowired(required = false) dev.langchain4j.store.embedding.pgvector.PgVectorEmbeddingStore vectorStore,
             @Autowired(required = false)
             @org.springframework.beans.factory.annotation.Qualifier("pgVectorJdbcTemplate")
             org.springframework.jdbc.core.JdbcTemplate pgJdbc,
-            Bm25IndexService bm25IndexService) {
+            Bm25IndexService bm25IndexService,
+            dev.langchain4j.model.embedding.EmbeddingModel embeddingModel) {
         this.vectorStore = vectorStore;
         this.pgJdbc = pgJdbc;
         this.bm25IndexService = bm25IndexService;
+        this.embeddingModel = embeddingModel;
     }
 
     /**
@@ -424,7 +425,7 @@ public class RagInitializer {
         } catch (IOException ignore) {
             metaSource = file.getAbsolutePath();
         }
-        Map<String, Object> meta = new HashMap<>();
+        dev.langchain4j.data.document.Metadata meta = new dev.langchain4j.data.document.Metadata();
         meta.put("source", metaSource);
         meta.put("file_name", file.getName());
         meta.put("page_count", 0);
@@ -438,8 +439,8 @@ public class RagInitializer {
         meta.put("version", verInfo[0]);
         meta.put("version_raw", verInfo[1]);
 
-        Document doc = new Document(cleaned, meta);
-        List<Document> chunks = splitter.apply(Collections.singletonList(doc));
+        Document doc = Document.from(cleaned, meta);
+        List<dev.langchain4j.data.segment.TextSegment> chunks = splitter.split(doc);
         if (chunks == null) chunks = Collections.emptyList();
 
         int batches = 0;
@@ -570,11 +571,11 @@ public class RagInitializer {
 
         System.out.println(logPrefix + "📥 开始处理：" + pdf.getName() + " (" + formatSize(pdf.length()) + ") ...");
         long startMs = System.currentTimeMillis();
-        List<Document> chunks = Collections.emptyList();
+        List<dev.langchain4j.data.segment.TextSegment> chunks = Collections.emptyList();
 
         long thisTimeoutMs = PER_PDF_MIN_TIMEOUT_MILLIS;
         int pageCount = 0;
-        try (PDDocument probe = Loader.loadPDF(pdf)) {
+        try (PDDocument probe = PDDocument.load(pdf)) {
             pageCount = probe.getNumberOfPages();
         } catch (Throwable ignore) {
         }
@@ -586,8 +587,8 @@ public class RagInitializer {
         final Set<Process> childProcesses = Collections.synchronizedSet(java.util.Collections.newSetFromMap(new IdentityHashMap<>()));
 
         try {
-            final FutureTask<List<Document>> ft = new FutureTask<>(() -> {
-                List<Document> result;
+            final FutureTask<List<dev.langchain4j.data.segment.TextSegment>> ft = new FutureTask<>(() -> {
+                List<dev.langchain4j.data.segment.TextSegment> result;
                 ProcessRegistrar registrarLambda = proc -> {
                     if (proc != null) childProcesses.add(proc);
                 };
@@ -641,7 +642,7 @@ public class RagInitializer {
             }
 
             String currentContentHash = nullToEmpty(
-                    (String) chunks.get(0).getMetadata().get("content_hash"));
+                    chunks.get(0).metadata().getString("content_hash"));
             if (stored != null && stored.sameContent(currentContentHash, chunks.size())) {
                 refreshStoredFileHash(pdf, currentFileHash);
                 System.out.println(logPrefix + "⏭️  跳过：" + pdf.getName()
@@ -671,7 +672,7 @@ public class RagInitializer {
                     break;
                 }
             }
-            for (Document d : chunks) {
+            for (dev.langchain4j.data.segment.TextSegment d : chunks) {
                 String s = null;
                 if (docTextGetter != null) {
                     try {
@@ -778,11 +779,11 @@ public class RagInitializer {
      * 打开 PDF 时同时绕过常见的所有者权限限制，以便从加密但内容可见的 PDF 中抽取文字。
      */
     // 旧签名：给诊断/测试代码用（不传 registrar = 不注册进程）
-    private List<Document> readAndSplitOnePdf(File pdf) throws Exception {
+    private List<dev.langchain4j.data.segment.TextSegment> readAndSplitOnePdf(File pdf) throws Exception {
         return readAndSplitOnePdf(pdf, NOOP_REGISTRAR);
     }
 
-    private List<Document> readAndSplitOnePdf(File pdf, ProcessRegistrar registrar) throws Exception {
+    private List<dev.langchain4j.data.segment.TextSegment> readAndSplitOnePdf(File pdf, ProcessRegistrar registrar) throws Exception {
         if (registrar == null) registrar = NOOP_REGISTRAR;
         String password = null;
         try (PDDocument pdDoc = openPdfLenient(pdf, password)) {
@@ -859,7 +860,7 @@ public class RagInitializer {
                     + " 非空白=" + finalNonBlank + " 加密=" + encrypted
                     + " 乱码率=" + String.format("%.1f%%", finalWeirdRate * 100));
 
-            List<Document> chunks = Collections.emptyList();
+            List<dev.langchain4j.data.segment.TextSegment> chunks = Collections.emptyList();
 
             if (finalNonBlank >= 20) {
                 // 抽取路径的选优靠原始文本打分，正文落库前先清洗（控制字符/私用区字形/水印串/连字符码点）
@@ -870,7 +871,7 @@ public class RagInitializer {
                 } catch (IOException ignore) {
                     metaSource = pdf.getAbsolutePath();
                 }
-                Map<String, Object> meta = new HashMap<>();
+                dev.langchain4j.data.document.Metadata meta = new dev.langchain4j.data.document.Metadata();
                 meta.put("source", metaSource);
                 meta.put("file_name", pdf.getName());
                 meta.put("page_count", pageCount);
@@ -882,8 +883,8 @@ public class RagInitializer {
                 String[] verInfo = parseVersionFromFileName(pdf.getName());
                 meta.put("version", verInfo[0]);
                 meta.put("version_raw", verInfo[1]);
-                Document doc = new Document(cleaned == null ? "" : cleaned, meta);
-                List<Document> c = splitter.apply(Collections.singletonList(doc));
+                Document doc = Document.from(cleaned == null ? "" : cleaned, meta);
+                List<dev.langchain4j.data.segment.TextSegment> c = splitter.split(doc);
                 if (c != null) chunks = c;
             }
 
@@ -1204,7 +1205,7 @@ public class RagInitializer {
     }
 
     /**
-     * 打开 PDF（兼容 PDFBox 3.0.x / 3.1.x）。仅用 Loader.loadPDF 系列稳定 API，
+     * 打开 PDF（兼容 PDFBox 2.x）。仅用 PDDocument.load 系列稳定 API，
      * 内存/磁盘缓存策略由 static{} 块统一配置。对加密文档尝试放开权限位，便于抽取可见文字。
      * <p>
      * 包级可见（不是 private）是给 {@link PdfPageLocator} 复用的：页码定位必须走同一个开文件的路子，
@@ -1212,8 +1213,8 @@ public class RagInitializer {
      */
     static PDDocument openPdfLenient(File pdf, String password) throws IOException {
         PDDocument doc = (password != null && !password.isEmpty())
-                ? Loader.loadPDF(pdf, password)
-                : Loader.loadPDF(pdf);
+                ? PDDocument.load(pdf, password)
+                : PDDocument.load(pdf);
         if (doc.isEncrypted()) {
             try {
                 Class<?> c = doc.getClass();
@@ -1557,16 +1558,16 @@ public class RagInitializer {
     /**
      * 分批写入 VectorStore（Embedding 调用），每批 ≤ DASHSCOPE_EMBEDDING_MAX_BATCH。
      */
-    private int writeChunksInBatches(List<Document> chunks, String logPrefix) {
+    private int writeChunksInBatches(List<dev.langchain4j.data.segment.TextSegment> chunks, String logPrefix) {
         if (chunks == null || chunks.isEmpty()) return 0;
         int total = chunks.size();
-        for (Document c : chunks) {
-            c.getMetadata().put("total_chunks", total);
+        for (dev.langchain4j.data.segment.TextSegment c : chunks) {
+            c.metadata().put("total_chunks", String.valueOf(total));
         }
         int batches = 0;
         long startMs = System.currentTimeMillis();
-        for (List<Document> batch : partition(chunks, DASHSCOPE_EMBEDDING_MAX_BATCH)) {
-            vectorStore.add(batch);
+        for (List<dev.langchain4j.data.segment.TextSegment> batch : partition(chunks, DASHSCOPE_EMBEDDING_MAX_BATCH)) {
+            writeBatchToStore(batch);
             batches++;
             if ((batches % 20) == 0) {
                 long secs = (System.currentTimeMillis() - startMs + 500) / 1000;
@@ -1574,6 +1575,23 @@ public class RagInitializer {
             }
         }
         return batches;
+    }
+
+    /**
+     * 把一批 Document 写进 LangChain4j 的 EmbeddingStore。
+     * <p>
+     * LangChain4j 的写入要「向量 + 文本」成对给（{@code addAll(embeddings, segments)}），
+     * 不像 Spring AI 的 {@code VectorStore.add(List<Document>)} 那样内部自动向量化，
+     * 所以这里先显式 embed，再成对写入。
+     */
+    private void writeBatchToStore(List<dev.langchain4j.data.segment.TextSegment> batch) {
+        if (vectorStore == null || batch == null || batch.isEmpty()) {
+            return;
+        }
+        List<dev.langchain4j.data.segment.TextSegment> segments = new ArrayList<>(batch);
+        dev.langchain4j.model.output.Response<List<dev.langchain4j.data.embedding.Embedding>> response =
+                embeddingModel.embedAll(segments);
+        vectorStore.addAll(response.content(), segments);
     }
 
     /**

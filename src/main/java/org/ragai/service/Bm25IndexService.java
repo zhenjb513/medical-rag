@@ -2,7 +2,7 @@ package org.ragai.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.ragai.config.PgVectorConfigProperties;
-import org.springframework.ai.document.Document;
+import dev.langchain4j.data.document.Document;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
@@ -276,18 +276,25 @@ public class Bm25IndexService {
         }
         return pg.query("SELECT id::text AS id, content, metadata::text AS meta FROM " + vectorTable()
                         + " WHERE id::text IN (" + in + ")",
-                (rs, i) -> new Document(rs.getString("id"), rs.getString("content"), readMeta(rs.getString("meta"))),
+                (rs, i) -> Document.from(rs.getString("content"), readMeta(rs.getString("meta"))),
                 args.toArray());
     }
 
-    @SuppressWarnings("unchecked")
-    private Map<String, Object> readMeta(String json) {
-        if (json == null || json.isBlank()) return new LinkedHashMap<>();
+    /** 把 PG 里的 metadata JSON 读成 LangChain4j 的 Metadata（值统一按字符串存，与 Spring AI 侧行为一致）。 */
+    private dev.langchain4j.data.document.Metadata readMeta(String json) {
+        dev.langchain4j.data.document.Metadata metadata = new dev.langchain4j.data.document.Metadata();
+        if (json == null || json.isBlank()) return metadata;
         try {
-            return new ObjectMapper().readValue(json, Map.class);
+            Map<String, Object> raw = new ObjectMapper().readValue(json, Map.class);
+            for (Map.Entry<String, Object> e : raw.entrySet()) {
+                if (e.getValue() != null) {
+                    metadata.put(e.getKey(), String.valueOf(e.getValue()));
+                }
+            }
         } catch (Exception ex) {
-            return new LinkedHashMap<>();
+            // 解析失败返回空 Metadata，与迁移前返回空 Map 的语义一致
         }
+        return metadata;
     }
 
     /** 相邻块扩展：按 (source, chunk_index) 成对取回同一份文档里紧挨着的块。 */
@@ -303,7 +310,7 @@ public class Bm25IndexService {
         }
         return pg.query("SELECT id::text AS id, content, metadata::text AS meta FROM " + vectorTable()
                         + " WHERE (metadata->>'source', (metadata->>'chunk_index')::int) IN (VALUES " + values + ")",
-                (rs, i) -> new Document(rs.getString("id"), rs.getString("content"), readMeta(rs.getString("meta"))),
+                (rs, i) -> Document.from(rs.getString("content"), readMeta(rs.getString("meta"))),
                 args.toArray());
     }
 

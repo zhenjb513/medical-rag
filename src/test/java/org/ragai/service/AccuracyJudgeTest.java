@@ -3,7 +3,7 @@ package org.ragai.service;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
-import org.springframework.ai.document.Document;
+import dev.langchain4j.data.document.Document;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -31,13 +31,13 @@ class AccuracyJudgeTest {
         meta.put("source", "/data/pdf/" + file);
         meta.put("file_name", file);
         meta.put("chunk_index", chunkIndex);
-        return new Document("id-" + file + "-" + chunkIndex, text, meta);
+        return Document.from(text, metaWithId("id-" + file + "-" + chunkIndex, meta));
     }
 
     private static List<String> normDocs(List<Document> docs) {
         List<String> out = new ArrayList<>();
         for (Document d : docs) {
-            out.add(EvaluationService.normalizeForMatch(d.getText()));
+            out.add(EvaluationService.normalizeForMatch(d.text()));
         }
         return out;
     }
@@ -181,7 +181,7 @@ class AccuracyJudgeTest {
     @DisplayName("出处块没有 metadata 时不抛异常，出处名写成 <unknown> 并算错块")
     void documentWithoutMetadata() {
         String ans = EvaluationService.normalizeForMatch("通常推荐LDL-C较基线降低≥50%且绝对值<1.8 mmol/L。");
-        Document d9 = new Document("id9", "绝对值<1.8 mmol/L。", new LinkedHashMap<>());
+        Document d9 = Document.from("绝对值<1.8 mmol/L。", metaWithId("id9", new LinkedHashMap<String, Object>()));
         var v = EvaluationService.judgeAccuracy(ans, normDocs(List.of(d9)), List.of(d9),
                 List.of("1.8mmol/L"), List.of(XZ + "#107"));
         assertVerdict("无元数据", v,
@@ -237,5 +237,21 @@ class AccuracyJudgeTest {
                 List.of("4~6周"), List.of(XZ + "#55"));
         // source 元数据带的是 /data/pdf/ 全路径，answerChunks 只写文件名；对不上就永远判不成答案块
         assertEquals(true, v.pass(), "块主键对不上考卷标注：" + v.evidence());
+    }
+
+    /** 测试辅助：把 Map 元数据 + 文档 id 合成 LangChain4j Metadata（id 存进 "id" 键）。 */
+    static dev.langchain4j.data.document.Metadata metaWithId(Object id, java.util.Map<String, ?> meta) {
+        dev.langchain4j.data.document.Metadata m = new dev.langchain4j.data.document.Metadata();
+        if (id != null) {
+            m.put("id", String.valueOf(id));
+        }
+        if (meta != null) {
+            for (java.util.Map.Entry<String, ?> e : meta.entrySet()) {
+                if (e.getValue() != null) {
+                    m.put(e.getKey(), String.valueOf(e.getValue()));
+                }
+            }
+        }
+        return m;
     }
 }

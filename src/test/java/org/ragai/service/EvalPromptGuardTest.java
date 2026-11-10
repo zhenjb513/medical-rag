@@ -18,7 +18,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class EvalPromptGuardTest {
 
     private static String prompt() {
-        return new RagReferenceService(null).buildSystemPrompt("【测试上下文块】");
+        return new RagReferenceService().buildSystemPrompt("【测试上下文块】");
     }
 
     @Test

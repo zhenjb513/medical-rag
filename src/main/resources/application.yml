@@ -73,6 +73,20 @@ spring:
         options:
           model: text-embedding-v3
 
+  # ====== LangChain4j 配置（本分支主框架）======
+  # 与上面的 spring.ai.alibaba.dashscope 并存但互不干扰：
+  #   Spring AI 侧前缀 spring.ai.alibaba.dashscope
+  #   LangChain4j 侧前缀 langchain4j.community.dashscope
+  langchain4j:
+    community:
+      dashscope:
+        chat-model:
+          api-key: ${DASHSCOPE_API_KEY:}
+          model-name: qwen-plus
+        embedding-model:
+          api-key: ${DASHSCOPE_API_KEY:}
+          model-name: text-embedding-v3
+
 # ====== 应用级配置（RAG 知识库 + PgVector 向量存储）======
 app:
   # ====== RAG 知识库 PDF 扫描路径（不再写死文件名！3 种用法任选）======

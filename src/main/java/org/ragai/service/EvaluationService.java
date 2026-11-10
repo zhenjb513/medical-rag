@@ -1,5 +1,6 @@
 package org.ragai.service;
 
+import dev.langchain4j.data.document.Document;
 import org.ragai.controller.ChatController;
 import org.ragai.model.MedicalTestSet;
 import org.ragai.model.TestCase;
@@ -239,7 +240,7 @@ public class EvaluationService {
      * 「没编造」不等于「答在对的段落上」，所以出处必须对得上答案块。
      */
     static AccuracyVerdict judgeAccuracy(String normAnswer, List<String> normDocs,
-                                         List<org.springframework.ai.document.Document> docs,
+                                         List<Document> docs,
                                          List<String> keywords, List<String> answerChunks) {
         String gold = null;       // 答案有 + 出处是标注答案块
         String other = null;      // 答案有 + 出处在别的块
@@ -339,15 +340,15 @@ public class EvaluationService {
     }
 
     /** 块主键：文件名#chunk_index，和 MedicalTestSet 的 answerChunks、/bm25/locate 同一套写法。 */
-    private static String chunkKeyOf(org.springframework.ai.document.Document doc) {
-        Map<String, Object> meta = doc.getMetadata() == null ? Map.of() : doc.getMetadata();
-        Object src = meta.get("source") != null ? meta.get("source") : meta.get("file_name");
+    private static String chunkKeyOf(Document doc) {
+        dev.langchain4j.data.document.Metadata meta = doc.metadata() == null ? new dev.langchain4j.data.document.Metadata() : doc.metadata();
+        String src = meta.getString("source") != null ? meta.getString("source") : meta.getString("file_name");
         String name = src == null ? "<unknown>" : String.valueOf(src);
         int slash = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
         if (slash > 0 && slash < name.length() - 1) {
             name = name.substring(slash + 1);
         }
-        return name + "#" + meta.get("chunk_index");
+        return name + "#" + meta.getString("chunk_index");
     }
 
     /**
@@ -373,10 +374,10 @@ public class EvaluationService {
      *  paraphrase 会让逐字比失效，没拿到全量数据前不拍一个易误伤的判据。负样本拒答没有内联引用，total=0 如实报。
      */
     static InlineCitationVerdict judgeInlineCitations(String rawAnswer,
-                                                      List<org.springframework.ai.document.Document> docs) {
+                                                      List<Document> docs) {
         Set<String> contextKeys = new HashSet<>();
         if (docs != null) {
-            for (org.springframework.ai.document.Document d : docs) {
+            for (Document d : docs) {
                 contextKeys.add(chunkKeyOf(d));
             }
         }
@@ -427,8 +428,8 @@ public class EvaluationService {
         String normAnswer = normalizeForMatch(answer);
         // 逐块归一：模型只看到这些文本，答案里的说法能在这里找到才算有出处
         List<String> normDocs = new ArrayList<>();
-        for (org.springframework.ai.document.Document d : trace.docs()) {
-            normDocs.add(normalizeForMatch(d.getText() == null ? "" : d.getText()));
+        for (Document d : trace.docs()) {
+            normDocs.add(normalizeForMatch(d.text() == null ? "" : d.text()));
         }
 
         StringBuilder failReasons = new StringBuilder();
