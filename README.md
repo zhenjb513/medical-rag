@@ -46,7 +46,7 @@ flowchart LR
 | HanLP | portable-1.8.4 | BM25 中文分词（词典打包在 jar 里，无需外部数据） |
 | LangChain4j | 1.0.0-beta3 | 并存实验链路（`/lc/*`），与 `/chat` 走两套框架 |
 | PDFBox | 随 Spring AI pdf-reader | PDF 文字层抽取 |
-| JUnit 5 | — | 171 条纯逻辑单测，不连库不打模型 |
+| JUnit 5 | — | 187 条纯逻辑单测，不连库不打模型 |
 
 > 版本配套硬约束：Spring AI Alibaba 1.1.2.3 的 pom 里直接硬编码了 Spring Boot 3.5.10 + Spring AI 1.1.2，不要随意升级。
 
@@ -217,7 +217,7 @@ PgVectorHikariPool - Start completed.          ← 向量库池
 👁️ WatchService 已启动，监听目录：D:\ai-docs   ← 热监听
 ```
 
-跑测试（171 条纯逻辑单测，几秒完成）：
+跑测试（187 条纯逻辑单测，几秒完成）：
 
 ```bash
 ./mvnw test          # Linux / macOS；Windows PowerShell 用 .\mvnw.cmd test
@@ -251,6 +251,8 @@ CI 每次 push 自动跑：仓库镜像在 GitHub（`zhenjb513/medical-rag`）�
 ![评估页：逐题结果](docs/web-eval-new2.png)
 
 报告为 2026-10-22 的 **4 题小样本**子集（`subset_filter`，全 4 过），所以页面顶栏写 61 题考卷、卡片写 4/4。全卷 60/61 的那次在下面「评测体系 → 两套指标，口径不同」。
+
+⚠️ 这两张图是改前的渲染：那时诊断项和四道门禁混在同一个「四维度得分」列表里画百分比进度条，`0/61` 会显示成 `0%`，读起来像考了零分（其实是"一次都没命中"＝好事）。现在门禁与诊断项分成两块，诊断项只给计数不画条。图待唯一一次全量重跑后重拍。
 
 ### 运行诊断
 
@@ -612,17 +614,18 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | 维度 | 判定逻辑 | 源码 |
 |---|---|---|
 | **答案准确性** | 三选一：① 预期关键词在答案里命中 + 在本次上下文里出现；② 出处就是考卷标注的答案块（`answerChunks`）；③ 考卷标注的关键词在答案里出现 + 该关键词所在的块号也在本次上下文里 | `AccuracyJudgeTest` |
-| **引用正确性** | 答案里出现了 `【引用来源】` 且引用的文件名列表非空 | `ChunkCitationTest` |
+| **引用正确性** | 答案里命中该题标注的预期文档名（`expectedReferences` 任一，归一化后逐字包含）；负样本或无标注自动通过。判的是模型输出本身——代码拼的 `【引用来源】` 页脚不参与判定 | `EvaluationService` 第 2 步（页脚形状另由 `ChunkCitationTest` 守） |
 | **幻觉抑制** | 答案里没有明显的外部知识（如电影名、流行语） | `EvaluationService` hallucinationPass |
 | **合规性** | 按小句判定：诊断措辞不用第一人称（「我觉得」「我推荐」）、高血压目标用「应控制在」等条件标记而不是「必须」 | `ComplianceJudgeTest` |
 
-三类可疑标记（都是诊断项，**不计入通过率**，帮助定位「看着像对其实不对」的情况）：
+四类可疑标记（都是诊断项，**不计入通过率**，帮助定位「看着像对其实不对」的情况）：
 
 | 标记 | 含义 |
 |---|---|
 | `backfillSuspect` | 关键词只在答案里出现、上下文里没有 → 模型在用自己的知识替库背书 |
 | `wrongBlockSuspect` | 关键词有出处、但出处落在考卷标注的答案块**之外**的块上 → 检索找回了同一份指南里无关的段落 |
 | `citationFabricatedSuspect` | 答案里「摘自《文件名》块N」式内联引用指向**没送进模型**的块 → 模型编造块号/文件名（2026-11-09 起，`InlineCitationJudgeTest`）。只验「引用的块真送过」，不验「句子内容真出自该块」；旧报告无 summary 口径行即为未核对 |
+| `templateLeakSuspect` | 答案把提示词里的**示例格式本身**当内容抄了（`《文件名.pdf》`／`块N`／`【文档N】`）→ 不是真出处（2026-11-09 起，`TemplateLeakJudgeTest`）。补的正是上一行的漏检：那条正则要求「块」后跟数字，抄出来的「块N」认不出，既不算引用也不算编造。「上下文」一词刻意不判（正文正常说话会用到）；旧报告无 summary 口径行即为未核对 |
 
 ## 两套指标，口径不同
 
@@ -639,7 +642,7 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 
 ---
 
-# 🧪 单元测试（171 条，纯逻辑）
+# 🧪 单元测试（187 条，纯逻辑）
 
 全部在 `src/test/java/`，**不连数据库、不调模型、不依赖任何外部服务**。每条测试验证的是纯逻辑判定：
 
@@ -649,11 +652,13 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | `ComplianceJudgeTest` | 8 | 合规按小句判定诊断措辞（人称 + 条件标记） |
 | `EvalNormalizeTest` | 5 | 匹配归一化只管空白和连字符家族，**不动标点** |
 | `EvalPromptGuardTest` | 5 | 拒答原话逐字命中、提示词与判分器共用同一常量 |
-| `EvalSummaryCaliberTest` | 5 | 报告 summary 里四条口径行（含句子级出处）+ 三类可疑计数 |
+| `EvalSummaryCaliberTest` | 6 | 报告 summary 里五条口径行（含句子级出处、模板占位字）+ 四类可疑计数 |
 | `InlineCitationJudgeTest` | 8 | 句子级出处核对：内联「摘自《文件名》块N」必须落在当次送进模型的块上；编块号/编文件名判可疑、带 `-` 的文件名不被归一化打歪、页脚清单不算逐句出处、提示词模板与判分正则反射互钉 |
+| `TemplateLeakJudgeTest` | 10 | 模板占位字探针：实测漏出的「（摘自《文件名.pdf》块N）」必须命中，合法引用/拒答原话/代码页脚不许误伤，「上下文」一词刻意不判，并钉住「内联正则认不出块N」这个漏检确实由本层补上 |
 | `MedicalTestSetStructureTest` | 6 | 考卷结构（58 可答 + 3 负样本）、题量、块主键格式、书面/口语共用同一份标注 |
 | `RetrievalModeGuardTest` | 8 | 模式降级表（bm25→hybrid、不认识→vector+警告） |
 | `ChunkCitationTest` | 12 | 引用行形状：文件名排最前 + 块号列表；上下文头部「【文档N】文件名#块号」的写法与缺元数据时的降级 |
+| `ChatRefsBlockTest` | 5 | 引用列表为空时不拼光杆「【引用来源】」标题（闸门判定指南答不了的那条路）；非空时页脚形状逐字不变；流式空列表连 `refs` 事件都不发（前端收到就画框） |
 | `ChatMemoryManagerTest` | 3 | 多轮历史交给模型前逐个必须真是 `Message`：新会话不许塞占位空列表、Redis 里的旧脏元素要跳过而不是炸在 `ClassCastException` |
 | `PdfPageLocatorTest` | 23 | 块号→物理页 / 页脚印码：偏移不一致不给、歧义跳过、不猜 |
 | `SectionIndexTest` | 22 | 块号→章节号：形状闸门 + 大纲单调性 + 跨节给范围 |
