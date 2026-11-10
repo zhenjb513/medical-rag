@@ -412,20 +412,32 @@ function renderEval(d) {
     </div>
   `;
 
-  // 维度进度条
+  // 只有四道门禁算「得分」。诊断项是命中越少越好，画成百分比进度条会被读反（0/61 显示成 0% 像考了零分）
   const dimLabels = { '答案准确性': '准确性', '引用正确性': '引用正确性', '幻觉抑制': '幻觉抑制', '合规性': '合规性' };
-  html += '<div class="dimensions"><h3>📊 四维度得分</h3>';
-  Object.entries(dims).forEach(([k, v]) => {
+  html += '<div class="dimensions"><h3>📊 四维度得分（门禁，计入通过率）</h3>';
+  Object.entries(dims).filter(([k]) => dimLabels[k]).forEach(([k, v]) => {
     const m = String(v).match(/(\d+)\s*\/\s*(\d+)/);
     const pct = m ? Math.round(parseInt(m[1]) / parseInt(m[2]) * 100) : 0;
     html += `
       <div class="dim-row">
-        <span class="dim-name">${dimLabels[k] || k}</span>
+        <span class="dim-name">${dimLabels[k]}</span>
         <div class="dim-bar"><div class="dim-fill" style="width:${pct}%"></div></div>
         <span class="dim-text">${pct}%（${v}）</span>
       </div>
     `;
   });
+  const diagnostics = Object.entries(dims).filter(([k]) => !dimLabels[k]);
+  if (diagnostics.length) {
+    html += '<h3>🔎 诊断项（不计入通过率，命中越少越好）</h3>';
+    diagnostics.forEach(([k, v]) => {
+      html += `
+        <div class="dim-row">
+          <span class="dim-name">${k}</span>
+          <span class="dim-text">${v}</span>
+        </div>
+      `;
+    });
+  }
   html += '</div>';
 
   // 摘要
