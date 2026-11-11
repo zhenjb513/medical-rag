@@ -50,5 +50,6 @@ scratch/
 
 ### 本地运行日志 / SSE 调试抓包中间产物（不在代码库跟踪）###
 /app-*.log
+/run-startup.log
 /sse-*.txt
 /tmp-extract/

@@ -236,26 +236,6 @@ public class ChatController {
                 );
             }
 
-            // 检索不到任何指南文档＝不是指南问答（库存查询、闲聊、无关问题）。此时若仍走纯 RAG 流式，
-            // 模型在空上下文里常直接吐空答案（实测「骨科缝合包还有多少」answerLen=0）、连拒绝语都不给，
-            // 前端只能拿到一条空流。改走带库存工具的同步双轮路径：让模型自己决定是否调库存工具，
-            // 拿不到出处的问题（如火星、太阳系）也由模型自然应答，且 docs 为空故不会拼引用来源。
-            if (docs.isEmpty()) {
-                String toolAnswer = chatWithTools(promptMessages);
-                if (toolAnswer == null || toolAnswer.isBlank()) {
-                    toolAnswer = RAG_REFUSAL_PHRASE;
-                }
-                String finalAnswer = stripModelRefs(toolAnswer);
-                if (sessionId != null && !sessionId.isBlank()) {
-                    chatMemoryManager.appendTurn(sessionId, message, finalAnswer);
-                }
-                log.info("[Stream] 无指南命中，走工具路径 answerLen={}", finalAnswer.length());
-                return Flux.just(
-                        ServerSentEvent.<String>builder().data(finalAnswer).build(),
-                        ServerSentEvent.<String>builder().data("[DONE]").event("done").build()
-                );
-            }
-
             StringBuilder answerBuilder = new StringBuilder();
 
             long startNanos = System.nanoTime();
@@ -340,7 +320,25 @@ public class ChatController {
             return tokenFlux
                     .map(token -> ServerSentEvent.<String>builder().data(token).build())
                     .concatWith(Flux.defer(() -> {
-                        boolean cited = hasInlineCitation(answerBuilder.toString());
+                        String answer = answerBuilder.toString().trim();
+                        // 模型面对不相关/空检索常直接吐空答案（实测「骨科缝合包还有多少」answerLen=0），
+                        // 前端只拿到一条空流。空答案时改走带库存工具的同步双轮：让模型决定是否调库存工具，
+                        // 仍答不了则回退拒绝语——保证前端一定有内容可显示。
+                        if (answer.isEmpty()) {
+                            String toolAnswer = chatWithTools(promptMessages);
+                            if (toolAnswer == null || toolAnswer.isBlank()) {
+                                toolAnswer = RAG_REFUSAL_PHRASE;
+                            }
+                            String finalAnswer = stripModelRefs(toolAnswer);
+                            answerBuilder.setLength(0);
+                            answerBuilder.append(finalAnswer);
+                            log.info("[Stream] 模型空答案，走工具兜底 answerLen={}", finalAnswer.length());
+                            return Flux.just(
+                                    ServerSentEvent.<String>builder().data(finalAnswer).build(),
+                                    ServerSentEvent.<String>builder().data("[DONE]").event("done").build()
+                            );
+                        }
+                        boolean cited = hasInlineCitation(answer);
                         return refsAndDone(cited ? refsBlock : "");
                     }))
                     .doOnCancel(() -> {
