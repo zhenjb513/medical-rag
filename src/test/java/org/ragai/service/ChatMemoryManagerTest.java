@@ -5,55 +5,44 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.ChatMessageSerializer;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
-import org.springframework.data.redis.core.ListOperations;
 import org.springframework.data.redis.core.RedisTemplate;
 import org.springframework.data.redis.core.SetOperations;
+import org.springframework.data.redis.core.ValueOperations;
 
-import java.util.ArrayList;
+import java.time.Duration;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
-/**
- * 多轮记忆的会话历史。这里的返回值会原样进 {@code new Prompt(messages)}，
- * 而模型侧（DashScopeChatModel.createRequest）对每个元素强转 Message——
- * 所以「列表里混进非 Message」不是脏数据问题，是整条问答链路 500 的问题。
- * 2026-11-05 拍问诊截图时撞上的就是这个：新会话第一条流式消息必然 ClassCastException。
- */
 class ChatMemoryManagerTest {
 
     @SuppressWarnings("unchecked")
-    private final ListOperations<String, Object> listOps = Mockito.mock(ListOperations.class);
+    private final SetOperations<String, String> setOps = Mockito.mock(SetOperations.class);
     @SuppressWarnings("unchecked")
-    private final SetOperations<String, Object> setOps = Mockito.mock(SetOperations.class);
-    @SuppressWarnings("unchecked")
-    private final RedisTemplate<String, Object> redisTemplate = Mockito.mock(RedisTemplate.class);
+    private final ValueOperations<String, String> valueOps = Mockito.mock(ValueOperations.class);
     @SuppressWarnings("unchecked")
     private final RedisTemplate<String, String> strTemplate = Mockito.mock(RedisTemplate.class);
 
-    @SuppressWarnings("unchecked")
     private ChatMemoryManager manager() {
-        Mockito.when(redisTemplate.opsForList()).thenReturn(listOps);
-        Mockito.when(strTemplate.opsForSet()).thenReturn((SetOperations) setOps);
-        return new ChatMemoryManager(redisTemplate, strTemplate, 10, 1800L);
+        Mockito.when(strTemplate.opsForSet()).thenReturn(setOps);
+        Mockito.when(strTemplate.opsForValue()).thenReturn(valueOps);
+        return new ChatMemoryManager(strTemplate, 10, 1800L);
     }
 
     @Test
     @DisplayName("新会话的历史是空的：提示词只有 system + user，且每个元素真是 Message")
     void freshSessionYieldsCleanPrompt() {
-        Mockito.when(listOps.range(Mockito.anyString(), Mockito.anyLong(), Mockito.anyLong()))
-                .thenReturn(List.of());
+        Mockito.when(valueOps.get(Mockito.anyString())).thenReturn(null);
         ChatMemoryManager mgr = manager();
 
         List<ChatMessage> messages = mgr.buildPromptMessages("sess-new", "你是助手", "降压目标是多少？");
 
         assertEquals(2, messages.size());
-        // 模型侧就是这么用的：逐个强转，任何一个元素不是 ChatMessage 就整轮炸
         for (ChatMessage m : messages) {
             assertInstanceOf(ChatMessage.class, m);
         }
@@ -62,34 +51,60 @@ class ChatMemoryManagerTest {
     }
 
     @Test
-    @DisplayName("Redis 里躺着旧版写进去的 ArrayList 占位：跳过脏元素，保留真历史的顺序")
-    void legacySentinelIsSkippedNotPassedThrough() {
-        // 旧 newSessionId() 往会话列表右推过一个空 ArrayList，反序列化回来就不是 ChatMessage
-        List<Object> polluted = new ArrayList<>();
-        polluted.add(new ArrayList<>());
-        UserMessage earlier = UserMessage.from("上一轮问题");
-        AiMessage earlierAnswer = AiMessage.from("上一轮回答");
-        polluted.add(earlier);
-        polluted.add(earlierAnswer);
-        Mockito.when(listOps.range(Mockito.anyString(), Mockito.anyLong(), Mockito.anyLong()))
-                .thenReturn(polluted);
+    @DisplayName("已有历史能正确反序列化并拼进提示词")
+    void existingHistoryIsDeserializedAndMerged() {
+        List<ChatMessage> stored = List.of(
+                UserMessage.from("上一轮问题"),
+                AiMessage.from("上一轮回答")
+        );
+        String json = ChatMessageSerializer.messagesToJson(stored);
+        Mockito.when(valueOps.get(Mockito.anyString())).thenReturn(json);
 
-        List<ChatMessage> history = manager().getHistory("sess-dirty");
+        List<ChatMessage> messages = manager().buildPromptMessages("sess-old", "你是助手", "新问题");
 
-        assertEquals(2, history.size(), "脏元素该被跳掉，而不是原样交给模型");
-        assertSame(earlier, history.get(0));
-        assertSame(earlierAnswer, history.get(1));
+        assertEquals(4, messages.size());
+        assertInstanceOf(SystemMessage.class, messages.get(0));
+        assertInstanceOf(UserMessage.class, messages.get(1));
+        assertEquals("上一轮问题", ((UserMessage) messages.get(1)).singleText());
+        assertInstanceOf(AiMessage.class, messages.get(2));
+        assertEquals("上一轮回答", ((AiMessage) messages.get(2)).text());
+        assertInstanceOf(UserMessage.class, messages.get(3));
+        assertEquals("新问题", ((UserMessage) messages.get(3)).singleText());
     }
 
     @Test
-    @DisplayName("建会话只登记 sessionId：不许再往历史列表里塞占位值")
-    void newSessionRegistersIdWithoutTouchingHistoryList() {
+    @DisplayName("历史 JSON 损坏时按空历史处理，不抛 500")
+    void corruptedJsonFallsBackToEmptyHistory() {
+        Mockito.when(valueOps.get(Mockito.anyString())).thenReturn("not-valid-json");
+
+        List<ChatMessage> history = manager().getHistory("sess-corrupt");
+
+        assertTrue(history.isEmpty());
+    }
+
+    @Test
+    @DisplayName("appendTurn 把历史序列化成 JSON 写回，并续期 TTL")
+    void appendTurnSerializesAndStoresJson() {
+        Mockito.when(valueOps.get(Mockito.anyString())).thenReturn(null);
+        ChatMemoryManager mgr = manager();
+
+        mgr.appendTurn("sess-1", "你好", "你好！有什么可以帮您？");
+
+        Mockito.verify(valueOps).set(Mockito.eq("mkbai:chat:sess-1"),
+                Mockito.argThat(json -> json != null && json.contains("你好") && json.contains("你好！")),
+                Mockito.eq(Duration.ofSeconds(1800L)));
+        Mockito.verify(setOps).add(ChatMemoryManager.SESSION_SET, "sess-1");
+    }
+
+    @Test
+    @DisplayName("建会话只登记 sessionId：不许往历史里写任何东西")
+    void newSessionRegistersIdWithoutTouchingHistory() {
         ChatMemoryManager mgr = manager();
         String sessionId = mgr.newSessionId();
 
         assertTrue(sessionId.matches("[0-9a-f]{32}"), "sessionId 形状变了前端会遭殃：" + sessionId);
         Mockito.verify(setOps).add(ChatMemoryManager.SESSION_SET, sessionId);
-        Mockito.verify(listOps, Mockito.never())
-                .rightPush(Mockito.anyString(), Mockito.any());
+        Mockito.verify(valueOps, Mockito.never())
+                .set(Mockito.anyString(), Mockito.anyString(), Mockito.any(Duration.class));
     }
 }

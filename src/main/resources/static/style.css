@@ -268,8 +268,6 @@ html, body {
   color: var(--text-muted);
 }
 
-.refs-block strong { color: var(--primary-dark); }
-
 /* 思考中 */
 .thinking {
   display: flex;

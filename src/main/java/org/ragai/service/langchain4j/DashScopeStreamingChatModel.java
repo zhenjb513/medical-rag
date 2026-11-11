@@ -76,7 +76,7 @@ public class DashScopeStreamingChatModel implements StreamingChatLanguageModel {
 
             AtomicReference<TokenUsage> usageRef = new AtomicReference<>();
 
-            flowable.blockingSubscribe(
+            flowable.subscribe(
                     result -> emitPartial(result, handler, usageRef),
                     error -> {
                         log.warn("[DashScope 流式] 中途出错：{}", error.getMessage());

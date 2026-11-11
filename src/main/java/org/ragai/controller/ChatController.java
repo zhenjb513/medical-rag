@@ -34,6 +34,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @RestController
 @Validated
@@ -43,6 +45,14 @@ public class ChatController {
 
     public static final String RAG_REFUSAL_PHRASE =
             "根据现有知识库资料，无法回答该问题。请换一种问法或补充更多背景信息。";
+
+    /**
+     * 匹配模型在答案末尾自列的引用来源标题行。模型可能输出的变体：
+     * 【引用来源】、[引用来源]、（引用来源）、引用来源：、参考文献、参考资料、资料来源……
+     * 行首允许空白和左括号，行尾允许右括号和冒号。匹配到此行即截断，引用来源统一由后端提供。
+     */
+    private static final Pattern MODEL_REFS_PATTERN =
+            Pattern.compile("(?m)^[\\s（(【\\[]*(引用来源|参考文献|参考资料|资料来源)[\\s）)】\\]:：]*$");
 
     private static final String SYSTEM_PROMPT = """
             你是三甲医院心内科主任医师，只能依据提供的临床指南回答。
@@ -55,7 +65,8 @@ public class ChatController {
                只许取这两项：不得自拟或凭记忆换成别的指南名，也不要把「【文档1】」「上下文」「《文件名.pdf》块N」这些模板占位字本身写进答案。
                取不到这两项，就说明该结论没有出处，应当删掉它或明确说明不确定。
             4. 患者隐私（姓名/身份证/病历号）不得在回复中出现。
-            5. 回复结构：先给结论，再列带标注的依据，最后附引用来源清单。
+            5. 回复结构：先给结论，再列带标注的依据。
+            （引用来源由系统在答案末尾自动附上，不要自行罗列清单。）
             """;
 
     private static final String SYSTEM_PROMPT_NO_ANNOT = """
@@ -65,7 +76,8 @@ public class ChatController {
             2. 不得给出个体化诊断或用药方案，仅提供循证医学依据。
             3. 所有结论必须标注对应的指南名称与年份。
             4. 患者隐私（姓名/身份证/病历号）不得在回复中出现。
-            5. 回复结构：先给结论，再列依据，最后附引用来源。
+            5. 回复结构：先给结论，再列依据。
+            （引用来源由系统在答案末尾自动附上，不要自行罗列清单。）
             """;
 
     private final ChatLanguageModel chatModel;
@@ -153,6 +165,19 @@ public class ChatController {
     }
 
     /**
+     * 模型有时不听提示词，会在答案末尾自列「【引用来源】」清单，和后端 {@link #buildRefsBlock}
+     * 拼的精确来源重复且不一致。这里把模型自输的引用来源标题行及之后的内容全部裁掉，
+     * 引用来源统一由后端提供。
+     */
+    static String stripModelRefs(String answer) {
+        if (answer == null) {
+            return "";
+        }
+        Matcher m = MODEL_REFS_PATTERN.matcher(answer);
+        return m.find() ? answer.substring(0, m.start()).trim() : answer.trim();
+    }
+
+    /**
      * 给评估链路用：跑完整 RAG 流程，但同时返回送进模型的 docs。
      * 这里刻意不挂工具——61 题考卷全是指南问答，挂上会让每题多走一次工具选择，历史基线就不再是同一口径。
      */
@@ -176,43 +201,6 @@ public class ChatController {
         }
         if (answer == null || answer.isBlank()) answer = RAG_REFUSAL_PHRASE;
         return new ChatTrace(answer.trim(), docs, refs);
-    }
-
-    @GetMapping("/chat")
-    @RateLimiter(name = "chatRateLimiter", fallbackMethod = "chatRateLimitFallback")
-    @CircuitBreaker(name = "llmCircuitBreaker", fallbackMethod = "chatCircuitFallback")
-    public String chat(@RequestParam(value = "message") @NotBlank(message = "问题不能为空") String message,
-                       @RequestParam(value = "sessionId", required = false) @Size(max = 64) String sessionId) {
-        try {
-            String currentQuery = QueryExpander.expand(message);
-            List<Document> docs = multiHopRetrievalService.search(currentQuery, chatTopK, null);
-            String ragContext = ragReferenceService.buildContext(docs);
-            List<String> refs = ragReferenceService.extractReferences(docs);
-            String fullPrompt = SYSTEM_PROMPT + "\n\n【知识库上下文】\n" + ragContext + "\n\n【用户问题】\n" + message;
-
-            List<ChatMessage> promptMessages;
-            if (sessionId != null && !sessionId.isBlank()) {
-                promptMessages = chatMemoryManager.buildPromptMessages(sessionId, SYSTEM_PROMPT, fullPrompt);
-            } else {
-                promptMessages = List.of(
-                        SystemMessage.from(SYSTEM_PROMPT),
-                        UserMessage.from(fullPrompt)
-                );
-            }
-
-            String answer = chatWithTools(promptMessages);
-            String finalAnswer = (answer == null || answer.isBlank())
-                    ? RAG_REFUSAL_PHRASE : answer.trim();
-            String finalText = finalAnswer + buildRefsBlock(refs);
-
-            if (sessionId != null && !sessionId.isBlank()) {
-                chatMemoryManager.appendTurn(sessionId, message, finalText);
-            }
-            return finalText;
-        } catch (Exception e) {
-            log.error("chat error", e);
-            return RAG_REFUSAL_PHRASE + "（服务暂时不可用：" + e.getMessage() + "）";
-        }
     }
 
     @GetMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -246,6 +234,9 @@ public class ChatController {
             AtomicLong firstTokenNanos = new AtomicLong(0);
             AtomicBoolean cancelled = new AtomicBoolean(false);
 
+            AtomicBoolean refsSuppressed = new AtomicBoolean(false);
+            StringBuilder tailBuf = new StringBuilder();
+
             Flux<String> tokenFlux = Flux.<String>create(sink -> {
                 try {
                     streamingChatModel.chat(
@@ -275,6 +266,29 @@ public class ChatController {
                 }
             })
                     .timeout(Duration.ofSeconds(120))
+                    .map(token -> {
+                        if (refsSuppressed.get()) {
+                            return "";
+                        }
+                        tailBuf.append(token);
+                        String combined = tailBuf.toString();
+                        Matcher m = MODEL_REFS_PATTERN.matcher(combined);
+                        if (m.find()) {
+                            refsSuppressed.set(true);
+                            String kept = combined.substring(0, m.start());
+                            tailBuf.setLength(0);
+                            return kept;
+                        }
+                        int lastNewline = combined.lastIndexOf('\n');
+                        if (lastNewline >= 0) {
+                            String flush = combined.substring(0, lastNewline + 1);
+                            tailBuf.setLength(0);
+                            tailBuf.append(combined.substring(lastNewline + 1));
+                            return flush;
+                        }
+                        return "";
+                    })
+                    .filter(s -> !s.isEmpty())
                     .doOnNext(token -> {
                         if (firstTokenObserved.compareAndSet(false, true)) {
                             long ttft = System.nanoTime() - startNanos;
@@ -421,26 +435,6 @@ public class ChatController {
 
     // ========== Resilience4j Fallback 方法 ==========
     // 规则：参数和原方法一致，最后多一个 Throwable；返回值和原方法一致
-
-    public String chatRateLimitFallback(String message, String sessionId, Throwable t) {
-        log.warn("[RateLimit] 拒绝请求 message={}", message);
-        return "请求过于频繁（限流 20 QPS），请稍后再试。";
-    }
-
-    public String chatCircuitFallback(String message, String sessionId, Throwable t) {
-        log.warn("[CircuitBreaker] LLM 熔断降级，返回纯检索结果", t);
-        String currentQuery = QueryExpander.expand(message);
-        try {
-            List<Document> docs = multiHopRetrievalService.search(currentQuery, chatTopK, null);
-            String ragContext = ragReferenceService.buildContext(docs);
-            List<String> refs = ragReferenceService.extractReferences(docs);
-            return "【服务降级】LLM 暂时不可用，以下为检索到的相关内容：\n\n"
-                    + ragContext + buildRefsBlock(refs);
-        } catch (Exception retryFail) {
-            log.error("[CircuitBreaker] 降级也失败了", retryFail);
-            return RAG_REFUSAL_PHRASE + "（检索也暂时不可用）";
-        }
-    }
 
     public Flux<ServerSentEvent<String>> chatStreamRateLimitFallback(
             String message, String sessionId, Throwable t) {

@@ -1,22 +1,19 @@
 package org.ragai.service;
 
-import com.fasterxml.jackson.annotation.JsonAutoDetect;
-import com.fasterxml.jackson.annotation.JsonTypeInfo;
-import com.fasterxml.jackson.annotation.PropertyAccessor;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.ChatMessageDeserializer;
+import dev.langchain4j.data.message.ChatMessageSerializer;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.redis.connection.RedisConnectionFactory;
 import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.data.redis.serializer.GenericJackson2JsonRedisSerializer;
 import org.springframework.data.redis.serializer.StringRedisSerializer;
 import org.springframework.stereotype.Component;
 
@@ -36,33 +33,22 @@ public class ChatMemoryManager {
     public static final long DEFAULT_TTL_SECONDS = 30 * 60;
     public static final long DEFAULT_TTL_MS = DEFAULT_TTL_SECONDS * 1000L;
 
-    private final RedisTemplate<String, Object> redisTemplate;
     private final RedisTemplate<String, String> strTemplate;
     private final int maxRounds;
     private final long ttlSeconds;
 
     @Autowired
-    public ChatMemoryManager(@Qualifier("chatRedisTemplate") RedisTemplate<String, Object> redisTemplate,
-                             @Qualifier("chatStrRedisTemplate") RedisTemplate<String, String> strTemplate) {
-        this(redisTemplate, strTemplate, DEFAULT_MAX_ROUNDS, DEFAULT_TTL_SECONDS);
+    public ChatMemoryManager(@Qualifier("chatStrRedisTemplate") RedisTemplate<String, String> strTemplate) {
+        this(strTemplate, DEFAULT_MAX_ROUNDS, DEFAULT_TTL_SECONDS);
     }
 
-    public ChatMemoryManager(@Qualifier("chatRedisTemplate") RedisTemplate<String, Object> redisTemplate,
-                             @Qualifier("chatStrRedisTemplate") RedisTemplate<String, String> strTemplate,
+    public ChatMemoryManager(@Qualifier("chatStrRedisTemplate") RedisTemplate<String, String> strTemplate,
                              int maxRounds, long ttlSeconds) {
-        this.redisTemplate = redisTemplate;
         this.strTemplate = strTemplate;
         this.maxRounds = maxRounds;
         this.ttlSeconds = ttlSeconds;
     }
 
-    /**
-     * 只登记 sessionId，不往会话列表里塞任何东西。
-     * <p>早先这里右推过一个空 {@code ArrayList} 当占位，于是 {@link #getHistory} 第一次读就交出
-     * 一个不是 {@link ChatMessage} 的元素，DashScope 组装请求逐个强转 {@code ChatMessage} 时直接
-     * {@code ClassCastException}——新会话的第一条消息必挂（2026-11-05 拍问诊截图时撞上）。
-     * 键不需要预建：{@link #appendTurn} 写入时自然创建并续 TTL。
-     */
     public String newSessionId() {
         String id = UUID.randomUUID().toString().replace("-", "");
         strTemplate.opsForSet().add(SESSION_SET, id);
@@ -70,24 +56,22 @@ public class ChatMemoryManager {
     }
 
     /**
-     * 会话历史。只交出真的是 {@link ChatMessage} 的元素：Redis 里可能还躺着旧版本写进去的占位值，
-     * 反序列化出来的类型不受我们控制，脏一条不该把整轮对话打成 500。
+     * 会话历史。用 LangChain4j 自带的 {@link ChatMessageDeserializer} 反序列化，
+     * 因为 {@code UserMessage}/{@code AiMessage} 没有无参构造函数，Jackson 直接反序列化会失败。
+     * Redis 里只存一个 JSON 数组字符串，旧版本的 List 结构（元素为单条消息序列化结果）读不出来时直接清空。
      */
     public List<ChatMessage> getHistory(String sessionId) {
-        Object raw = redisTemplate.opsForList().range(key(sessionId), 0, -1);
-        if (!(raw instanceof List<?> list)) {
+        String json = strTemplate.opsForValue().get(key(sessionId));
+        if (json == null || json.isBlank()) {
             return new ArrayList<>();
         }
-        List<ChatMessage> messages = new ArrayList<>();
-        for (Object item : list) {
-            if (item instanceof ChatMessage message) {
-                messages.add(message);
-            } else {
-                log.warn("[多轮] 会话 {} 里混进一个非 Message 元素（{}），已跳过",
-                        sessionId, item == null ? "null" : item.getClass().getName());
-            }
+        try {
+            List<ChatMessage> messages = ChatMessageDeserializer.messagesFromJson(json);
+            return messages != null ? messages : new ArrayList<>();
+        } catch (Exception e) {
+            log.warn("[多轮] 会话 {} 历史反序列化失败（{}），按空历史处理", sessionId, e.getMessage());
+            return new ArrayList<>();
         }
-        return messages;
     }
 
     public List<ChatMessage> buildPromptMessages(String sessionId, String systemPrompt, String userMessage) {
@@ -101,20 +85,21 @@ public class ChatMemoryManager {
     }
 
     public void appendTurn(String sessionId, String userMessage, String assistantMessage) {
-        String k = key(sessionId);
-        redisTemplate.opsForList().rightPush(k, UserMessage.from(userMessage));
-        redisTemplate.opsForList().rightPush(k, AiMessage.from(assistantMessage));
+        List<ChatMessage> history = getHistory(sessionId);
+        history.add(UserMessage.from(userMessage));
+        history.add(AiMessage.from(assistantMessage));
 
-        Long size = redisTemplate.opsForList().size(k);
-        if (size != null && size > maxRounds * 2) {
-            redisTemplate.opsForList().trim(k, -(maxRounds * 2), -1);
+        if (history.size() > maxRounds * 2) {
+            history = new ArrayList<>(history.subList(history.size() - maxRounds * 2, history.size()));
         }
-        redisTemplate.expire(k, Duration.ofSeconds(ttlSeconds));
+
+        String json = ChatMessageSerializer.messagesToJson(history);
+        strTemplate.opsForValue().set(key(sessionId), json, Duration.ofSeconds(ttlSeconds));
         strTemplate.opsForSet().add(SESSION_SET, sessionId);
     }
 
     public void remove(String sessionId) {
-        redisTemplate.delete(key(sessionId));
+        strTemplate.delete(key(sessionId));
         strTemplate.opsForSet().remove(SESSION_SET, sessionId);
     }
 
@@ -129,25 +114,6 @@ public class ChatMemoryManager {
 
     @Configuration
     static class RedisConfig {
-        @Bean
-        public RedisTemplate<String, Object> chatRedisTemplate(RedisConnectionFactory factory) {
-            RedisTemplate<String, Object> template = new RedisTemplate<>();
-            template.setConnectionFactory(factory);
-
-            ObjectMapper om = new ObjectMapper();
-            om.setVisibility(PropertyAccessor.ALL, JsonAutoDetect.Visibility.ANY);
-            om.activateDefaultTyping(om.getPolymorphicTypeValidator(),
-                    ObjectMapper.DefaultTyping.NON_FINAL, JsonTypeInfo.As.PROPERTY);
-            GenericJackson2JsonRedisSerializer jsonSer = new GenericJackson2JsonRedisSerializer(om);
-
-            template.setKeySerializer(new StringRedisSerializer());
-            template.setValueSerializer(jsonSer);
-            template.setHashKeySerializer(new StringRedisSerializer());
-            template.setHashValueSerializer(jsonSer);
-            template.afterPropertiesSet();
-            return template;
-        }
-
         @Bean
         public RedisTemplate<String, String> chatStrRedisTemplate(RedisConnectionFactory factory) {
             RedisTemplate<String, String> template = new RedisTemplate<>();

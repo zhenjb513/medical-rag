@@ -28,7 +28,7 @@ document.querySelectorAll('.tab').forEach(btn => {
 const statusPill = document.getElementById('apiStatus');
 async function checkApi() {
   try {
-    const res = await fetch('/rag/diag');
+    const res = await fetch('/rag/diag?apiKey=local-dev-key-123');
     if (res.ok) {
       statusPill.classList.add('ok');
       statusPill.classList.remove('err');
@@ -173,7 +173,7 @@ function addMsg(role, text) {
     if (refs) {
       const refsDiv = document.createElement('div');
       refsDiv.className = 'refs-block';
-      refsDiv.innerHTML = '<strong>📎 引用来源</strong><br>' + refs.replace(/\n/g, '<br>');
+      refsDiv.innerHTML = refs.replace(/^\n+/, '').replace(/\n/g, '<br>');
       bubble.appendChild(refsDiv);
     }
   } else {
@@ -244,7 +244,8 @@ async function sendMessage(text) {
 
 async function sendPlainMessage(apiPath, text) {
   try {
-    const res = await fetch(apiPath + '?message=' + encodeURIComponent(text));
+    const res = await fetch(apiPath + '?message=' + encodeURIComponent(text)
+      + '&apiKey=local-dev-key-123', { credentials: 'same-origin' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const body = await res.text();
     const bubble = addMsg('ai', body);
@@ -259,10 +260,11 @@ async function sendRagStream(text) {
   const bubble = addStreamingBubble();
 
   const url = '/chat/stream?message=' + encodeURIComponent(text)
-    + (sid ? '&sessionId=' + sid : '');
+    + (sid ? '&sessionId=' + sid : '')
+    + '&apiKey=local-dev-key-123';
 
   try {
-    const res = await fetch(url);
+    const res = await fetch(url, { credentials: 'same-origin' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
 
     const reader = res.body.getReader();
@@ -313,8 +315,7 @@ async function sendRagStream(text) {
             refsDiv.className = 'refs-block';
             bubble.appendChild(refsDiv);
           }
-          refsDiv.innerHTML = '<strong>📎 引用来源</strong><br>'
-            + (refsText || '').replace(/\n/g, '<br>');
+          refsDiv.innerHTML = (refsText || '').replace(/^\n+/, '').replace(/\n/g, '<br>');
         }
         chatArea.scrollTop = chatArea.scrollHeight;
       }
