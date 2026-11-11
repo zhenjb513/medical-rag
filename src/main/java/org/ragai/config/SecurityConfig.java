@@ -24,7 +24,7 @@ import java.util.List;
 public class SecurityConfig {
 
     private static final List<String> API_PREFIXES = List.of(
-            "/chat", "/evaluation", "/bm25", "/rag", "/auth", "/ingest"
+            "/chat", "/evaluation", "/bm25", "/rag", "/auth", "/ingest", "/lc"
     );
 
     @Bean
@@ -46,12 +46,14 @@ public class SecurityConfig {
                                 "/swagger-ui/**", "/swagger-resources/**",
                                 "/v3/api-docs/**", "/webjars/**"
                         ).permitAll()
-                        .requestMatchers("/chat/**", "/evaluation/**", "/bm25/**", "/rag/**", "/ingest/**").permitAll()
+                        .requestMatchers("/chat/**", "/evaluation/**", "/bm25/**", "/rag/**", "/ingest/**",
+                                "/lc/**").permitAll()
                         .anyRequest().authenticated()
                 )
                 .csrf(csrf -> csrf
                         .ignoringRequestMatchers(
                                 "/chat/**", "/evaluation/**", "/bm25/**", "/rag/**", "/ingest/**",
+                                "/lc/**",
                                 "/auth/**", "/login", "/logout"
                         )
                 )

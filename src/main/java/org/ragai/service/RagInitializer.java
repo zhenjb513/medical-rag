@@ -97,8 +97,8 @@ public class RagInitializer {
     @Value("${app.pgvector.schema-name:public}")
     private String pgSchema = "public";
 
-    @Value("${app.pgvector.table-name:vector_store}")
-    private String pgTable = "vector_store";
+    @Value("${app.pgvector.lc-table-name:lc_document_embeddings}")
+    private String pgTable = "lc_document_embeddings";
 
     // ========== OCR 兜底配置（纯图片扫描 PDF 用） ==========
     @Value("${app.ocr.enabled:true}")

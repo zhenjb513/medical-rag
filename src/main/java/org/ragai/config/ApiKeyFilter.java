@@ -68,7 +68,10 @@ public class ApiKeyFilter extends OncePerRequestFilter {
             "/rag/diag",
             "/bm25/locate",
             "/bm25/df",
-            "/bm25/search"
+            "/bm25/search",
+            // 前端首次发消息前建会话用，不含模型调用，公开不影响安全
+            "/chat/session/new",
+            "/chat/session/stats"
     );
 
     // /evaluation 和 /ingest 从这里拿掉了：前者里 /evaluation/run 一点就是 61 题真金白银的全量，

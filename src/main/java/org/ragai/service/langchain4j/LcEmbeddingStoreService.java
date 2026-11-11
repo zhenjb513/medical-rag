@@ -4,6 +4,7 @@ import dev.langchain4j.store.embedding.pgvector.PgVectorEmbeddingStore;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Bean;
 import org.springframework.stereotype.Service;
 
 import jakarta.annotation.PostConstruct;
@@ -23,22 +24,22 @@ public class LcEmbeddingStoreService {
 
     private static final Logger log = LoggerFactory.getLogger(LcEmbeddingStoreService.class);
 
-    @Value("${spring.datasource.url}")
+    @Value("${app.pgvector.jdbc-url}")
     private String jdbcUrl;
 
-    @Value("${spring.datasource.username}")
+    @Value("${app.pgvector.username}")
     private String username;
 
-    @Value("${spring.datasource.password}")
+    @Value("${app.pgvector.password}")
     private String password;
 
     @Value("${app.pgvector.dimensions:1024}")
     private int dimensions;
 
-    @Value("${app.pgvector.table:lc_document_embeddings}")
+    @Value("${app.pgvector.lc-table-name:lc_document_embeddings}")
     private String table;
 
-    @Value("${app.pgvector.create-table:true}")
+    @Value("${app.pgvector.lc-create-table:true}")
     private boolean createTable;
 
     private PgVectorEmbeddingStore embeddingStore;
@@ -66,6 +67,16 @@ public class LcEmbeddingStoreService {
                 .build();
 
         log.info("LangChain4j PgVectorEmbeddingStore 就绪：table={}, dimension={}", table, dimensions);
+    }
+
+    /**
+     * 把 {@link PgVectorEmbeddingStore} 注册为 Spring Bean，供 {@code RagController} 等直接注入。
+     * <p>不能只在 {@code init()} 里 new 出来藏字段里——那样只有本服务能用，
+     * 别的 Bean 注入会报 "No qualifying bean"。
+     */
+    @Bean
+    public PgVectorEmbeddingStore pgVectorEmbeddingStore() {
+        return embeddingStore;
     }
 
     public PgVectorEmbeddingStore store() {

@@ -44,7 +44,8 @@ public class DashScopeStreamingChatModel implements StreamingChatLanguageModel {
 
     private static final Logger log = LoggerFactory.getLogger(DashScopeStreamingChatModel.class);
 
-    @Value("${DASHSCOPE_API_KEY:}")
+    // LangChain4j 社区 DashScope 模块的配置键，与 application-local.yml 一致
+    @Value("${langchain4j.community.dashscope.chat-model.api-key:}")
     private String apiKey;
 
     @Value("${app.model.chat:qwen-plus}")

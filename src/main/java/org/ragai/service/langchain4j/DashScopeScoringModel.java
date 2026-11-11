@@ -48,7 +48,8 @@ public class DashScopeScoringModel implements ScoringModel {
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
-    @Value("${DASHSCOPE_API_KEY:}")
+    // LangChain4j 社区 DashScope 模块的配置键，与 application-local.yml 一致
+    @Value("${langchain4j.community.dashscope.chat-model.api-key:}")
     private String apiKey;
 
     @Value("${app.retrieval.rerank-model:gte-rerank-v2}")

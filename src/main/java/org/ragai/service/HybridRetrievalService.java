@@ -409,7 +409,9 @@ public class HybridRetrievalService {
             Metadata meta = new Metadata();
             meta.put("source", h.source() == null ? "" : h.source());
             meta.put("file_name", h.fileName() == null ? "" : h.fileName());
-            if (h.chunkIndex() != null) meta.put("chunk_index", h.chunkIndex());
+            // chunk_index 必须存为 String：下游 expand() 用 getString("chunk_index") 读取，
+            // 而 Metadata.put(String, int) 存的是 int，getString 会抛类型异常。
+            if (h.chunkIndex() != null) meta.put("chunk_index", String.valueOf(h.chunkIndex()));
             out.add(Document.from(h.content(), meta));
         }
         return out;

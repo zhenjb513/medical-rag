@@ -45,6 +45,7 @@ public class RagReferenceService {
     @Value("${app.rag.vector-floor:0.0}")
     private double vectorFloor;
 
+    @org.springframework.beans.factory.annotation.Autowired
     public RagReferenceService(LcEmbeddingStoreService storeService,
                                dev.langchain4j.model.embedding.EmbeddingModel embeddingModel) {
         this.embeddingStore = storeService.store();
@@ -96,9 +97,10 @@ public class RagReferenceService {
                     .displayName("lc-vector")
                     .build();
             rawResults = retriever.retrieve(Query.from(query));
+            log.info("[向量检索] retrieve() 返回 {} 条", rawResults.size());
         } catch (RuntimeException e) {
             log.warn("[向量检索] 调用失败（向量化或数据库层异常），降级为空：{} {}",
-                    e.getClass().getSimpleName(), e.getMessage());
+                    e.getClass().getSimpleName(), e.getMessage(), e);
             return Collections.emptyList();
         }
 
@@ -115,6 +117,19 @@ public class RagReferenceService {
             Object score = content.metadata() == null ? null : content.metadata().get(ContentMetadata.SCORE);
             if (score instanceof Number n) {
                 segmentMetadata.put("score", n.doubleValue());
+            }
+
+            // LangChain4j PgVectorEmbeddingStore 的 metadata 键名与 Spring AI 时期不同：
+            //   index → id（HybridRetrievalService.rankInto() 按 "id" 融合）
+            //   index → chunk_index（引用溯源、相邻块扩展按 "chunk_index" 读）
+            // 这里做一层映射，让下游逻辑无需改动。
+            // 注意：下游代码用 getString("chunk_index") 读取，所以必须存为 String。
+            Map<String, Object> map = segmentMetadata.toMap();
+            Object index = map.get("index");
+            if (index != null) {
+                segmentMetadata.remove("index");
+                segmentMetadata.put("id", String.valueOf(index));
+                segmentMetadata.put("chunk_index", String.valueOf(index));
             }
 
             docs.add(Document.from(text, segmentMetadata));
