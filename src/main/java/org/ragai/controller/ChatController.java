@@ -165,6 +165,15 @@ public class ChatController {
     }
 
     /**
+     * 答案是「引用到知识库来源才给引用来源框」。判断依据：答案正文里出现了按规则 3 生成的内联
+     * 引用标注「（摘自《…》…）」。火星上有没有指南这种问题，模型没有引到任何文档，answers 里
+     * 没有摘自标注，就不下发 refs 事件，前端自然不画引用框。
+     */
+    static boolean hasInlineCitation(String answer) {
+        return answer != null && answer.contains("摘自《");
+    }
+
+    /**
      * 模型有时不听提示词，会在答案末尾自列「【引用来源】」清单，和后端 {@link #buildRefsBlock}
      * 拼的精确来源重复且不一致。这里把模型自输的引用来源标题行及之后的内容全部裁掉，
      * 引用来源统一由后端提供。
@@ -224,6 +233,26 @@ public class ChatController {
                 promptMessages = List.of(
                         SystemMessage.from(SYSTEM_PROMPT),
                         UserMessage.from(fullPrompt)
+                );
+            }
+
+            // 检索不到任何指南文档＝不是指南问答（库存查询、闲聊、无关问题）。此时若仍走纯 RAG 流式，
+            // 模型在空上下文里常直接吐空答案（实测「骨科缝合包还有多少」answerLen=0）、连拒绝语都不给，
+            // 前端只能拿到一条空流。改走带库存工具的同步双轮路径：让模型自己决定是否调库存工具，
+            // 拿不到出处的问题（如火星、太阳系）也由模型自然应答，且 docs 为空故不会拼引用来源。
+            if (docs.isEmpty()) {
+                String toolAnswer = chatWithTools(promptMessages);
+                if (toolAnswer == null || toolAnswer.isBlank()) {
+                    toolAnswer = RAG_REFUSAL_PHRASE;
+                }
+                String finalAnswer = stripModelRefs(toolAnswer);
+                if (sessionId != null && !sessionId.isBlank()) {
+                    chatMemoryManager.appendTurn(sessionId, message, finalAnswer);
+                }
+                log.info("[Stream] 无指南命中，走工具路径 answerLen={}", finalAnswer.length());
+                return Flux.just(
+                        ServerSentEvent.<String>builder().data(finalAnswer).build(),
+                        ServerSentEvent.<String>builder().data("[DONE]").event("done").build()
                 );
             }
 
@@ -304,11 +333,16 @@ public class ChatController {
                         return Flux.just("\n\n[生成中断：" + e.getMessage() + "]");
                     });
 
+            // refs 决定必须等到答案 token 流结束（answerBuilder 就绪）后再做，
+            // 所以用 defer 惰性求值；hasInlineCitation 判断模型是否真的引用了来源。
             String refsBlock = buildRefsBlock(refs);
 
             return tokenFlux
                     .map(token -> ServerSentEvent.<String>builder().data(token).build())
-                    .concatWith(refsAndDone(refsBlock))
+                    .concatWith(Flux.defer(() -> {
+                        boolean cited = hasInlineCitation(answerBuilder.toString());
+                        return refsAndDone(cited ? refsBlock : "");
+                    }))
                     .doOnCancel(() -> {
                         cancelled.set(true);
                         streamCancelCounter.increment();
@@ -325,8 +359,9 @@ public class ChatController {
                         } else if (signalType == reactor.core.publisher.SignalType.ON_COMPLETE) {
                             streamSuccessCounter.increment();
                             if (sessionId != null && !sessionId.isBlank()) {
+                                boolean cited = hasInlineCitation(answerBuilder.toString());
                                 chatMemoryManager.appendTurn(sessionId, message,
-                                        answerBuilder.toString().trim() + refsBlock);
+                                        answerBuilder.toString().trim() + (cited ? refsBlock : ""));
                             }
                             log.info("[Stream] completed, ttft={}ms, total={}ms, answerLen={}",
                                     firstTokenNanos.get() / 1_000_000,

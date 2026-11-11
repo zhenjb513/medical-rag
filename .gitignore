@@ -47,3 +47,8 @@ scratch/
 
 ### 评测报告落盘（跑一轮全量是真金白银，文件别混进提交）###
 /data/eval-reports/
+
+### 本地运行日志 / SSE 调试抓包中间产物（不在代码库跟踪）###
+/app-*.log
+/sse-*.txt
+/tmp-extract/
