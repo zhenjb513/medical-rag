@@ -1,4 +1,4 @@
-package org.ragai.service.langchain4j;
+package org.ragai.service;
 
 import com.alibaba.dashscope.aigc.generation.Generation;
 import com.alibaba.dashscope.aigc.generation.GenerationOutput;
@@ -35,9 +35,9 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@code Generation.streamCall()} 返回 RxJava {@code Flowable}。
  * 这里就是把两者接起来，让本分支的 /chat/stream 端点保持真流式。
  *
- * <p>工具调用（tool calls）：DashScope 的流式响应里，工具调用信息在
+ * 工具调用（tool calls）：DashScope 的流式响应里，工具调用信息在
  * {@code output.choices[0].message.toolCalls} 中增量下发。当前实现聚焦文本流，
- * 工具调用走 {@link DashScopeChatAdapter} 的同步路径，避免流式工具调用的复杂状态机。
+ * 工具调用走同步的 {@code ChatLanguageModel} 路径，避免流式工具调用的复杂状态机。
  */
 @Component
 public class DashScopeStreamingChatModel implements StreamingChatLanguageModel {

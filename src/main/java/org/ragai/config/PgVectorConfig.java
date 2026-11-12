@@ -17,7 +17,7 @@ import javax.sql.DataSource;
  * <p><b>框架迁移说明</b>：本分支（langchain4j-exp）已剥离 Spring AI。
  * 原 {@code vectorStore}（Spring AI 的 {@code PgVectorStore}）Bean 已删除，
  * 向量库改由 LangChain4j 的
- * {@link org.ragai.service.langchain4j.LcEmbeddingStoreService} 接管。
+ * {@link org.ragai.service.PgVectorStoreService} 接管。
  *
  * <p>但 {@code pgVectorDataSource} 与 {@code pgVectorJdbcTemplate} 必须保留：
  * BM25 索引、PHI 审计、库内分布统计等框架无关的功能仍在直连这张表，

@@ -1,4 +1,4 @@
-package org.ragai.service.langchain4j;
+package org.ragai.service;
 
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.output.Response;

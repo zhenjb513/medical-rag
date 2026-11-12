@@ -7,7 +7,6 @@ import dev.langchain4j.rag.content.ContentMetadata;
 import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
 import dev.langchain4j.rag.query.Query;
 import dev.langchain4j.store.embedding.pgvector.PgVectorEmbeddingStore;
-import org.ragai.service.langchain4j.LcEmbeddingStoreService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -46,7 +45,7 @@ public class RagReferenceService {
     private double vectorFloor;
 
     @org.springframework.beans.factory.annotation.Autowired
-    public RagReferenceService(LcEmbeddingStoreService storeService,
+    public RagReferenceService(PgVectorStoreService storeService,
                                dev.langchain4j.model.embedding.EmbeddingModel embeddingModel) {
         this.embeddingStore = storeService.store();
         this.embeddingModel = embeddingModel;
@@ -120,7 +119,6 @@ public class RagReferenceService {
             }
 
             // LangChain4j PgVectorEmbeddingStore 的 metadata 键名与 Spring AI 时期不同：
-            //   index → id（HybridRetrievalService.rankInto() 按 "id" 融合）
             //   index → chunk_index（引用溯源、相邻块扩展按 "chunk_index" 读）
             // 这里做一层映射，让下游逻辑无需改动。
             // 注意：下游代码用 getString("chunk_index") 读取，所以必须存为 String。
@@ -128,8 +126,17 @@ public class RagReferenceService {
             Object index = map.get("index");
             if (index != null) {
                 segmentMetadata.remove("index");
-                segmentMetadata.put("id", String.valueOf(index));
                 segmentMetadata.put("chunk_index", String.valueOf(index));
+            }
+
+            // "id" 必须是块的全局唯一标识（embedding_id），不能用块号：
+            // 块号只在单份文件内唯一，实测 961 块只有 334 个不同块号，多份指南的同一块号撞在一起，
+            // 拿它当融合键会让 RRF 把不同文件的块算成同一块（分数相加、正文互相覆盖）。
+            // LangChain4j 的 retriever 把 embeddingId 放在 Content.metadata() 的 EMBEDDING_ID 上，
+            // 与 BM25 侧 Hit.id()（bm25_docs.id）同源，两边才能按同一个键配对。
+            Object embeddingId = content.metadata() == null ? null : content.metadata().get(ContentMetadata.EMBEDDING_ID);
+            if (embeddingId != null) {
+                segmentMetadata.put("id", String.valueOf(embeddingId));
             }
 
             docs.add(Document.from(text, segmentMetadata));

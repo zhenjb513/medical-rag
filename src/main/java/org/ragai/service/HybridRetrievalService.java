@@ -407,6 +407,10 @@ public class HybridRetrievalService {
         List<Document> out = new ArrayList<>();
         for (Bm25IndexService.Hit h : hits) {
             Metadata meta = new Metadata();
+            // id 是 RRF 的融合键，必须和向量侧（RagReferenceService 从 EMBEDDING_ID 写入的 id）同源。
+            // 这里原先没写 id，rankInto() 见 id 为 null 直接 continue，BM25 这一路整条被静默丢掉，
+            // 配成 mode=hybrid 时实际只有向量在起作用（实测 5 条 BM25 命中进融合表 0 条）。
+            if (h.id() != null) meta.put("id", h.id());
             meta.put("source", h.source() == null ? "" : h.source());
             meta.put("file_name", h.fileName() == null ? "" : h.fileName());
             // chunk_index 必须存为 String：下游 expand() 用 getString("chunk_index") 读取，

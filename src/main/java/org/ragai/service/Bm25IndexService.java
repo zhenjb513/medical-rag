@@ -6,6 +6,7 @@ import dev.langchain4j.data.document.Document;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -17,10 +18,23 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * BM25 关键词召回：把 vector_store 里每个 chunk 分词后写进自建倒排表，检索时在 PG 里直接算 Okapi BM25。
+ * BM25 关键词召回：把向量库表里每个 chunk 分词后写进自建倒排表，检索时在 PG 里直接算 Okapi BM25。
  * <p>
- * 只存 (id, dl) 不存正文——正文仍然只在 vector_store 一份，避免两处文本不同步；
+ * 只存 (id, dl) 不存正文——正文仍然只在向量表一份，避免两处文本不同步；
  * bm25_postings 靠外键级联删除，向量块被删掉时倒排也一起没了。
+ * <p>
+ * ⚠️ 本分支（langchain4j-exp）的向量库是 {@code PgVectorEmbeddingStore}，落到
+ * {@code lc_document_embeddings} 表，schema 与 Spring AI 的 {@code PgVectorStore}（{@code vector_store}）
+ * 完全不同：主键叫 {@code embedding_id}、正文列叫 {@code text}、块号写在 metadata 的 {@code index} 键上。
+ * 下面所有读向量表的 SQL 都必须按这套列名写，照抄 spring-ai 分支的 {@code id/content/chunk_index}
+ * 会直接报「列不存在」。
+ * <p>
+ * ⚠️ {@code bm25_docs} / {@code bm25_postings} 的表名是**硬编码**的，两个分支建的是同一张物理表
+ * （{@code CREATE TABLE IF NOT EXISTS} 会命中已存在的那张）。两分支只有「读哪张向量表」不同，
+ * 写进去的行结构完全一致（都 alias 成 {@code id/content/ci}），所以同一张表两边都能写。
+ * 但 {@code rebuildAll()} 开头是无条件 {@code TRUNCATE}，因此**表内容由最后启动的那个分支独占**：
+ * 谁最后重建，表里就是谁的块。两分支若同时连同一个 PG 库，后启动者会把先启动者的索引清掉，
+ * 先启动那台的 BM25 检索会因 uuid 对不上而查不到结果。正常部署是两分支各自独立库，不会触发。
  */
 @Service
 public class Bm25IndexService {
@@ -34,6 +48,20 @@ public class Bm25IndexService {
 
     private final JdbcTemplate pg;
     private final PgVectorConfigProperties props;
+
+    /**
+     * 本分支向量表名与列名。不能直接用 {@code props.getTableName()}——那是 spring-ai 分支的
+     * {@code vector_store}；LangChain4j 侧建的是 {@code lc_document_embeddings}，且列名/块号键都不同。
+     */
+    @Value("${app.pgvector.lc-table-name:lc_document_embeddings}")
+    private String lcTableName = "lc_document_embeddings";
+
+    /** 主键列：LangChain4j PgVectorEmbeddingStore 叫 embedding_id。 */
+    private static final String ID_COL = "embedding_id";
+    /** 正文列：LangChain4j 叫 text（Spring AI 叫 content）。 */
+    private static final String TEXT_COL = "text";
+    /** 块号所在的 metadata 键：LangChain4j 写 index（Spring AI 写 chunk_index）。 */
+    private static final String CHUNK_KEY = "index";
 
     @Autowired
     public Bm25IndexService(
@@ -51,7 +79,27 @@ public class Bm25IndexService {
     public boolean isAvailable() { return pg != null; }
 
     private String vectorTable() {
-        return props.getSchemaName() + "." + props.getTableName();
+        String schema = props.getSchemaName() == null || props.getSchemaName().isBlank()
+                ? "public" : props.getSchemaName();
+        String table = lcTableName == null || lcTableName.isBlank() ? "lc_document_embeddings" : lcTableName;
+        String full = schema + "." + table;
+        return full.matches("[A-Za-z0-9_.]+") ? full : "public.lc_document_embeddings";
+    }
+
+    /** 向量表里取块号的表达式（统一走 metadata 的 index 键）。 */
+    private static String chunkIndexExpr() {
+        return "(metadata->>'" + CHUNK_KEY + "')::int";
+    }
+
+    /**
+     * 从向量表取一份 chunk 所需的四个字段：主键、正文、source、file_name、块号。
+     * 列名按 LangChain4j 侧命名，但统一 alias 成 {@code id/content/ci}，
+     * 让下游的行构造（{@code Bm25RowBuilder}）与 spring-ai 分支保持同一套键，不必分叉。
+     */
+    private String vectorSelect() {
+        return "SELECT " + ID_COL + " AS id, " + TEXT_COL + " AS content,"
+                + " metadata->>'source' AS src, metadata->>'file_name' AS fname,"
+                + " " + chunkIndexExpr() + " AS ci FROM " + vectorTable();
     }
 
     public void ensureSchema() {
@@ -70,17 +118,28 @@ public class Bm25IndexService {
                 + "  PRIMARY KEY (term, doc_id))");
     }
 
-    /** 全量重建：清表 → 读 vector_store → 分词 → 写倒排。返回一段可直接看的人类可读统计。 */
+    /**
+     * 全量重建 BM25 倒排索引：清表 → 读向量表 → 分词 → 写倒排。
+     *
+     * <p>调用时机：应用启动（{@code RagInitializer.init()} 末尾）、RabbitMQ 入库任务、
+     * 以及手工触发的管理接口。单份文件变更走 {@link #refreshSource(String[])}，不要走这里。
+     *
+     * <p>复杂度是 O(全库块数)：TRUNCATE 后把每一块重新分词、重新写两张表。
+     * 这是入库链路里唯一随库增长的操作，所以按份刷新的热路径刻意绕开它。
+     *
+     * <p>返回一段人类可读的统计（块数/倒排条目/词表/平均块长/耗时），直接用于日志和诊断接口回显。
+     */
     @CacheEvict(cacheNames = "bm25Search", allEntries = true)
     public String rebuildAll() {
         requirePg();
         ensureSchema();
         long t0 = System.currentTimeMillis();
+        // CASCADE 是必须的：bm25_postings.doc_id 有外键指向 bm25_docs，
+        // 级联删除让这一句同时清空倒排表，不必再单独 DELETE postings
         pg.execute("TRUNCATE bm25_docs CASCADE");
 
-        List<Map<String, Object>> rows = pg.queryForList(
-                "SELECT id, content, metadata->>'source' AS src, metadata->>'file_name' AS fname, "
-                        + "(metadata->>'chunk_index')::int AS ci FROM " + vectorTable());
+        // 向量库是唯一真相源：索引内容永远由它派生，不单独维护一份原文
+        List<Map<String, Object>> rows = pg.queryForList(vectorSelect());
 
         long termPairs = 0;
         List<Object[]> docArgs = new ArrayList<>();
@@ -90,17 +149,23 @@ public class Bm25IndexService {
             Bm25RowBuilder.ChunkRow row = Bm25RowBuilder.of(
                     r.get("id"), (String) r.get("src"), (String) r.get("fname"),
                     (Integer) r.get("ci"), (String) r.get("content"));
+            // 一块正文派生两类行：doc 行（含 dl，供 avgdl 归一化）+ 若干 posting 行（term/tf）
             docArgs.add(row.docRow());
             postingArgs.addAll(row.postingRows());
+            // termFrequencies 的条目数即「(词, 块) 对」，与 posting 行数一致，用内存值免掉一次全表 count
             termPairs += row.termFrequencies().size();
         }
 
+        // 两张表分两批写：每批最多 INSERT_CHUNK 行拼成一条多值 INSERT，把 961 块从 961 次往返压到几次
         batch("INSERT INTO bm25_docs (id, source, file_name, chunk_index, dl) VALUES ", docArgs, 5);
         batch("INSERT INTO bm25_postings (term, doc_id, tf) VALUES ", postingArgs, 3);
 
         long ms = System.currentTimeMillis() - t0;
+        // 三条全表统计只在重建路径上跑（rebuildAll 本身已是 O(全库)），不影响热路径；
+        // 全库对账也就靠这里，refreshSource 刻意不做同类统计
         Integer docs = pg.queryForObject("SELECT count(*) FROM bm25_docs", Integer.class);
         Integer vocab = pg.queryForObject("SELECT count(DISTINCT term) FROM bm25_postings", Integer.class);
+        // avgdl 供 BM25 的长度归一化分母用，空表时 coalesce 兜底成 0，避免除零
         Double avgdl = pg.queryForObject("SELECT coalesce(avg(dl),0)::float8 FROM bm25_docs", Double.class);
         return "BM25 重建完成：文档块=" + docs + "  倒排条目=" + termPairs
                 + "  词表=" + vocab + "  平均块长度(词)=" + String.format("%.1f", avgdl)
@@ -132,9 +197,7 @@ public class Bm25IndexService {
         int removedDocs = pg.update("DELETE FROM bm25_docs WHERE source IN " + in, (Object[]) sourceKeys);
 
         List<Map<String, Object>> rows = pg.queryForList(
-                "SELECT id, content, metadata->>'source' AS src, metadata->>'file_name' AS fname, "
-                        + "(metadata->>'chunk_index')::int AS ci FROM " + vectorTable()
-                        + " WHERE metadata->>'source' IN " + in, (Object[]) sourceKeys);
+                vectorSelect() + " WHERE metadata->>'source' IN " + in, (Object[]) sourceKeys);
 
         long termPairs = 0;
         List<Object[]> docArgs = new ArrayList<>();
@@ -203,7 +266,7 @@ public class Bm25IndexService {
                     Integer.class));
             m.put("vector_chunks_without_bm25_row", pg.queryForObject(
                     "SELECT count(*) FROM " + vectorTable() + " v WHERE NOT EXISTS "
-                            + "(SELECT 1 FROM bm25_docs d WHERE d.id = v.id)", Integer.class));
+                            + "(SELECT 1 FROM bm25_docs d WHERE d.id = v." + ID_COL + ")", Integer.class));
         } catch (Exception e) {
             m.put("error", e.getClass().getSimpleName() + ": " + e.getMessage());
         }
@@ -257,10 +320,10 @@ public class Bm25IndexService {
                 + "  JOIN bm25_docs d ON d.id = p.doc_id "
                 + "  CROSS JOIN n "
                 + "  GROUP BY p.doc_id) "
-                + "SELECT sc.doc_id::text, sc.score, d.file_name, d.source, d.chunk_index, v.content, "
-                + "       left(regexp_replace(v.content, '\\s+', ' ', 'g'), 160) AS snippet "
+                + "SELECT sc.doc_id::text, sc.score, d.file_name, d.source, d.chunk_index, v." + TEXT_COL + " AS content, "
+                + "       left(regexp_replace(v." + TEXT_COL + ", '\\s+', ' ', 'g'), 160) AS snippet "
                 + "FROM sc JOIN bm25_docs d ON d.id = sc.doc_id "
-                + "JOIN " + vectorTable() + " v ON v.id = sc.doc_id "
+                + "JOIN " + vectorTable() + " v ON v." + ID_COL + " = sc.doc_id "
                 + "ORDER BY sc.score DESC LIMIT ?";
         args.add(topN);
 
@@ -279,13 +342,19 @@ public class Bm25IndexService {
             in.append(in.length() == 0 ? "" : ", ").append('?');
             args.add(id);
         }
-        return pg.query("SELECT id::text AS id, content, metadata::text AS meta FROM " + vectorTable()
-                        + " WHERE id::text IN (" + in + ")",
+        return pg.query("SELECT " + ID_COL + "::text AS id, " + TEXT_COL + " AS content, metadata::text AS meta "
+                        + "FROM " + vectorTable() + " WHERE " + ID_COL + "::text IN (" + in + ")",
                 (rs, i) -> Document.from(rs.getString("content"), readMeta(rs.getString("meta"))),
                 args.toArray());
     }
 
-    /** 把 PG 里的 metadata JSON 读成 LangChain4j 的 Metadata（值统一按字符串存，与 Spring AI 侧行为一致）。 */
+    /**
+     * 把 PG 里的 metadata JSON 读成 LangChain4j 的 Metadata（值统一按字符串存，与 Spring AI 侧行为一致）。
+     * <p>
+     * 这里顺手把 LangChain4j 的 {@code index} 键补成 {@code chunk_index}：下游相邻块扩展
+     * （{@code HybridRetrievalService.expand()} 的 {@code keyOf()}）按 {@code chunk_index} 拼
+     * 「source#块号」去配对，直接拿原始 metadata 会因为键名不同配不上，邻居块全被静默丢掉。
+     */
     private dev.langchain4j.data.document.Metadata readMeta(String json) {
         dev.langchain4j.data.document.Metadata metadata = new dev.langchain4j.data.document.Metadata();
         if (json == null || json.isBlank()) return metadata;
@@ -296,13 +365,17 @@ public class Bm25IndexService {
                     metadata.put(e.getKey(), String.valueOf(e.getValue()));
                 }
             }
+            Object index = raw.get(CHUNK_KEY);
+            if (index != null && !raw.containsKey("chunk_index")) {
+                metadata.put("chunk_index", String.valueOf(index));
+            }
         } catch (Exception ex) {
             // 解析失败返回空 Metadata，与迁移前返回空 Map 的语义一致
         }
         return metadata;
     }
 
-    /** 相邻块扩展：按 (source, chunk_index) 成对取回同一份文档里紧挨着的块。 */
+    /** 相邻块扩展：按 (source, 块号) 成对取回同一份文档里紧挨着的块。 */
     public List<Document> neighborChunks(List<String[]> sourceAndChunkIndex) {
         requirePg();
         if (sourceAndChunkIndex == null || sourceAndChunkIndex.isEmpty()) return List.of();
@@ -313,8 +386,9 @@ public class Bm25IndexService {
             args.add(pair[0]);
             args.add(pair[1]);
         }
-        return pg.query("SELECT id::text AS id, content, metadata::text AS meta FROM " + vectorTable()
-                        + " WHERE (metadata->>'source', (metadata->>'chunk_index')::int) IN (VALUES " + values + ")",
+        return pg.query("SELECT " + ID_COL + "::text AS id, " + TEXT_COL + " AS content, metadata::text AS meta "
+                        + "FROM " + vectorTable()
+                        + " WHERE (metadata->>'source', " + chunkIndexExpr() + ") IN (VALUES " + values + ")",
                 (rs, i) -> Document.from(rs.getString("content"), readMeta(rs.getString("meta"))),
                 args.toArray());
     }
@@ -323,10 +397,10 @@ public class Bm25IndexService {
     public record StoredChunk(String source, String fileName, Integer chunkIndex, String content) {}
 
     /**
-     * 按「文件名 + chunk_index」从 vector_store 取回原文块。只读，不碰倒排表。
+     * 按「文件名 + 块号」从向量表取回原文块。只读，不碰倒排表。
      * <p>
      * 引用列表里给了块号却读不到那一块，溯源只做了一半，所以这个口子跟着 {@code /rag/chunk} 一起给。
-     * 放在本类是因为它已经是「用 pgVectorJdbcTemplate 直查 vector_store」的地方（neighborChunks、locate 同理），
+     * 放在本类是因为它已经是「用 pgVectorJdbcTemplate 直查向量表」的地方（neighborChunks、locate 同理），
      * 换到别处就得再抄一遍可选数据源的接法。
      */
     public List<StoredChunk> readChunk(String fileName, int chunkIndex, int limit) {
@@ -336,8 +410,8 @@ public class Bm25IndexService {
         String likeName = fileName.replace("%", "\\%").replace("_", "\\_");
         String sql = "SELECT metadata->>'source' AS src,"
                 + " coalesce(metadata->>'file_name', metadata->>'source') AS fname,"
-                + " (metadata->>'chunk_index')::int AS ci, content FROM " + vectorTable()
-                + " WHERE (metadata->>'chunk_index')::int = ?"
+                + " " + chunkIndexExpr() + " AS ci, " + TEXT_COL + " AS content FROM " + vectorTable()
+                + " WHERE " + chunkIndexExpr() + " = ?"
                 + "   AND ( coalesce(metadata->>'file_name', metadata->>'source') = ?"
                 + "      OR metadata->>'source' = ?"
                 + "      OR replace(metadata->>'source', chr(92), '/') LIKE ? )"
@@ -370,11 +444,11 @@ public class Bm25IndexService {
         if (needle.isEmpty()) return List.of();
         String sql = "SELECT fname, ci, pos, substr(flat, greatest(1, pos - 140), 360) AS excerpt FROM ("
                 + "  SELECT coalesce(metadata->>'file_name', metadata->>'source') AS fname,"
-                + "         (metadata->>'chunk_index')::int AS ci,"
-                + "         regexp_replace(content, '\\s+', '', 'g') AS flat,"
-                + "         position(? in regexp_replace(content, '\\s+', '', 'g')) AS pos"
+                + "         " + chunkIndexExpr() + " AS ci,"
+                + "         regexp_replace(" + TEXT_COL + ", '\\s+', '', 'g') AS flat,"
+                + "         position(? in regexp_replace(" + TEXT_COL + ", '\\s+', '', 'g')) AS pos"
                 + "  FROM " + vectorTable()
-                + "  WHERE regexp_replace(content, '\\s+', '', 'g') LIKE '%' || ? || '%'"
+                + "  WHERE regexp_replace(" + TEXT_COL + ", '\\s+', '', 'g') LIKE '%' || ? || '%'"
                 + ") t ORDER BY fname, ci LIMIT ?";
         return pg.query(sql, (rs, i) -> new Located(rs.getString(1),
                         rs.getObject(2) == null ? null : rs.getInt(2),

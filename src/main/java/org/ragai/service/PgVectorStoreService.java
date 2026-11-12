@@ -1,4 +1,4 @@
-package org.ragai.service.langchain4j;
+package org.ragai.service;
 
 import dev.langchain4j.store.embedding.pgvector.PgVectorEmbeddingStore;
 import org.slf4j.Logger;
@@ -10,19 +10,17 @@ import org.springframework.stereotype.Service;
 import jakarta.annotation.PostConstruct;
 
 /**
- * LangChain4j 侧的向量存储服务。
+ * PgVector 向量存储服务。
  *
- * <p>定位：本分支（langchain4j-exp）用 LangChain4j 重写 RAG 链路，与 spring-ai-dashscope
- * 分支并行演进，master 负责融合。这里用 {@link PgVectorEmbeddingStore} 作为
- * {@code EmbeddingStore<TextSegment>} 的实现，对接同一套 PgVector 库。
- *
- * <p>与 Spring AI 侧的 PgVectorStore 是两套独立实现，但落到同一张表，
- * 因此两边写入的数据可以互相检索到——这正是 master 融合时能对齐的基础。
+ * <p>用 LangChain4j 的 {@link PgVectorEmbeddingStore} 作为
+ * {@code EmbeddingStore<TextSegment>} 的实现，对接 PgVector 库，
+ * 落表 {@code lc_document_embeddings}。入库（{@code RagInitializer}）、
+ * 检索（{@code RagReferenceService}）都从这里拿同一个 store 实例。
  */
 @Service
-public class LcEmbeddingStoreService {
+public class PgVectorStoreService {
 
-    private static final Logger log = LoggerFactory.getLogger(LcEmbeddingStoreService.class);
+    private static final Logger log = LoggerFactory.getLogger(PgVectorStoreService.class);
 
     @Value("${app.pgvector.jdbc-url}")
     private String jdbcUrl;

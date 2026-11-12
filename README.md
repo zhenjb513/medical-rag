@@ -572,15 +572,12 @@ Advisor 任何一条都满足不了。手动链路在 `ChatController.chatWithTr
 | `GET /bm25/locate?phrase=&limit=` | **原文逐字定位**（考卷答案块标注用的） |
 | `GET /bm25/rebuild` | 手动全量重建兜底 |
 
-## LangChain4j RAG 实验链路（`/lc/*`）
+## LangChain4j 对照接口（`/lc/*`）
 
-> 这组是 LangChain4j 独立 RAG 实现（`service/langchain4j/`），与 `/chat` 主链路功能等价但代码独立，用于框架对照与演进验证。
+> 这组是 LangChain4j 侧的对话与工具调用对照接口。RAG 主链路已统一走 `/chat`（内部即 LangChain4j 实现），不再有独立的 `/lc/rag/*` 链路。
 
 | 接口 | 场景 |
 |---|---|
-| `/lc/rag/ask` | 端到端 RAG 问答（混合检索 + 重排 + 生成） |
-| `/lc/rag/ingest` | 文档入库（PDF → 切块 → Embedding → PgVector） |
-| `/lc/rag/health` | 向量库健康检查 |
 | `/lc/chat` | 医疗耗材助手角色 |
 | `/lc/chat/doctor` | 心内科主治医师（纯模型知识） |
 | `/lc/chat/safe` | Prompt Injection 防御（红队测试） |

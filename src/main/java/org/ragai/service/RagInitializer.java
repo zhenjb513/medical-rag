@@ -1,4 +1,4 @@
-﻿package org.ragai.service;
+package org.ragai.service;
 
 import jakarta.annotation.PostConstruct;
 import org.apache.pdfbox.cos.*;
@@ -314,12 +314,12 @@ public class RagInitializer {
         } catch (Throwable th) {
             diag.append("❌ OCR 初始化异常: ").append(th.getClass().getSimpleName()).append(": ").append(th.getMessage());
         }
-        log.info();
-        log.info(diag);
+        log.info("");
+        log.info(diag.toString());
         if (!ok) {
             log.info("  👉 不启用 OCR 兜底，纯图片扫描 PDF 将被跳过（不影响文字型 PDF 正常入库）。");
         }
-        log.info();
+        log.info("");
         effectiveTessdataDir = finalTessDir;
         ocrAvailableCache = ok;
         ocrDiagLine = diag.toString();
@@ -740,7 +740,7 @@ public class RagInitializer {
         }
 
         isOcrAvailable();
-        log.info();
+        log.info("");
         log.info("[RagInitializer] 共发现 " + files.size() + " 个文档，开始批量向量化 ...");
         log.info("[RagInitializer] Embedding 每批最多 " + DASHSCOPE_EMBEDDING_MAX_BATCH + " 个 chunks（DashScope 硬性限制）");
 
@@ -771,7 +771,7 @@ public class RagInitializer {
         // 每次启动都重建（实测 1.8s）：判重跳过的文件不会改正文，但倒排表可能被手工删过或抽取器改过版，
         // 启动时全量重建一次最省事，能保证关键词这条腿和向量库永远同步。
         refreshKeywordIndex("启动全量对账");
-        log.info();
+        log.info("");
 
         startDirectoryWatcher();
     }
@@ -1742,13 +1742,13 @@ public class RagInitializer {
         File pdfFile = fullPath.toFile();
         if (!pdfFile.exists() || !pdfFile.isFile()) return;
 
-        log.info();
+        log.info("");
         log.info("🔔 [热监听] 检测到新/变更文件：" + fileName);
         IngestResult r = ingestOneFile(pdfFile, "  [热监听] ");
         // 内容真变过才刷新：判重跳过的文件（hash 相同）关键词索引本来就是对的，白花时间
         // 按份增量刷，不再全表重建
         if (r.ok && !r.skipped && r.chunks > 0) refreshKeywordIndexForSource(pdfFile, "热监听入库 " + fileName);
-        log.info();
+        log.info("");
     }
 
     private void handleSourceFileDelete(File pdf) {

@@ -2,7 +2,7 @@
 const modelSelect = document.getElementById('modelSelect');
 const selectorHint = document.getElementById('selectorHint');
 const hintMap = {
-  '/chat': 'Spring AI：RAG 检索 + 引用来源 + 工具调用',
+  '/chat': 'LangChain4j：混合检索 + 重排 + 引用来源 + 工具调用',
 };
 const placeholderMap = {
   '/chat': '输入您的医疗问题，如：高血压患者的降压目标是多少？',

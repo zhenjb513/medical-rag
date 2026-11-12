@@ -202,7 +202,15 @@ app:
     #   prepareThreshold=0       → 关闭服务器端预编译语句缓存，避免一些旧版 PG JDBC 驱动和 pgvector 扩展的缓存串话问题
     driver-class-name: org.postgresql.Driver
     schema-name: public
+    # spring-ai 分支 PgVectorStore 用的表名（本分支不写这张表，仅保留配置以兼容 PgVectorSchemaInitializer）
     table-name: vector_store
+    # 本分支（langchain4j）真正落库的表名：PgVectorEmbeddingStore 建表时用这套列名
+    # （embedding_id / embedding / text / metadata(json)，块号写在 metadata 的 index 键上），
+    # 与 vector_store 的 id / content / metadata(jsonb) / chunk_index 完全不同，别混用。
+    # ⚠️ BM25 的 bm25_docs / bm25_postings 表名是代码里硬编码的，没有对应配置项：
+    #    两个分支建的是同一张物理表，只有「读哪张向量表」不同。rebuildAll 开头无条件 TRUNCATE，
+    #    所以表内容由最后启动的分支独占——两分支务必各自连独立的 PG 库，别共用同一个库调试。
+    lc-table-name: lc_document_embeddings
     dimensions: 1024       # ⚠️ 必须严格匹配模型输出维度：text-embedding-v3 默认=1024，v2 才是 1536
     id-type: UUID
     index-type: HNSW

@@ -4,7 +4,7 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 // 框架迁移：原 exclude = PgVectorStoreAutoConfiguration（Spring AI 的 PgVector 自动配置）
-// 已随 Spring AI 一起移除；向量库由 LangChain4j 的 LcEmbeddingStoreService 显式接管。
+// 已随 Spring AI 一起移除；向量库由 LangChain4j 的 PgVectorStoreService 显式接管。
 @SpringBootApplication
 public class Main {
     public static void main(String[] args) {
