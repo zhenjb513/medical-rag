@@ -43,6 +43,9 @@ public class ChatController {
 
     private static final Logger log = LoggerFactory.getLogger(ChatController.class);
 
+    private static final com.fasterxml.jackson.databind.ObjectMapper OBJECT_MAPPER =
+            new com.fasterxml.jackson.databind.ObjectMapper();
+
     public static final String RAG_REFUSAL_PHRASE =
             "根据现有知识库资料，无法回答该问题。请换一种问法或补充更多背景信息。";
 
@@ -456,8 +459,7 @@ public class ChatController {
             if (args == null || args.isBlank()) {
                 return InventoryService.missingName();
             }
-            com.fasterxml.jackson.databind.JsonNode node =
-                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(args);
+            com.fasterxml.jackson.databind.JsonNode node = OBJECT_MAPPER.readTree(args);
             String name = node.has("consumableName") ? node.get("consumableName").asText() : null;
             return inventoryService.queryConsumableStock(name);
         } catch (Exception e) {

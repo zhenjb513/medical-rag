@@ -1,6 +1,8 @@
 package org.ragai.config;
 
 import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
@@ -14,6 +16,8 @@ import org.springframework.stereotype.Component;
 @Component
 @ConditionalOnProperty(name = "app.pgvector.enabled", havingValue = "true")
 public class PgVectorSchemaInitializer {
+
+    private static final Logger log = LoggerFactory.getLogger(PgVectorSchemaInitializer.class);
 
     private final JdbcTemplate pgVectorJdbcTemplate;
     private final PgVectorConfigProperties props;
@@ -35,12 +39,12 @@ public class PgVectorSchemaInitializer {
         try {
             doInit();
             this.ready = true;
-            System.out.println("[PgVectorSchemaInitializer] ✅ 初始化成功，PGVector RAG 持久化已启用。");
+            log.info("[PgVectorSchemaInitializer] 初始化成功，PGVector RAG 持久化已启用。");
         } catch (Exception ex) {
             this.ready = false;
-            System.err.println("[PgVectorSchemaInitializer] ⚠️ PGVector 初始化失败：" + ex.getMessage());
-            System.err.println("    最常见原因：当前 PostgreSQL 没有对应 pgvector 预编译 dll。");
-            System.err.println("    建议：安装 pgvector 扩展或将 app.pgvector.enabled=false 走内存 SimpleVectorStore。");
+            log.warn("[PgVectorSchemaInitializer] PGVector 初始化失败：{}", ex.getMessage());
+            log.warn("    最常见原因：当前 PostgreSQL 没有对应 pgvector 预编译 dll。");
+            log.warn("    建议：安装 pgvector 扩展或将 app.pgvector.enabled=false 走内存 SimpleVectorStore。");
         }
     }
 
@@ -52,7 +56,7 @@ public class PgVectorSchemaInitializer {
         // 配置 app.pgvector.reset-table=true 时清空重建 vector_store 表
         if (props.isResetTable()) {
             pgVectorJdbcTemplate.execute("DROP TABLE IF EXISTS " + fullTableName);
-            System.out.println("[PgVectorSchemaInitializer] 🗑️ 已按 app.pgvector.reset-table=true 清空并重建 vector_store 表");
+            log.info("[PgVectorSchemaInitializer] 已按 app.pgvector.reset-table=true 清空并重建 vector_store 表");
         }
 
         final int expectedDim = props.getDimensions();

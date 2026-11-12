@@ -33,6 +33,7 @@ import java.util.Map;
 public class MedicalTestSet {
 
     private static final String RESOURCE = "/eval/medical_test_set.json";
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     public List<TestCase> getTestCases() {
         JsonNode root;
@@ -40,7 +41,7 @@ public class MedicalTestSet {
             if (in == null) {
                 throw new IllegalStateException("考卷不在 classpath 上：" + RESOURCE);
             }
-            root = new ObjectMapper().readTree(in);
+            root = OBJECT_MAPPER.readTree(in);
         } catch (IOException e) {
             throw new UncheckedIOException("考卷读不出来：" + RESOURCE, e);
         }

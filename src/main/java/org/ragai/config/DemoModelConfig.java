@@ -12,6 +12,8 @@ import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.model.output.TokenUsage;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -42,8 +44,10 @@ import java.util.Set;
 @Configuration
 public class DemoModelConfig {
 
+    private static final Logger log = LoggerFactory.getLogger(DemoModelConfig.class);
+
     public DemoModelConfig() {
-        System.out.println("[demo 档] 向量化=本地字符 2-gram 哈希  生成=上下文抽取  全程不打百炼；"
+        log.info("[demo 档] 向量化=本地字符 2-gram 哈希  生成=上下文抽取  全程不打百炼；"
                 + "这一档的检索分数与 98.4% 基线不可比（阈值是按假向量另定的）");
     }
 

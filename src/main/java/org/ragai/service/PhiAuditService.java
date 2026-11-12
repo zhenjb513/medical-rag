@@ -1,6 +1,8 @@
 package org.ragai.service;
 
 import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.dao.DataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -22,6 +24,8 @@ import java.util.List;
  */
 @Service
 public class PhiAuditService {
+
+    private static final Logger log = LoggerFactory.getLogger(PhiAuditService.class);
 
     private static final String CREATE_TABLE_SQL = """
             CREATE TABLE IF NOT EXISTS phi_audit_log (
@@ -61,10 +65,10 @@ public class PhiAuditService {
         try {
             jdbcTemplate.execute(CREATE_TABLE_SQL);
             tableReady = true;
-            System.out.println("[PHI审计] ✅ phi_audit_log 就绪（MySQL 业务库，只存类型/条数/原句指纹，不存原文）");
+            log.info("[PHI审计] phi_audit_log 就绪（MySQL 业务库，只存类型/条数/原句指纹，不存原文）");
         } catch (DataAccessException e) {
-            System.out.println("[PHI审计] ⚠️ phi_audit_log 建表失败，本次运行不落审计（不影响问答）："
-                    + e.getClass().getSimpleName() + ": " + rootMessage(e));
+            log.warn("[PHI审计] phi_audit_log 建表失败，本次运行不落审计（不影响问答）：{}: {}",
+                    e.getClass().getSimpleName(), rootMessage(e));
         }
     }
 
@@ -76,10 +80,10 @@ public class PhiAuditService {
         Row row = build(rawMessage, endpoint, phiDesensitizationService.countHits(rawMessage));
         try {
             jdbcTemplate.update(INSERT_SQL, row.messageHash(), row.endpoint(), row.hitTypes(), row.hitCount());
-            System.out.println("[PHI审计] 已落库 hash=" + row.messageHash() + "  " + row.hitTypes());
+            log.info("[PHI审计] 已落库 hash={}  {}", row.messageHash(), row.hitTypes());
         } catch (DataAccessException e) {
-            System.out.println("[PHI审计] ⚠️ 落库失败（不影响本次问答）："
-                    + e.getClass().getSimpleName() + ": " + rootMessage(e));
+            log.warn("[PHI审计] 落库失败（不影响本次问答）：{}: {}",
+                    e.getClass().getSimpleName(), rootMessage(e));
         }
     }
 

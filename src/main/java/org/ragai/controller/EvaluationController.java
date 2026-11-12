@@ -5,6 +5,8 @@ import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
 import org.ragai.service.EvaluationService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -23,6 +25,8 @@ import java.util.Map;
 @RequestMapping("/evaluation")
 @Validated
 public class EvaluationController {
+
+    private static final Logger log = LoggerFactory.getLogger(EvaluationController.class);
 
     private final EvaluationService evaluationService;
     private final org.ragai.service.EvaluationTaskService evaluationTaskService;
@@ -80,9 +84,9 @@ public class EvaluationController {
                                  @RequestParam(defaultValue = "vector") String mode,
                                  @RequestParam(defaultValue = "false") boolean expand) {
         long start = System.currentTimeMillis();
-        System.out.println("[召回基线] 开始，mode=" + mode + " expand=" + expand + " probeK=" + probeK);
+        log.info("[召回基线] 开始，mode={} expand={} probeK={}", mode, expand, probeK);
         String report = recallEvaluationService.run(probeK, mode, expand);
-        System.out.println("[召回基线] 完成，mode=" + mode + " 耗时" + (System.currentTimeMillis() - start) + "ms");
+        log.info("[召回基线] 完成，mode={} 耗时{}ms", mode, System.currentTimeMillis() - start);
         return report;
     }
 

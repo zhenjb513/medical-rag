@@ -66,4 +66,22 @@ class ChatRefsBlockTest {
         assertEquals("done", events.get(1).event());
         assertEquals("[DONE]", events.get(1).data());
     }
+
+    @Test
+    @DisplayName("hasInlineCitation：含「摘自《」才算有内联引用")
+    void hasInlineCitationChecksMarker() {
+        assertFalse(ChatController.hasInlineCitation(null));
+        assertFalse(ChatController.hasInlineCitation(""));
+        assertFalse(ChatController.hasInlineCitation("高血压指南2023建议低盐饮食"));
+        assertTrue(ChatController.hasInlineCitation("建议低盐饮食（摘自《中国高血压指南2023》块11）"));
+    }
+
+    @Test
+    @DisplayName("stripModelRefs：裁掉模型自列的引用来源标题行及之后内容")
+    void stripModelRefsCutsModelFooter() {
+        assertEquals("", ChatController.stripModelRefs(null));
+        assertEquals("建议低盐饮食。", ChatController.stripModelRefs("建议低盐饮食。"));
+        assertEquals("建议低盐饮食。", ChatController.stripModelRefs("建议低盐饮食。\n\n【引用来源】\n指南A\n指南B"));
+        assertEquals("建议低盐饮食。", ChatController.stripModelRefs("建议低盐饮食。\n[参考资料]\n指南A"));
+    }
 }

@@ -1,4 +1,4 @@
-package org.ragai.service;
+﻿package org.ragai.service;
 
 import jakarta.annotation.PostConstruct;
 import org.apache.pdfbox.cos.*;
@@ -11,6 +11,8 @@ import org.apache.pdfbox.text.PDFTextStripper;
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.splitter.DocumentSplitters;
 import dev.langchain4j.data.document.DocumentSplitter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -39,6 +41,8 @@ import java.util.regex.Pattern;
 @Component
 public class RagInitializer {
 
+    private static final Logger log = LoggerFactory.getLogger(RagInitializer.class);
+
     // 统一强制 PDFBox 使用磁盘文件缓存而非主内存，避免大 PDF 加载时内存暴涨。
     // 兼容 PDFBox 2.x ~ 3.1.x 各小版本不同命名的 System Property。
     static {
@@ -62,8 +66,8 @@ public class RagInitializer {
         } catch (Throwable ignore) {
         }
         if (maxMemMB < 2048) {
-            System.out.println("[RagInitializer] ⚠️ JVM 堆 < 2GB（当前 " + maxMemMB + " MB），超大扫描 PDF 可能发生 Full GC。");
-            System.out.println("[RagInitializer]    建议在 Run Configuration 的 VM options 中加入 -Xmx2g。");
+            log.warn("[RagInitializer] ⚠️ JVM 堆 < 2GB（当前 " + maxMemMB + " MB），超大扫描 PDF 可能发生 Full GC。");
+            log.info("[RagInitializer]    建议在 Run Configuration 的 VM options 中加入 -Xmx2g。");
         }
     }
 
@@ -138,7 +142,7 @@ public class RagInitializer {
      */
     private void refreshKeywordIndex(String why) {
         if (bm25IndexService == null || !bm25IndexService.isAvailable()) return;
-        System.out.println("[RagInitializer] 刷新 BM25 关键词索引（" + why + "）："
+        log.info("[RagInitializer] 刷新 BM25 关键词索引（" + why + "）："
                 + bm25IndexService.rebuildAll());
     }
 
@@ -152,7 +156,7 @@ public class RagInitializer {
      */
     private void refreshKeywordIndexForSource(File pdf, String why) {
         if (bm25IndexService == null || !bm25IndexService.isAvailable()) return;
-        System.out.println("[RagInitializer] 刷新 BM25 关键词索引（" + why + "）："
+        log.info("[RagInitializer] 刷新 BM25 关键词索引（" + why + "）："
                 + bm25IndexService.refreshSource(sourceKeys(pdf)));
     }
 
@@ -310,12 +314,12 @@ public class RagInitializer {
         } catch (Throwable th) {
             diag.append("❌ OCR 初始化异常: ").append(th.getClass().getSimpleName()).append(": ").append(th.getMessage());
         }
-        System.out.println();
-        System.out.println(diag);
+        log.info();
+        log.info(diag);
         if (!ok) {
-            System.out.println("  👉 不启用 OCR 兜底，纯图片扫描 PDF 将被跳过（不影响文字型 PDF 正常入库）。");
+            log.info("  👉 不启用 OCR 兜底，纯图片扫描 PDF 将被跳过（不影响文字型 PDF 正常入库）。");
         }
-        System.out.println();
+        log.info();
         effectiveTessdataDir = finalTessDir;
         ocrAvailableCache = ok;
         ocrDiagLine = diag.toString();
@@ -380,29 +384,29 @@ public class RagInitializer {
         try {
             stored = probeStoredVersion(file);
         } catch (RuntimeException ex) {
-            System.out.println(logPrefix + "⛔ " + file.getName() + " 无法确认库内已入库版本（" + ex.getMessage()
+            log.warn(logPrefix + "⛔ " + file.getName() + " 无法确认库内已入库版本（" + ex.getMessage()
                     + "），本次不写入 —— 盲目追加会让同一文件出现两套 chunk_index");
             return IngestResult.fail();
         }
         if (stored != null && stored.sameFile(currentFileHash)) {
-            System.out.println(logPrefix + "⏭️  跳过：" + file.getName()
+            log.warn(logPrefix + "⏭️  跳过：" + file.getName()
                     + "（文件字节未变化，已完整入库 " + stored.chunkCount + " chunks）");
             return IngestResult.skipped(stored.chunkCount);
         }
 
-        System.out.println(logPrefix + "📥 开始处理：" + file.getName() + " (" + formatSize(file.length()) + ") ...");
+        log.info(logPrefix + "📥 开始处理：" + file.getName() + " (" + formatSize(file.length()) + ") ...");
         long startMs = System.currentTimeMillis();
 
         String fullText;
         try {
             fullText = extractLightweightText(file);
         } catch (Throwable t) {
-            System.err.println(logPrefix + "❌ 文本抽取失败：" + t.getMessage());
+            log.warn(logPrefix + "❌ 文本抽取失败：" + t.getMessage());
             return IngestResult.fail();
         }
 
         if (fullText == null || fullText.isBlank()) {
-            System.out.println(logPrefix + "    ↪ [内容QC] ⚠️ 抽取结果为空，跳过");
+            log.warn(logPrefix + "    ↪ [内容QC] ⚠️ 抽取结果为空，跳过");
             return IngestResult.fail();
         }
 
@@ -415,7 +419,7 @@ public class RagInitializer {
             }
         }
         if (nonBlank < 20) {
-            System.out.println(logPrefix + "    ↪ [内容QC] ⚠️ 有效字数仅 " + nonBlank + "，跳过");
+            log.warn(logPrefix + "    ↪ [内容QC] ⚠️ 有效字数仅 " + nonBlank + "，跳过");
             return IngestResult.fail();
         }
 
@@ -450,13 +454,13 @@ public class RagInitializer {
                 batches = (chunks.size() + DASHSCOPE_EMBEDDING_MAX_BATCH - 1) / DASHSCOPE_EMBEDDING_MAX_BATCH;
                 bm25IndexService.refreshSource(sourceKeys(file));
             } catch (Throwable t) {
-                System.err.println(logPrefix + "❌ 向量化写入失败：" + t.getMessage());
+                log.warn(logPrefix + "❌ 向量化写入失败：" + t.getMessage());
                 return IngestResult.fail();
             }
         }
 
         long elapsed = System.currentTimeMillis() - startMs;
-        System.out.println(logPrefix + "✅ " + file.getName() + " → " + chunks.size() + " chunks, "
+        log.info(logPrefix + "✅ " + file.getName() + " → " + chunks.size() + " chunks, "
                 + batches + " batches, " + elapsed + "ms");
         return IngestResult.ok(chunks.size(), batches);
     }
@@ -559,17 +563,17 @@ public class RagInitializer {
         try {
             stored = probeStoredVersion(pdf);
         } catch (RuntimeException ex) {
-            System.out.println(logPrefix + "⛔ " + pdf.getName() + " 无法确认库内已入库版本（" + ex.getMessage()
+            log.warn(logPrefix + "⛔ " + pdf.getName() + " 无法确认库内已入库版本（" + ex.getMessage()
                     + "），本次不写入 —— 盲目追加会让同一文件出现两套 chunk_index");
             return IngestResult.fail();
         }
         if (stored != null && stored.sameFile(currentFileHash)) {
-            System.out.println(logPrefix + "⏭️  跳过：" + pdf.getName()
+            log.warn(logPrefix + "⏭️  跳过：" + pdf.getName()
                     + "（文件字节未变化，已完整入库 " + stored.chunkCount + " chunks）");
             return IngestResult.skipped(stored.chunkCount);
         }
 
-        System.out.println(logPrefix + "📥 开始处理：" + pdf.getName() + " (" + formatSize(pdf.length()) + ") ...");
+        log.info(logPrefix + "📥 开始处理：" + pdf.getName() + " (" + formatSize(pdf.length()) + ") ...");
         long startMs = System.currentTimeMillis();
         List<dev.langchain4j.data.segment.TextSegment> chunks = Collections.emptyList();
 
@@ -637,7 +641,7 @@ public class RagInitializer {
 
             long tookSec = (System.currentTimeMillis() - startMs + 500) / 1000;
             if (chunks.isEmpty()) {
-                System.out.println(logPrefix + "⚪ " + pdf.getName() + "（用时" + tookSec + "s）无有效文本内容，跳过");
+                log.info(logPrefix + "⚪ " + pdf.getName() + "（用时" + tookSec + "s）无有效文本内容，跳过");
                 return IngestResult.ok(0, 0);
             }
 
@@ -645,18 +649,18 @@ public class RagInitializer {
                     chunks.get(0).metadata().getString("content_hash"));
             if (stored != null && stored.sameContent(currentContentHash, chunks.size())) {
                 refreshStoredFileHash(pdf, currentFileHash);
-                System.out.println(logPrefix + "⏭️  跳过：" + pdf.getName()
+                log.warn(logPrefix + "⏭️  跳过：" + pdf.getName()
                         + "（文件有变动但抽取正文一致，" + chunks.size() + " chunks 无需重灌）");
                 return IngestResult.skipped(stored.chunkCount);
             }
             if (stored != null) {
                 int removed = deleteStoredSourceRows(pdf);
                 if (removed <= 0) {
-                    System.out.println(logPrefix + "⛔ " + pdf.getName() + " 旧块清理未成功（删除 " + removed
+                    log.warn(logPrefix + "⛔ " + pdf.getName() + " 旧块清理未成功（删除 " + removed
                             + " 条），已中止重灌 —— 继续写入会让库里出现同一文件的两套 chunk_index");
                     return IngestResult.fail();
                 }
-                System.out.println(logPrefix + "🔄 重新入库：" + pdf.getName()
+                log.info(logPrefix + "🔄 重新入库：" + pdf.getName()
                         + "（正文与库内版本不同，已删除旧块 " + removed + " 条）");
             }
 
@@ -687,7 +691,7 @@ public class RagInitializer {
                 if (l > maxChunk) maxChunk = l;
             }
             String qcMsg = (emptyChunks == 0) ? "" : ("  ⚠️ 空块=" + emptyChunks);
-            System.out.println(logPrefix + "✅ " + pdf.getName()
+            log.info(logPrefix + "✅ " + pdf.getName()
                     + "（" + (tookSec + (System.currentTimeMillis() - startMs) / 1000) + "s）"
                     + "  chunks=" + chunks.size()
                     + "  totalChars=" + totalChars
@@ -707,7 +711,7 @@ public class RagInitializer {
             } else if (lower.contains("damaged") || lower.contains("corrupt") || lower.contains("truncated") || lower.contains("header")) {
                 extraHint = " → ❌ PDF 文件损坏/被截断。重新下载或用 Chrome Ctrl+P 另存为 PDF 修复。";
             }
-            System.err.println(logPrefix + "❌ " + pdf.getName()
+            log.warn(logPrefix + "❌ " + pdf.getName()
                     + " 处理失败（跳过）: "
                     + th.getClass().getSimpleName() + ": " + msg + extraHint);
             return IngestResult.fail();
@@ -717,7 +721,7 @@ public class RagInitializer {
     @PostConstruct
     public void init() {
         if (Objects.isNull(vectorStore)) {
-            System.out.println("ℹ️ [RagInitializer] 未检测到 VectorStore Bean，跳过 PDF 向量化初始化（@Tool 工具调用仍可用）");
+            log.warn("ℹ️ [RagInitializer] 未检测到 VectorStore Bean，跳过 PDF 向量化初始化（@Tool 工具调用仍可用）");
             return;
         }
 
@@ -725,20 +729,20 @@ public class RagInitializer {
         try {
             files = collectSupportedFiles(pdfPath);
         } catch (Exception ex) {
-            System.err.println("[RagInitializer] 收集文档列表异常，全部跳过: " + ex.getMessage());
+            log.warn("[RagInitializer] 收集文档列表异常，全部跳过: " + ex.getMessage());
             startDirectoryWatcher();
             return;
         }
         if (files.isEmpty()) {
-            System.out.println("ℹ️ [RagInitializer] 路径 " + pdfPath + " 下没有任何支持的文档文件（pdf/md/docx/xlsx），跳过向量化初始化。");
+            log.warn("ℹ️ [RagInitializer] 路径 " + pdfPath + " 下没有任何支持的文档文件（pdf/md/docx/xlsx），跳过向量化初始化。");
             startDirectoryWatcher();
             return;
         }
 
         isOcrAvailable();
-        System.out.println();
-        System.out.println("[RagInitializer] 共发现 " + files.size() + " 个文档，开始批量向量化 ...");
-        System.out.println("[RagInitializer] Embedding 每批最多 " + DASHSCOPE_EMBEDDING_MAX_BATCH + " 个 chunks（DashScope 硬性限制）");
+        log.info();
+        log.info("[RagInitializer] 共发现 " + files.size() + " 个文档，开始批量向量化 ...");
+        log.info("[RagInitializer] Embedding 每批最多 " + DASHSCOPE_EMBEDDING_MAX_BATCH + " 个 chunks（DashScope 硬性限制）");
 
         int totalChunks = 0, totalBatches = 0, okCount = 0, failCount = 0, skippedCount = 0;
         for (File file : files) {
@@ -758,7 +762,7 @@ public class RagInitializer {
                 "embedding_batches", totalBatches,
                 "extract_pipeline_version", EXTRACT_PIPELINE_VERSION);
 
-        System.out.println("[RagInitializer] 完成。成功PDF=" + okCount
+        log.info("[RagInitializer] 完成。成功PDF=" + okCount
                 + "  其中判重跳过=" + skippedCount
                 + "  失败PDF=" + failCount
                 + "  chunks总数=" + totalChunks
@@ -767,7 +771,7 @@ public class RagInitializer {
         // 每次启动都重建（实测 1.8s）：判重跳过的文件不会改正文，但倒排表可能被手工删过或抽取器改过版，
         // 启动时全量重建一次最省事，能保证关键词这条腿和向量库永远同步。
         refreshKeywordIndex("启动全量对账");
-        System.out.println();
+        log.info();
 
         startDirectoryWatcher();
     }
@@ -839,7 +843,7 @@ public class RagInitializer {
                     finalNonBlank = nbOcr;
                     chosenPath = "P4 Tesseract OCR";
                 } else {
-                    System.out.println("    ↪ [OCR] 识别结果不如现有文本（OCR 非空白=" + nbOcr
+                    log.info("    ↪ [OCR] 识别结果不如现有文本（OCR 非空白=" + nbOcr
                             + "，现有=" + finalNonBlank + "，现有乱码率="
                             + String.format("%.1f%%", weirdRate(fullText) * 100) + "），保留 " + chosenPath + " 文本");
                 }
@@ -847,16 +851,16 @@ public class RagInitializer {
 
             double finalWeirdRate = weirdRate(fullText);
             if (finalWeirdRate > WEIRD_RATE_MAX) {
-                System.out.println("    ↪ [内容QC] ⚠️ " + chosenPath + " 抽取文本乱码率="
+                log.warn("    ↪ [内容QC] ⚠️ " + chosenPath + " 抽取文本乱码率="
                         + String.format("%.1f%%", finalWeirdRate * 100) + "（阈值 "
                         + String.format("%.0f%%", WEIRD_RATE_MAX * 100) + "），入库内容可能不可用："
                         + previewOf(fullText));
             } else if (finalNonBlank < MIN_VALID_NONBLANK) {
-                System.out.println("    ↪ [内容QC] ⚠️ " + chosenPath + " 有效字数仅 "
+                log.warn("    ↪ [内容QC] ⚠️ " + chosenPath + " 有效字数仅 "
                         + finalNonBlank + "，该文档将被跳过");
             }
 
-            System.out.println("    ↪ [抽取] " + chosenPath + "  总长=" + len
+            log.info("    ↪ [抽取] " + chosenPath + "  总长=" + len
                     + " 非空白=" + finalNonBlank + " 加密=" + encrypted
                     + " 乱码率=" + String.format("%.1f%%", finalWeirdRate * 100));
 
@@ -1185,7 +1189,7 @@ public class RagInitializer {
                     + "SET metadata = metadata::jsonb || jsonb_build_object('file_hash', ?::text, 'extract_version', ?::text) "
                     + "WHERE metadata->>'source' IN " + placeholders(keys.length), args);
         } catch (Exception ex) {
-            System.out.println("    ⚠️ 回写 file_hash 失败（不影响正确性，下次启动会重新抽取比对）：" + ex.getMessage());
+            log.warn("    ⚠️ 回写 file_hash 失败（不影响正确性，下次启动会重新抽取比对）：" + ex.getMessage());
         }
     }
 
@@ -1199,7 +1203,7 @@ public class RagInitializer {
             return this.pgJdbc.update("DELETE FROM " + vectorStoreTable()
                     + " WHERE metadata->>'source' IN " + placeholders(keys.length), (Object[]) keys);
         } catch (Exception ex) {
-            System.out.println("    ⚠️ 清理旧块异常：" + ex.getMessage());
+            log.warn("    ⚠️ 清理旧块异常：" + ex.getMessage());
             return -1;
         }
     }
@@ -1571,7 +1575,7 @@ public class RagInitializer {
             batches++;
             if ((batches % 20) == 0) {
                 long secs = (System.currentTimeMillis() - startMs + 500) / 1000;
-                System.out.println(logPrefix + "   ↪ DashScope Embedding：已完成 " + batches + " 批（已用约 " + secs + "s）");
+                log.info(logPrefix + "   ↪ DashScope Embedding：已完成 " + batches + " 批（已用约 " + secs + "s）");
             }
         }
         return batches;
@@ -1647,11 +1651,11 @@ public class RagInitializer {
         if (vectorStore == null) return;
         File dir = new File(pdfPath);
         if (!dir.exists()) {
-            System.out.println("ℹ️ [RagInitializer] WatchService 跳过：路径 " + pdfPath + " 不存在");
+            log.warn("ℹ️ [RagInitializer] WatchService 跳过：路径 " + pdfPath + " 不存在");
             return;
         }
         if (!dir.isDirectory()) {
-            System.out.println("ℹ️ [RagInitializer] WatchService 跳过：" + pdfPath + " 不是目录");
+            log.warn("ℹ️ [RagInitializer] WatchService 跳过：" + pdfPath + " 不是目录");
             return;
         }
 
@@ -1665,7 +1669,7 @@ public class RagInitializer {
             this.watchService = ws;
             dirPath.register(ws, StandardWatchEventKinds.ENTRY_CREATE, StandardWatchEventKinds.ENTRY_MODIFY, StandardWatchEventKinds.ENTRY_DELETE);
 
-            System.out.println("👁️ [RagInitializer] WatchService 已启动，监听目录：" + dirPath.toAbsolutePath());
+            log.warn("👁️ [RagInitializer] WatchService 已启动，监听目录：" + dirPath.toAbsolutePath());
 
             while (true) {
                 WatchKey key;
@@ -1696,18 +1700,18 @@ public class RagInitializer {
                             handleFileEvent(fullPath);
                         }
                     } catch (Throwable t) {
-                        System.err.println("  [热监听] ❌ 处理 " + fullPath.getFileName() + " 异常: " + t.getMessage());
+                        log.warn("  [热监听] ❌ 处理 " + fullPath.getFileName() + " 异常: " + t.getMessage());
                     }
                 }
 
                 boolean valid = key.reset();
                 if (!valid) {
-                    System.out.println("⚠️ [RagInitializer] WatchKey 已失效，停止监听");
+                    log.warn("⚠️ [RagInitializer] WatchKey 已失效，停止监听");
                     break;
                 }
             }
         } catch (Throwable th) {
-            System.err.println("⚠️ [RagInitializer] WatchService 异常退出: " + th.getClass().getSimpleName() + ": " + th.getMessage());
+            log.warn("⚠️ [RagInitializer] WatchService 异常退出: " + th.getClass().getSimpleName() + ": " + th.getMessage());
         } finally {
             this.watchService = null;
         }
@@ -1731,20 +1735,20 @@ public class RagInitializer {
         }
 
         if (!stable) {
-            System.err.println("  [热监听] ⚠️ 文件写入不稳定，超时放弃：" + fileName);
+            log.warn("  [热监听] ⚠️ 文件写入不稳定，超时放弃：" + fileName);
             return;
         }
 
         File pdfFile = fullPath.toFile();
         if (!pdfFile.exists() || !pdfFile.isFile()) return;
 
-        System.out.println();
-        System.out.println("🔔 [热监听] 检测到新/变更文件：" + fileName);
+        log.info();
+        log.info("🔔 [热监听] 检测到新/变更文件：" + fileName);
         IngestResult r = ingestOneFile(pdfFile, "  [热监听] ");
         // 内容真变过才刷新：判重跳过的文件（hash 相同）关键词索引本来就是对的，白花时间
         // 按份增量刷，不再全表重建
         if (r.ok && !r.skipped && r.chunks > 0) refreshKeywordIndexForSource(pdfFile, "热监听入库 " + fileName);
-        System.out.println();
+        log.info();
     }
 
     private void handleSourceFileDelete(File pdf) {
@@ -1753,7 +1757,7 @@ public class RagInitializer {
         int vectorRows = deleteStoredSourceRows(pdf);
         int bm25Rows = (bm25IndexService != null && bm25IndexService.isAvailable())
                 ? bm25IndexService.deleteSource(sourceKeys(pdf)) : 0;
-        System.out.println("🗑️ [热监听] 检测到 PDF 已删除：" + fileName
+        log.warn("🗑️ [热监听] 检测到 PDF 已删除：" + fileName
                 + "  → 清理 vector_store 块=" + vectorRows + "  bm25_docs 行=" + bm25Rows);
     }
 
@@ -1834,13 +1838,13 @@ public class RagInitializer {
                     int exit = p.exitValue();
                     if (!finished) {
                         p.destroyForcibly();
-                        System.out.println("      ⚠️ 第 " + (i + 1) + "/" + pages + " 页 OCR 超时（>" + ocrPageTimeoutSec + "s），跳过");
+                        log.warn("      ⚠️ 第 " + (i + 1) + "/" + pages + " 页 OCR 超时（>" + ocrPageTimeoutSec + "s），跳过");
                         continue;
                     }
                     if (exit != 0) {
                         String hint = procOut.toString().replaceAll("\\s+", " ").trim();
                         if (hint.length() > 500) hint = hint.substring(0, 500) + "...";
-                        System.err.println("      ❌ 第 " + (i + 1) + "/" + pages + " 页 OCR 失败 exit=" + exit
+                        log.warn("      ❌ 第 " + (i + 1) + "/" + pages + " 页 OCR 失败 exit=" + exit
                                 + "：" + (hint.isEmpty() ? "(stdout空)" : hint));
                         continue;
                     }
@@ -1861,12 +1865,12 @@ public class RagInitializer {
                             + "ms，PNG=" + (pngSize / 1024) + "KB，TXT="
                             + (txtSize > 0 ? txtSize + "B" : "空") + "，非空字符≈" + nb + "）";
                     if (nb == 0) {
-                        System.err.println(pageMsg);
+                        log.warn(pageMsg);
                     } else {
-                        System.out.println(pageMsg);
+                        log.info(pageMsg);
                     }
                 } catch (Throwable pageTh) {
-                    System.err.println("      ⚠️ 第 " + (i + 1) + "/" + pages + " 页 OCR 异常: "
+                    log.warn("      ⚠️ 第 " + (i + 1) + "/" + pages + " 页 OCR 异常: "
                             + pageTh.getClass().getSimpleName() + ": " + pageTh.getMessage());
                 } finally {
                     if (png != null && png.exists()) png.delete();
@@ -1880,7 +1884,7 @@ public class RagInitializer {
             }
             return allText.toString().trim();
         } catch (Throwable th) {
-            System.err.println("  ❌ [P4-OCR] 整体异常，放弃 OCR: " + th.getClass().getSimpleName() + ": " + th.getMessage());
+            log.warn("  ❌ [P4-OCR] 整体异常，放弃 OCR: " + th.getClass().getSimpleName() + ": " + th.getMessage());
             return "";
         } finally {
             // 清理临时目录

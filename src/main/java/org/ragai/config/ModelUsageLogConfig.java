@@ -2,6 +2,8 @@ package org.ragai.config;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.boot.web.client.RestClientCustomizer;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -32,6 +34,8 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 @Configuration
 public class ModelUsageLogConfig {
+
+    private static final Logger log = LoggerFactory.getLogger(ModelUsageLogConfig.class);
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
@@ -66,7 +70,7 @@ public class ModelUsageLogConfig {
             try {
                 raw = response.getBody().readAllBytes();
             } catch (IOException e) {
-                log(kind, "http=" + safeStatus(response) + "  读取响应失败："
+                recordUsage(kind, "http=" + safeStatus(response) + "  读取响应失败："
                         + e.getClass().getSimpleName() + " " + e.getMessage(), 0L);
                 throw e;
             }
@@ -74,7 +78,7 @@ public class ModelUsageLogConfig {
                 logResponse(kind, body, response, raw);
             } catch (RuntimeException e) {
                 // 日志本身不能把检索链路搞挂
-                log(kind, "http=" + safeStatus(response) + "  用量解析失败："
+                recordUsage(kind, "http=" + safeStatus(response) + "  用量解析失败："
                         + e.getClass().getSimpleName() + " " + e.getMessage(), 0L);
             }
             return new BufferedResponse(response, raw);
@@ -116,20 +120,20 @@ public class ModelUsageLogConfig {
                     first = false;
                 }
                 info.append('}');
-                log(kind, info.toString(), usageNode.path("total_tokens").asLong(-1));
+                recordUsage(kind, info.toString(), usageNode.path("total_tokens").asLong(-1));
             } else {
                 info.append("  响应里没有 usage 字段");
-                log(kind, info.toString(), 0L);
+                recordUsage(kind, info.toString(), 0L);
             }
         }
 
-        private static void log(String kind, String detail, long tokens) {
+        private static void recordUsage(String kind, String detail, long tokens) {
             AtomicLong calls = "向量化".equals(kind) ? EMBED_CALLS : RERANK_CALLS;
             AtomicLong sum = "向量化".equals(kind) ? EMBED_TOKENS : RERANK_TOKENS;
             long n = calls.incrementAndGet();
             long acc = tokens > 0 ? sum.addAndGet(tokens) : sum.get();
-            System.out.println("[模型用量] " + kind + "  第" + n + "次  " + detail
-                    + "  累计tokens=" + acc + (tokens > 0 ? "" : "  ⚠️本次未计入"));
+            log.info("[模型用量] {}  第{}次  {}  累计tokens={}{}", kind, n, detail, acc,
+                    tokens > 0 ? "" : "  ⚠️本次未计入");
         }
 
         /** 请求体里的条数是计费口径的直接因子（重排按文档数算），值得留在日志里。 */

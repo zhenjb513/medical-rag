@@ -1,6 +1,8 @@
 package org.ragai.service;
 
 import dev.langchain4j.data.document.Document;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
@@ -11,6 +13,8 @@ import java.util.stream.Collectors;
 
 @Service
 public class MultiHopRetrievalService {
+
+    private static final Logger log = LoggerFactory.getLogger(MultiHopRetrievalService.class);
 
     private final HybridRetrievalService hybridRetrievalService;
 
@@ -49,18 +53,18 @@ public class MultiHopRetrievalService {
             return hybridRetrievalService.search(query, topK, threshold);
         }
 
-        System.out.println("[多跳检索] 原始 query: " + query);
+        log.info("[多跳检索] 原始 query: {}", query);
 
         int poolK = Math.max(topK * 3, 12);
         List<Document> primary = hybridRetrievalService.search(query, poolK, threshold);
 
         if (primary.isEmpty()) {
-            System.out.println("[多跳检索] 主检索为空，直接返回");
+            log.info("[多跳检索] 主检索为空，直接返回");
             return primary;
         }
 
         Set<String> primarySources = distinctSources(primary);
-        System.out.println("[多跳检索] 主检索 topK 来源分布: " + sourceDistribution(primary));
+        log.info("[多跳检索] 主检索 topK 来源分布: {}", sourceDistribution(primary));
 
         List<String> subQueries = null;
         boolean userHasAnd = MULTI_ENTITY_AND.matcher(query).find();
@@ -68,10 +72,10 @@ public class MultiHopRetrievalService {
 
         if (userHasAnd || crossSource) {
             subQueries = generateSubQueries(query, primary, userHasAnd);
-            System.out.println("[多跳检索] 触发多跳 (userAnd=" + userHasAnd
-                    + ", distinctSources=" + primarySources.size() + ") → 子查询: " + subQueries);
+            log.info("[多跳检索] 触发多跳 (userAnd={}, distinctSources={}) → 子查询: {}",
+                    userHasAnd, primarySources.size(), subQueries);
         } else {
-            System.out.println("[多跳检索] 单文档即可回答，跳过多跳");
+            log.info("[多跳检索] 单文档即可回答，跳过多跳");
         }
 
         if (subQueries == null || subQueries.isEmpty()) {
@@ -91,7 +95,7 @@ public class MultiHopRetrievalService {
             if (sub.equals(query)) continue;
 
             List<Document> hopResult = hybridRetrievalService.search(sub, topK, threshold);
-            System.out.println("[多跳检索] 第 " + (hopCount + 1) + " 跳 query=[" + sub + "] 命中 " + hopResult.size() + " 条");
+            log.info("[多跳检索] 第 {} 跳 query=[{}] 命中 {} 条", hopCount + 1, sub, hopResult.size());
 
             double decay = Math.pow(hopDecay, hopCount + 1);
             for (Document d : hopResult) {
@@ -111,7 +115,7 @@ public class MultiHopRetrievalService {
                 .map(ScoredDoc::doc)
                 .collect(java.util.stream.Collectors.toList());
 
-        System.out.println("[多跳检索] 合并去重后 " + finalDocs.size() + " 条，取 top " + topK);
+        log.info("[多跳检索] 合并去重后 {} 条，取 top {}", finalDocs.size(), topK);
         return take(finalDocs, topK);
     }
 

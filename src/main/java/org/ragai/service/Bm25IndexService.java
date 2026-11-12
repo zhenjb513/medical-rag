@@ -3,6 +3,8 @@ package org.ragai.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.ragai.config.PgVectorConfigProperties;
 import dev.langchain4j.data.document.Document;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
@@ -22,6 +24,9 @@ import java.util.Map;
  */
 @Service
 public class Bm25IndexService {
+
+    private static final Logger log = LoggerFactory.getLogger(Bm25IndexService.class);
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
 
     private static final double K1 = 1.2;
     private static final double B = 0.75;
@@ -157,7 +162,7 @@ public class Bm25IndexService {
             return pg.update("DELETE FROM bm25_docs WHERE source IN " + placeholders(sourceKeys.length),
                     (Object[]) sourceKeys);
         } catch (Exception ex) {
-            System.out.println("    ⚠️ BM25 删除 source 异常：" + ex.getMessage());
+            log.warn("BM25 删除 source 异常：{}", ex.getMessage());
             return -1;
         }
     }

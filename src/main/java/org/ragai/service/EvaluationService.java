@@ -4,6 +4,8 @@ import dev.langchain4j.data.document.Document;
 import org.ragai.controller.ChatController;
 import org.ragai.model.MedicalTestSet;
 import org.ragai.model.TestCase;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -18,6 +20,8 @@ import java.util.regex.Pattern;
 
 @Service
 public class EvaluationService {
+
+    private static final Logger log = LoggerFactory.getLogger(EvaluationService.class);
 
     private final ChatController chatController;
     private final MedicalTestSet medicalTestSet;
@@ -117,22 +121,23 @@ public class EvaluationService {
             TestResult result = evaluateSingle(testCase);
             results.add(result);
             ran++;
-            System.out.println("[逐题] 本次第" + ran + "道  全卷#" + (i + 1)
-                    + (result.isAllPass() ? " ✅通过" : " ❌未通过")
-                    + "  准确=" + yn(result.accuracyPass) + "  引用=" + yn(result.referencePass)
-                    + "  幻觉=" + yn(result.hallucinationPass) + "  合规=" + yn(result.compliancePass)
-                    + "  问题=" + result.question + "  类别=" + result.category);
+            log.info("[逐题] 本次第{}道  全卷#{}{}  准确={}  引用={}  幻觉={}  合规={}  问题={}  类别={}",
+                    ran, i + 1,
+                    result.isAllPass() ? " 通过" : " 未通过",
+                    yn(result.accuracyPass), yn(result.referencePass),
+                    yn(result.hallucinationPass), yn(result.compliancePass),
+                    result.question, result.category);
             if (!result.isAllPass()) {
-                System.out.println("[逐题] #" + (i + 1) + "  失败原因=" + result.failReason);
+                log.info("[逐题] #{}  失败原因={}", i + 1, result.failReason);
             }
-            System.out.println("[逐题] #" + (i + 1) + "  出处=" + result.accuracyEvidence
-                    + (result.backfillSuspect ? "  ⚠️模型自带知识" : "")
-                    + (result.wrongBlockSuspect ? "  ⚠️出处不在答案块" : ""));
-            System.out.println("[逐题] #" + (i + 1) + "  出处核对=" + result.citationEvidence
-                    + (result.citationFabricatedSuspect ? "  ⚠️内联引用编造/抄错" : ""));
-            System.out.println("[逐题] #" + (i + 1) + "  占位字核对=" + result.templateLeakEvidence
-                    + (result.templateLeakSuspect ? "  ⚠️抄了提示词模板" : ""));
-            System.out.println("[逐题] #" + (i + 1) + "  答案=" + flatten(result.answer));
+            log.info("[逐题] #{}  出处={}{}{}", i + 1, result.accuracyEvidence,
+                    result.backfillSuspect ? "  ⚠️模型自带知识" : "",
+                    result.wrongBlockSuspect ? "  ⚠️出处不在答案块" : "");
+            log.info("[逐题] #{}  出处核对={}{}", i + 1, result.citationEvidence,
+                    result.citationFabricatedSuspect ? "  ⚠️内联引用编造/抄错" : "");
+            log.info("[逐题] #{}  占位字核对={}{}", i + 1, result.templateLeakEvidence,
+                    result.templateLeakSuspect ? "  ⚠️抄了提示词模板" : "");
+            log.info("[逐题] #{}  答案={}", i + 1, flatten(result.answer));
             if (result.accuracyPass) accuracyPass++;
             if (result.referencePass) referencePass++;
             if (result.hallucinationPass) hallucinationPass++;
