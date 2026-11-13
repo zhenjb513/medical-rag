@@ -1,4 +1,4 @@
-package org.ragai.service;
+﻿package org.ragai.service;
 
 import jakarta.annotation.PostConstruct;
 import org.apache.pdfbox.cos.*;
@@ -137,13 +137,15 @@ public class RagInitializer {
     }
 
     /**
+     * 启动期增量对账：只补建向量表有但 bm25_docs 缺失的 source，清理已删除文件的残留行。
+     * 库未变时零写入，不再每次启动都 TRUNCATE 全表重建。
      * 关键词倒排表是自建的两张表，向量库写入不会自动带上它。
      * 入库后不刷新，新丢进来的 PDF 就是「意思搜得到、词搜不到」——混合检索的关键词这条腿是瞎的。
      */
-    private void refreshKeywordIndex(String why) {
+    private void reconcileKeywordIndex() {
         if (bm25IndexService == null || !bm25IndexService.isAvailable()) return;
-        log.info("[RagInitializer] 刷新 BM25 关键词索引（" + why + "）："
-                + bm25IndexService.rebuildAll());
+        log.info("[RagInitializer] 启动期 BM25 增量对账："
+                + bm25IndexService.reconcileAll());
     }
 
     /**
@@ -152,7 +154,7 @@ public class RagInitializer {
      * ① 代价跟**全库块数**成正比（501 块 1.6~1.8s 无感，库堆大就成了每次入库的固定重税）；
      * ② TRUNCATE 让**所有**文件的关键词行在重插完成前都不在表里，这个空窗同样跟全库长度一起涨；
      * 按份刷只让**这一份**短暂缺行。
-     * 启动时那次仍然走 {@code rebuildAll} 全量对账，由它负责把历史遗留的缺口补齐。
+     * 启动期对账走 {@link #reconcileKeywordIndex()}，只补建缺失 source，不再全量 TRUNCATE。
      */
     private void refreshKeywordIndexForSource(File pdf, String why) {
         if (bm25IndexService == null || !bm25IndexService.isAvailable()) return;
@@ -768,9 +770,9 @@ public class RagInitializer {
                 + "  chunks总数=" + totalChunks
                 + "  提交批次数=" + totalBatches
                 + " (每批≤" + DASHSCOPE_EMBEDDING_MAX_BATCH + ")");
-        // 每次启动都重建（实测 1.8s）：判重跳过的文件不会改正文，但倒排表可能被手工删过或抽取器改过版，
-        // 启动时全量重建一次最省事，能保证关键词这条腿和向量库永远同步。
-        refreshKeywordIndex("启动全量对账");
+        // 启动期增量对账：只补建缺失的 source，库未变时零写入，不再 TRUNCATE 全表。
+        // 历史遗留缺口由 reconcileAll 内部的 source 集合差集自动补齐。
+        reconcileKeywordIndex();
         log.info("");
 
         startDirectoryWatcher();

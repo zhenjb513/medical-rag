@@ -13,9 +13,11 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * BM25 关键词召回：把向量库表里每个 chunk 分词后写进自建倒排表，检索时在 PG 里直接算 Okapi BM25。
@@ -170,6 +172,55 @@ public class Bm25IndexService {
         return "BM25 重建完成：文档块=" + docs + "  倒排条目=" + termPairs
                 + "  词表=" + vocab + "  平均块长度(词)=" + String.format("%.1f", avgdl)
                 + "  耗时=" + ms + "ms";
+    }
+
+    /**
+     * 启动期增量对账：替代 {@link #rebuildAll()} 的无条件 TRUNCATE。
+     * <p>
+     * 对比向量表与 {@code bm25_docs} 的 source 集合，只对两边有差异的部分动手：
+     * <ul>
+     *   <li>向量表有但 bm25_docs 缺失的 source → 调 {@link #refreshSource(String[])} 补建</li>
+     *   <li>bm25_docs 有但向量表已删除的 source → 调 {@link #deleteSource(String[])} 清理残留</li>
+     *   <li>两边都有的 source → 跳过，不重建</li>
+     * </ul>
+     * 库未变时零写入，启动 BM25 初始化从 O(全库) 退化为 O(source 数)。
+     * <p>
+     * 注意：同一份文件在向量表和 bm25_docs 里 source 字符串完全一致（bm25_docs.source 直接从
+     * 向量表 metadata->>'source' 读入），所以按字符串相等对比即可，无需 canonical/absolute 归一。
+     *
+     * @return 人类可读的对账统计（source 数、补建数、清理数、耗时）
+     */
+    @CacheEvict(cacheNames = "bm25Search", allEntries = true)
+    public String reconcileAll() {
+        requirePg();
+        ensureSchema();
+        long t0 = System.currentTimeMillis();
+
+        Set<String> vectorSources = new HashSet<>(pg.queryForList(
+                "SELECT DISTINCT metadata->>'source' FROM " + vectorTable()
+                        + " WHERE metadata->>'source' IS NOT NULL", String.class));
+        Set<String> bm25Sources = new HashSet<>(pg.queryForList(
+                "SELECT DISTINCT source FROM bm25_docs WHERE source IS NOT NULL", String.class));
+
+        List<String> missing = new ArrayList<>(vectorSources);
+        missing.removeAll(bm25Sources);
+
+        List<String> orphan = new ArrayList<>(bm25Sources);
+        orphan.removeAll(vectorSources);
+
+        int removedDocs = 0;
+        if (!missing.isEmpty()) {
+            refreshSource(missing.toArray(new String[0]));
+        }
+        if (!orphan.isEmpty()) {
+            removedDocs = deleteSource(orphan.toArray(new String[0]));
+        }
+
+        long ms = System.currentTimeMillis() - t0;
+        return "BM25 增量对账：向量表 source=" + vectorSources.size()
+                + "  bm25 已有 source=" + bm25Sources.size()
+                + "  补建=" + missing.size() + "  清理残留 source=" + orphan.size()
+                + "(删 " + removedDocs + " 行)  耗时=" + ms + "ms";
     }
 
     /**
