@@ -1,4 +1,4 @@
-﻿package org.ragai.service;
+package org.ragai.service;
 
 import jakarta.annotation.PostConstruct;
 import org.apache.pdfbox.cos.*;
@@ -199,6 +199,30 @@ public class RagInitializer {
      * 本轮启动的入库流水：扫描/跳过/新灌/失败/chunks/批次。/rag/diag 的「入库历史」数据来源。
      */
     private volatile Map<String, Object> lastBootIngest = null;
+
+    /**
+     * 块过滤累计计数：进程生命周期内所有入库（启动批量 + 热监听 + 手动）的累计值。
+     * 只统计真正走过过滤闸门的块，供 /rag/diag 的 block_filter 段核对过滤效果。
+     */
+    private final java.util.concurrent.atomic.AtomicLong chunkFilterOriginal =
+            new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong chunkFilterDroppedLowInfo =
+            new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong chunkFilterDroppedWithinFile =
+            new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong chunkFilterDroppedCrossFile =
+            new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong chunkFilterKept =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * 块级增量复用计数：重灌时命中旧 chunk_hash 而复用旧 embedding 的块数，以及新调模型的块数。
+     * 进程内累计，供 /rag/diag 核对增量效果。
+     */
+    private final java.util.concurrent.atomic.AtomicLong chunkReuseOld =
+            new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong chunkReuseNew =
+            new java.util.concurrent.atomic.AtomicLong();
 
     // WatchService 相关：目录热监听
     private volatile WatchService watchService;
@@ -448,12 +472,32 @@ public class RagInitializer {
         Document doc = Document.from(cleaned, meta);
         List<dev.langchain4j.data.segment.TextSegment> chunks = splitter.split(doc);
         if (chunks == null) chunks = Collections.emptyList();
+        chunks = filterAndDeduplicateChunks(chunks, sourceKeys(file), logPrefix);
 
         int batches = 0;
         if (!chunks.isEmpty()) {
             try {
-                writeChunksInBatches(chunks, logPrefix);
-                batches = (chunks.size() + DASHSCOPE_EMBEDDING_MAX_BATCH - 1) / DASHSCOPE_EMBEDDING_MAX_BATCH;
+                String currentContentHash = nullToEmpty(
+                        chunks.get(0).metadata().getString("content_hash"));
+                if (stored != null && stored.sameContent(currentContentHash, chunks.size())) {
+                    refreshStoredFileHash(file, currentFileHash);
+                    log.warn(logPrefix + "⏭️  跳过：" + file.getName()
+                            + "（文件有变动但抽取正文一致，" + chunks.size() + " chunks 无需重灌）");
+                    return IngestResult.skipped(stored.chunkCount);
+                }
+                Map<String, StoredChunk> oldChunksByHash = stored != null
+                        ? loadStoredChunksByHash(file) : Collections.emptyMap();
+                if (stored != null) {
+                    int removed = deleteStoredSourceRows(file);
+                    if (removed <= 0) {
+                        log.warn(logPrefix + "⛔ " + file.getName() + " 旧块清理未成功（删除 " + removed
+                                + " 条），已中止重灌 —— 继续写入会让库里出现同一文件的两套 chunk_index");
+                        return IngestResult.fail();
+                    }
+                    log.info(logPrefix + "🔄 重新入库：" + file.getName()
+                            + "（正文与库内版本不同，已删除旧块 " + removed + " 条）");
+                }
+                batches = writeChunksInBatchesWithReuse(chunks, chunks.size(), oldChunksByHash, logPrefix);
                 bm25IndexService.refreshSource(sourceKeys(file));
             } catch (Throwable t) {
                 log.warn(logPrefix + "❌ 向量化写入失败：" + t.getMessage());
@@ -640,6 +684,7 @@ public class RagInitializer {
                 throw new IOException(cause);
             }
             if (chunks == null) chunks = Collections.emptyList();
+            chunks = filterAndDeduplicateChunks(chunks, sourceKeys(pdf), logPrefix);
 
             long tookSec = (System.currentTimeMillis() - startMs + 500) / 1000;
             if (chunks.isEmpty()) {
@@ -655,6 +700,8 @@ public class RagInitializer {
                         + "（文件有变动但抽取正文一致，" + chunks.size() + " chunks 无需重灌）");
                 return IngestResult.skipped(stored.chunkCount);
             }
+            Map<String, StoredChunk> oldChunksByHash = stored != null
+                    ? loadStoredChunksByHash(pdf) : Collections.emptyMap();
             if (stored != null) {
                 int removed = deleteStoredSourceRows(pdf);
                 if (removed <= 0) {
@@ -666,7 +713,7 @@ public class RagInitializer {
                         + "（正文与库内版本不同，已删除旧块 " + removed + " 条）");
             }
 
-            int batchesForThisPdf = writeChunksInBatches(chunks, logPrefix);
+            int batchesForThisPdf = writeChunksInBatchesWithReuse(chunks, chunks.size(), oldChunksByHash, logPrefix);
 
             long totalChars = 0;
             int minChunk = Integer.MAX_VALUE, maxChunk = 0, emptyChunks = 0;
@@ -933,6 +980,16 @@ public class RagInitializer {
     }
 
     /**
+     * 拼接两段 JDBC 参数：查重 SQL 里前 N 个 ? 是 chunk_hash 列表，后 M 个 ? 是自身 source 列表。
+     */
+    private static Object[] concatArgs(Object[] head, String[] tail) {
+        Object[] all = new Object[head.length + tail.length];
+        System.arraycopy(head, 0, all, 0, head.length);
+        System.arraycopy(tail, 0, all, head.length, tail.length);
+        return all;
+    }
+
+    /**
      * 正文指纹：抽取文本变了吗。文字层修复、换抽取路径都会让它变化，从而触发重灌。
      */
     private static String sha256Hex(String s) {
@@ -1131,6 +1188,22 @@ public class RagInitializer {
     }
 
     /**
+     * 库内旧块的快照：embedding 主键 + 向量。
+     * <p>
+     * 块级增量更新时，先按 source 把旧块全部捞出来，按 chunk_hash 建索引。
+     * 新切片的块若 hash 命中，就直接复用旧 embedding——不调模型、不算向量，只换 metadata 写回。
+     */
+    static final class StoredChunk {
+        final String embeddingId;
+        final float[] vector;
+
+        StoredChunk(String embeddingId, float[] vector) {
+            this.embeddingId = embeddingId;
+            this.vector = vector;
+        }
+    }
+
+    /**
      * 兼容历史记录的 source 写法：canonicalPath 与 absolutePath 都视为同一份文件（与写入侧 getCanonicalPath 对齐）。
      */
     private static String[] sourceKeys(File pdf) {
@@ -1164,6 +1237,54 @@ public class RagInitializer {
         } catch (Exception ex) {
             // 探测不出来就不能判定"库里没有"，交由调用方中止，避免同一 source 出现两套 chunk_index
             throw new IllegalStateException("读取库内版本失败: " + ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * 按 source 捞出库内旧块的 (chunk_hash → StoredChunk) 映射。
+     * <p>
+     * 块级增量更新的前提：在删旧行之前把旧块的 embedding 主键与向量读出来，
+     * 新切片命中同 hash 时直接复用，省掉一次 embedding 调用。
+     * 读失败退化为空 map（全量重算），不影响正确性。
+     */
+    private Map<String, StoredChunk> loadStoredChunksByHash(File file) {
+        if (this.pgJdbc == null || file == null) return Collections.emptyMap();
+        String[] keys = sourceKeys(file);
+        String sql = "SELECT metadata->>'chunk_hash', embedding_id::text, embedding::text "
+                + "FROM " + vectorStoreTable()
+                + " WHERE metadata->>'source' IN " + placeholders(keys.length);
+        try {
+            return this.pgJdbc.query(sql, rs -> {
+                Map<String, StoredChunk> map = new HashMap<>();
+                while (rs.next()) {
+                    String hash = rs.getString(1);
+                    if (hash == null || hash.isEmpty()) continue;
+                    String id = rs.getString(2);
+                    float[] vec = parseVector(rs.getString(3));
+                    if (vec != null) map.put(hash, new StoredChunk(id, vec));
+                }
+                return map;
+            }, (Object[]) keys);
+        } catch (Exception ex) {
+            log.warn("    ⚠️ 读取旧块 embedding 失败（退化为全量重算）：" + ex.getMessage());
+            return Collections.emptyMap();
+        }
+    }
+
+    /**
+     * 解析 PG vector 的文本表示（形如 [0.1,0.2,0.3]）为 float[]。
+     */
+    private static float[] parseVector(String text) {
+        if (text == null || text.length() < 2) return null;
+        try {
+            String inner = text.substring(1, text.length() - 1);
+            if (inner.isEmpty()) return new float[0];
+            String[] parts = inner.split(",");
+            float[] vec = new float[parts.length];
+            for (int i = 0; i < parts.length; i++) vec[i] = Float.parseFloat(parts[i].trim());
+            return vec;
+        } catch (Exception ex) {
+            return null;
         }
     }
 
@@ -1565,10 +1686,21 @@ public class RagInitializer {
      * 分批写入 VectorStore（Embedding 调用），每批 ≤ DASHSCOPE_EMBEDDING_MAX_BATCH。
      */
     private int writeChunksInBatches(List<dev.langchain4j.data.segment.TextSegment> chunks, String logPrefix) {
+        return writeChunksInBatches(chunks, chunks == null ? 0 : chunks.size(), logPrefix);
+    }
+
+    /**
+     * 分批写入 VectorStore（Embedding 调用），每批 ≤ DASHSCOPE_EMBEDDING_MAX_BATCH。
+     *
+     * @param totalChunks 这份文件过滤后的总块数。块级增量重写时传进来的 {@code chunks} 只有变化块，
+     *                    但 {@code total_chunks} 必须按整份文件的块数写——它是「是否完整入库」的判据，
+     *                    写成变化块的数量会让下次启动误判为缺块。
+     */
+    private int writeChunksInBatches(List<dev.langchain4j.data.segment.TextSegment> chunks, int totalChunks,
+                                     String logPrefix) {
         if (chunks == null || chunks.isEmpty()) return 0;
-        int total = chunks.size();
         for (dev.langchain4j.data.segment.TextSegment c : chunks) {
-            c.metadata().put("total_chunks", String.valueOf(total));
+            c.metadata().put("total_chunks", String.valueOf(totalChunks));
         }
         int batches = 0;
         long startMs = System.currentTimeMillis();
@@ -1598,6 +1730,217 @@ public class RagInitializer {
         dev.langchain4j.model.output.Response<List<dev.langchain4j.data.embedding.Embedding>> response =
                 embeddingModel.embedAll(segments);
         vectorStore.addAll(response.content(), segments);
+    }
+
+    /**
+     * 块级增量写入：命中旧 chunk_hash 的块复用旧 embedding（不调模型），其余块才调用 embedding 模型。
+     * <p>
+     * 实现要点：
+     * <ul>
+     *   <li>先把新块按 chunk_hash 分成「可复用」与「需重算」两组</li>
+     *   <li>可复用组：直接拿旧行的 embedding_id + 向量，用 addAll(ids, embeddings, segments) 原地 upsert</li>
+     *   <li>需重算组：批量调 embeddingModel.embedAll，生成新 UUID</li>
+     *   <li>两组合并后分批写库，保证 ids / embeddings / segments 三表对齐</li>
+     * </ul>
+     * 由于 deleteStoredSourceRows 已在调用前清空本 source 旧行，这里的 upsert 对复用块等价于 insert。
+     *
+     * @param totalChunks 整份文件过滤后的块数（写入 total_chunks 元数据用）
+     * @param oldChunksByHash 旧块 (chunk_hash → StoredChunk)，可复用的 embedding 来源
+     */
+    int writeChunksInBatchesWithReuse(
+            List<dev.langchain4j.data.segment.TextSegment> chunks, int totalChunks,
+            Map<String, StoredChunk> oldChunksByHash, String logPrefix) {
+        if (chunks == null || chunks.isEmpty()) return 0;
+        if (vectorStore == null) {
+            return writeChunksInBatches(chunks, totalChunks, logPrefix);
+        }
+
+        for (dev.langchain4j.data.segment.TextSegment c : chunks) {
+            c.metadata().put("total_chunks", String.valueOf(totalChunks));
+        }
+
+        List<dev.langchain4j.data.segment.TextSegment> allSegments = new ArrayList<>(chunks.size());
+        List<String> allIds = new ArrayList<>(chunks.size());
+        List<dev.langchain4j.data.embedding.Embedding> allEmbeddings = new ArrayList<>(chunks.size());
+        List<dev.langchain4j.data.segment.TextSegment> needEmbed = new ArrayList<>();
+
+        int reused = 0;
+        for (dev.langchain4j.data.segment.TextSegment c : chunks) {
+            String hash = c.metadata().getString("chunk_hash");
+            StoredChunk old = (hash != null && oldChunksByHash != null) ? oldChunksByHash.get(hash) : null;
+            if (old != null && old.vector != null) {
+                allSegments.add(c);
+                allIds.add(old.embeddingId);
+                allEmbeddings.add(new dev.langchain4j.data.embedding.Embedding(old.vector));
+                reused++;
+            } else {
+                needEmbed.add(c);
+            }
+        }
+
+        if (!needEmbed.isEmpty()) {
+            dev.langchain4j.model.output.Response<List<dev.langchain4j.data.embedding.Embedding>> response =
+                    embeddingModel.embedAll(needEmbed);
+            List<dev.langchain4j.data.embedding.Embedding> newEmbeddings = response.content();
+            for (int i = 0; i < needEmbed.size(); i++) {
+                allSegments.add(needEmbed.get(i));
+                allIds.add(java.util.UUID.randomUUID().toString());
+                allEmbeddings.add(newEmbeddings.get(i));
+            }
+        }
+
+        int batches = 0;
+        long startMs = System.currentTimeMillis();
+        for (int i = 0; i < allSegments.size(); i += DASHSCOPE_EMBEDDING_MAX_BATCH) {
+            int end = Math.min(i + DASHSCOPE_EMBEDDING_MAX_BATCH, allSegments.size());
+            vectorStore.addAll(
+                    allIds.subList(i, end),
+                    allEmbeddings.subList(i, end),
+                    allSegments.subList(i, end));
+            batches++;
+            if ((batches % 20) == 0) {
+                long secs = (System.currentTimeMillis() - startMs + 500) / 1000;
+                log.info(logPrefix + "   ↪ 块级增量写入：已完成 " + batches + " 批（已用约 " + secs + "s）");
+            }
+        }
+
+        chunkReuseOld.addAndGet(reused);
+        chunkReuseNew.addAndGet(needEmbed.size());
+        if (reused > 0 || !needEmbed.isEmpty()) {
+            log.info(logPrefix + "    ↪ [块级增量] 复用旧 embedding=" + reused
+                    + "  新调 embedding=" + needEmbed.size() + "  总块=" + chunks.size());
+        }
+        return batches;
+    }
+
+    /**
+     * 块级过滤与去重，写入 VectorStore 前的最后一道闸门：
+     * <ol>
+     *   <li>为每个块计算 chunk_hash（SHA-256 of 块正文），写入 metadata</li>
+     *   <li>低信息量过滤：纯数字/纯标点/有效字符过少/页码模式</li>
+     *   <li>文件内去重：同 chunk_hash 只保留首次出现</li>
+     *   <li>跨文件去重：库内<b>其它 source</b> 已存在同 chunk_hash 的块不再写入</li>
+     * </ol>
+     * <p>
+     * 跨文件查重必须排除本文件自己的 source：重灌时本文件的旧行此刻还没删
+     * （删除发生在调用本方法之后），若把自身旧行算作"库内已存在"，未变的块会被判为
+     * 重复跳过，紧接着旧行被删掉，这些块就静默丢失了。
+     *
+     * @param selfSourceKeys 本文件的 source 键（canonical/absolute），从查重结果中排除自身
+     */
+    List<dev.langchain4j.data.segment.TextSegment> filterAndDeduplicateChunks(
+            List<dev.langchain4j.data.segment.TextSegment> chunks, String[] selfSourceKeys, String logPrefix) {
+        if (chunks == null || chunks.isEmpty()) return Collections.emptyList();
+
+        int total = chunks.size();
+        List<String> hashes = new ArrayList<>(total);
+        for (dev.langchain4j.data.segment.TextSegment c : chunks) {
+            String hash = sha256Hex(segmentText(c));
+            c.metadata().put("chunk_hash", nullToEmpty(hash));
+            hashes.add(hash);
+        }
+
+        Set<String> existingInDb = new HashSet<>();
+        if (pgJdbc != null) {
+            String[] selfKeys = (selfSourceKeys == null || selfSourceKeys.length == 0)
+                    ? new String[]{"\u0000__never_matches__"} : selfSourceKeys;
+            try {
+                for (List<String> batch : partition(hashes, 500)) {
+                    Set<String> found = pgJdbc.query(
+                            "SELECT DISTINCT metadata->>'chunk_hash' FROM " + vectorStoreTable()
+                                    + " WHERE metadata->>'chunk_hash' IN " + placeholders(batch.size())
+                                    + " AND COALESCE(metadata->>'source', '') NOT IN ("
+                                    + placeholders(selfKeys.length) + ")",
+                            rs -> {
+                                Set<String> s = new HashSet<>();
+                                while (rs.next()) s.add(rs.getString(1));
+                                return s;
+                            }, concatArgs(batch.toArray(), selfKeys));
+                    if (found != null) existingInDb.addAll(found);
+                }
+            } catch (Exception ex) {
+                log.warn(logPrefix + "    ⚠️ 跨文件查重失败（不影响写入，退化为不过滤跨文件重复）：" + ex.getMessage());
+                existingInDb.clear();
+            }
+        }
+
+        List<dev.langchain4j.data.segment.TextSegment> result = new ArrayList<>();
+        Set<String> seenInFile = new HashSet<>();
+        int lowInfoCount = 0, withinDupCount = 0, crossDupCount = 0;
+
+        for (int i = 0; i < total; i++) {
+            dev.langchain4j.data.segment.TextSegment c = chunks.get(i);
+            String text = segmentText(c);
+            String hash = hashes.get(i);
+
+            if (isLowInformationChunk(text)) {
+                lowInfoCount++;
+                continue;
+            }
+            if (!seenInFile.add(hash)) {
+                withinDupCount++;
+                continue;
+            }
+            if (existingInDb.contains(hash)) {
+                crossDupCount++;
+                continue;
+            }
+            result.add(c);
+        }
+
+        chunkFilterOriginal.addAndGet(total);
+        chunkFilterDroppedLowInfo.addAndGet(lowInfoCount);
+        chunkFilterDroppedWithinFile.addAndGet(withinDupCount);
+        chunkFilterDroppedCrossFile.addAndGet(crossDupCount);
+        chunkFilterKept.addAndGet(result.size());
+
+        if (lowInfoCount > 0 || withinDupCount > 0 || crossDupCount > 0) {
+            log.info(logPrefix + "    ↪ [块过滤] 原始=" + total
+                    + "  低信息量=" + lowInfoCount
+                    + "  文件内重复=" + withinDupCount
+                    + "  跨文件重复=" + crossDupCount
+                    + "  保留=" + result.size());
+        }
+        return result;
+    }
+
+    private static String segmentText(dev.langchain4j.data.segment.TextSegment s) {
+        try {
+            return s.text();
+        } catch (Throwable t) {
+            try {
+                return (String) s.getClass().getMethod("getText").invoke(s);
+            } catch (Throwable t2) {
+                try {
+                    return (String) s.getClass().getMethod("getContent").invoke(s);
+                } catch (Throwable t3) {
+                    return "";
+                }
+            }
+        }
+    }
+
+    static boolean isLowInformationChunk(String text) {
+        if (text == null || text.isBlank()) return true;
+        String trimmed = text.trim();
+        int nonBlank = 0, meaningful = 0;
+        for (int i = 0; i < trimmed.length(); i++) {
+            char ch = trimmed.charAt(i);
+            if (!Character.isWhitespace(ch)) nonBlank++;
+            if (Character.isLetter(ch) || isCjk(ch)) meaningful++;
+        }
+        if (nonBlank < 10) return true;
+        if (meaningful < 2) return true;
+        return trimmed.matches("^(第\\s*\\d+\\s*页|Page\\s*\\d+|\\d+\\s*/\\s*\\d+|\\d+)$");
+    }
+
+    private static boolean isCjk(char ch) {
+        Character.UnicodeBlock block = Character.UnicodeBlock.of(ch);
+        return block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS
+                || block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_A
+                || block == Character.UnicodeBlock.CJK_UNIFIED_IDEOGRAPHS_EXTENSION_B
+                || block == Character.UnicodeBlock.HIRAGANA
+                || block == Character.UnicodeBlock.KATAKANA;
     }
 
     /**
@@ -1902,7 +2245,34 @@ public class RagInitializer {
     }
 
     /**
-     * 运行时诊断：配置、OCR 状态、本轮入库流水、库内 chunk 分布 + 逐份 PDF 体检（不写 VectorStore）。
+     * 块过滤累计计数快照，给 /rag/diag 用。
+     * <p>注意这是<b>进程内累计</b>，不是库内现状：应用重启后归零，只反映重启以来跑过的入库量。
+     * 库内现状要看 stored_overview 的 chunks_in_store。
+     */
+    private Map<String, Object> blockFilterStats() {
+        long original = chunkFilterOriginal.get();
+        long kept = chunkFilterKept.get();
+        Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("original_chunks", original);
+        m.put("dropped_low_info", chunkFilterDroppedLowInfo.get());
+        m.put("dropped_within_file_dup", chunkFilterDroppedWithinFile.get());
+        m.put("dropped_cross_file_dup", chunkFilterDroppedCrossFile.get());
+        m.put("kept", kept);
+        m.put("dropped_total", original - kept);
+        m.put("drop_rate",
+                original == 0 ? "0%" : String.format("%.1f%%", (original - kept) * 100.0 / original));
+        long reused = chunkReuseOld.get();
+        long newlyEmbedded = chunkReuseNew.get();
+        long totalWritten = reused + newlyEmbedded;
+        m.put("incremental_reused_old_embedding", reused);
+        m.put("incremental_new_embedding_calls", newlyEmbedded);
+        m.put("incremental_reuse_rate",
+                totalWritten == 0 ? "0%" : String.format("%.1f%%", reused * 100.0 / totalWritten));
+        return m;
+    }
+
+    /**
+     * 运行时诊断：配置、OCR 状态、本轮入库流水、块过滤计数、库内 chunk 分布 + 逐份 PDF 体检（不写 VectorStore）。
      *
      * @param deep false（默认）= 只开文件读页数并和库内指纹比对；true = 再跑 P1/P2/P3 三层正文提取。
      *             三层提取每份 PDF 都要把全文扒一遍，文件一多这个接口自己就先把自己打挂了，所以不进默认路径。
@@ -1915,6 +2285,7 @@ public class RagInitializer {
         out.put("ocr", ocrSection());
         out.put("last_boot_ingest", lastBootIngest == null
                 ? "本轮启动没跑批量入库（目录里没有 PDF，或没有 VectorStore Bean）" : lastBootIngest);
+        out.put("block_filter", blockFilterStats());
         out.put("stored_overview", storedOverview());
 
         List<File> files;

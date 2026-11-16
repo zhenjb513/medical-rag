@@ -175,6 +175,28 @@ public class Bm25IndexService {
     }
 
     /**
+     * 对账要动手的两组 source（纯函数，不碰库）。
+     *
+     * @param missing 向量表有、倒排表没有 → 需要补建
+     * @param orphan  倒排表有、向量表已经没有了 → 需要清理
+     */
+    record SourceDiff(List<String> missing, List<String> orphan) {
+    }
+
+    /**
+     * 算出两边 source 集合的双向差集。两个集合互不影响：一边为空也只是差集退化成另一边全量。
+     */
+    static SourceDiff diffSources(Set<String> vectorSources, Set<String> bm25Sources) {
+        Set<String> vectors = vectorSources == null ? Set.of() : vectorSources;
+        Set<String> indexed = bm25Sources == null ? Set.of() : bm25Sources;
+        List<String> missing = new ArrayList<>(vectors);
+        missing.removeAll(indexed);
+        List<String> orphan = new ArrayList<>(indexed);
+        orphan.removeAll(vectors);
+        return new SourceDiff(missing, orphan);
+    }
+
+    /**
      * 启动期增量对账：替代 {@link #rebuildAll()} 的无条件 TRUNCATE。
      * <p>
      * 对比向量表与 {@code bm25_docs} 的 source 集合，只对两边有差异的部分动手：
@@ -202,24 +224,20 @@ public class Bm25IndexService {
         Set<String> bm25Sources = new HashSet<>(pg.queryForList(
                 "SELECT DISTINCT source FROM bm25_docs WHERE source IS NOT NULL", String.class));
 
-        List<String> missing = new ArrayList<>(vectorSources);
-        missing.removeAll(bm25Sources);
-
-        List<String> orphan = new ArrayList<>(bm25Sources);
-        orphan.removeAll(vectorSources);
+        SourceDiff diff = diffSources(vectorSources, bm25Sources);
 
         int removedDocs = 0;
-        if (!missing.isEmpty()) {
-            refreshSource(missing.toArray(new String[0]));
+        if (!diff.missing().isEmpty()) {
+            refreshSource(diff.missing().toArray(new String[0]));
         }
-        if (!orphan.isEmpty()) {
-            removedDocs = deleteSource(orphan.toArray(new String[0]));
+        if (!diff.orphan().isEmpty()) {
+            removedDocs = deleteSource(diff.orphan().toArray(new String[0]));
         }
 
         long ms = System.currentTimeMillis() - t0;
         return "BM25 增量对账：向量表 source=" + vectorSources.size()
                 + "  bm25 已有 source=" + bm25Sources.size()
-                + "  补建=" + missing.size() + "  清理残留 source=" + orphan.size()
+                + "  补建=" + diff.missing().size() + "  清理残留 source=" + diff.orphan().size()
                 + "(删 " + removedDocs + " 行)  耗时=" + ms + "ms";
     }
 
