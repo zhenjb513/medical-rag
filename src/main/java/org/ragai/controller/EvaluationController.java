@@ -50,16 +50,27 @@ public class EvaluationController {
      * 看生产链路真正检索到了什么：直接走 HybridRetrievalService.search()（受 mode / rerank-enabled 支配），
      * 只召回不生成。⚠️ 不是零调用——每次至少打一遍向量通道（text-embedding-v3），
      * 生产开着 rerank-enabled 时还要多打一次 gte-rerank-v2；零调用的对照口子是 /evaluation/recall?mode=bm25。
+     * <p>
+     * {@code versions=} 是版本白名单（逗号分隔，如 {@code 2023,2021}），取自入库时按文件名解析出的
+     * metadata {@code version}（认不出年份的文档落的是 {@code unknown}）。它是**召回之后的后过滤**，
+     * 不是库侧条件：先按 topK 召回再剔掉不在白名单里的块，所以过滤后条数通常少于请求的 topK，
+     * 想要满额就把 topK 调大。留空 = 不过滤，行为与本参数加入前完全一致。
      */
     @GetMapping(value = "/retrieve", produces = "text/plain; charset=utf-8")
     public String retrieve(@RequestParam @NotBlank(message = "查询词不能为空") String q,
-                           @RequestParam(defaultValue = "8") @Min(1) @Max(100) int topK) {
+                           @RequestParam(defaultValue = "8") @Min(1) @Max(100) int topK,
+                           @RequestParam(defaultValue = "") String versions) {
         long start = System.currentTimeMillis();
-        var docs = hybridRetrievalService.search(q, topK, null);
+        java.util.Set<String> versionFilter = parseVersions(versions);
+        var docs = hybridRetrievalService.search(q, topK, null, versionFilter);
         StringBuilder sb = new StringBuilder();
         sb.append("mode=").append(hybridRetrievalService.describeMode())
-                .append("  请求topK=").append(topK).append("  实际返回=").append(docs.size())
-                .append("  重排查询串=").append(hybridRetrievalService.isRerankUseExpandedQuery() ? "扩展后" : "原话")
+                .append("  请求topK=").append(topK).append("  实际返回=").append(docs.size());
+        if (!versionFilter.isEmpty()) {
+            sb.append("  版本过滤=").append(String.join("|", versionFilter))
+                    .append("（后过滤，条数少于 topK 属正常）");
+        }
+        sb.append("  重排查询串=").append(hybridRetrievalService.isRerankUseExpandedQuery() ? "扩展后" : "原话")
                 .append("  耗时").append(System.currentTimeMillis() - start).append("ms\n");
         int i = 0;
         for (var d : docs) {
@@ -69,6 +80,18 @@ public class EvaluationController {
                             : String.format("%.3f", d.metadata().getDouble("score"))).append('\n');
         }
         return sb.toString();
+    }
+
+    /** versions= 的解析：逗号/顿号分隔、去空白、去重，最多认 8 个值。留空返回空集＝不过滤。 */
+    static java.util.Set<String> parseVersions(String versions) {
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        if (versions == null || versions.isBlank()) return out;
+        for (String part : versions.split("[,，、]")) {
+            String v = part.trim();
+            if (!v.isEmpty()) out.add(v);
+            if (out.size() >= 8) break;
+        }
+        return out;
     }
 
     /**

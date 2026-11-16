@@ -1,6 +1,7 @@
 package org.ragai.service;
 
 import io.github.resilience4j.retry.annotation.Retry;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,6 +41,18 @@ public class HybridRetrievalService {
     private final Bm25IndexService bm25IndexService;
     private final RerankService rerankService;
     private final Executor ragExecutor;
+    private final MeterRegistry meterRegistry;
+
+    /**
+     * 闸门与 top1 分布按调用来源打 tag：{@code online}=生产检索（/chat、/evaluation/retrieve），
+     * {@code eval}=评测单边口子（searchFused / searchReranked，跑基线时一次几十题）。
+     * 不分开的话，一轮 61 题基线会把「闸门拦截率」冲成考卷的分布，线上真实拦截率就看不见了。
+     */
+    static final String ENTRY_ONLINE = "online";
+    static final String ENTRY_EVAL = "eval";
+    static final String GATE_COUNTER = "rag.retrieval.gate";
+    static final String TOP1_SUMMARY = "rag.retrieval.top1.score";
+    static final String CONTEXT_CHUNKS = "rag.retrieval.context.chunks";
 
     /**
      * app.retrieval.mode 的原始值；实际执行哪个通道看 {@link #executedMode(String, boolean)}（配成 bm25 会降级成 hybrid）
@@ -123,11 +136,13 @@ public class HybridRetrievalService {
 
     public HybridRetrievalService(RagReferenceService ragReferenceService, Bm25IndexService bm25IndexService,
                                   RerankService rerankService,
-                                  @Qualifier("ragExecutor") Executor ragExecutor) {
+                                  @Qualifier("ragExecutor") Executor ragExecutor,
+                                  MeterRegistry meterRegistry) {
         this.ragReferenceService = ragReferenceService;
         this.bm25IndexService = bm25IndexService;
         this.rerankService = rerankService;
         this.ragExecutor = ragExecutor;
+        this.meterRegistry = meterRegistry;
     }
 
     /**
@@ -221,14 +236,18 @@ public class HybridRetrievalService {
         String m = enforceGateCapable(getMode(), bm25IndexService.isAvailable());
         List<Document> raw;
         switch (m) {
-            case "hybrid" -> raw = hybrid(query, topK, true, rerankEnabled);
+            case "hybrid" -> raw = hybrid(query, topK, true, rerankEnabled, ENTRY_ONLINE);
             default -> {
                 List<Document> v = ragReferenceService.search(retrievalQuery(query), topK,
                         threshold == null ? vectorFloor : threshold);
-                raw = hasEvidence(v) ? v : List.of();
+                raw = hasEvidence(v, ENTRY_ONLINE) ? v : List.of();
             }
         }
-        return applyVersionFilter(raw, versionFilter);
+        List<Document> out = applyVersionFilter(raw, versionFilter);
+        if (meterRegistry != null) {
+            meterRegistry.summary(CONTEXT_CHUNKS).record(out.size());
+        }
+        return out;
     }
 
     static List<Document> applyVersionFilter(List<Document> docs, java.util.Set<String> versionFilter) {
@@ -249,14 +268,14 @@ public class HybridRetrievalService {
      * @param expand 是否把命中块的前后邻居块补进上下文
      */
     public List<Document> searchFused(String query, int topK, boolean expand) {
-        return hybrid(query, topK, expand, false);
+        return hybrid(query, topK, expand, false, ENTRY_EVAL);
     }
 
     /**
      * 融合 + 重排，强制开启重排（评测对比用，不看 rerank-enabled）
      */
     public List<Document> searchReranked(String query, int topK, boolean expand) {
-        return hybrid(query, topK, expand, true);
+        return hybrid(query, topK, expand, true, ENTRY_EVAL);
     }
 
     public double getAnswerFloor() {
@@ -276,14 +295,30 @@ public class HybridRetrievalService {
 
     /**
      * 第一名都不够像（或压根没召回到）就判定为「这次没有资料」，只判一次，不逐条砍。
+     * <p>
+     * 顺手把判定结果打进指标：闸门是整条链路上唯一「决定答还是拒」的地方，之前只在拦下时打一行日志，
+     * 想数「一天拦了多少、放行的那次最像的有多像」只能 grep 日志。计的是<b>检索次数</b>不是提问次数
+     * ——多跳开启时一次提问会调 {@link #search} 好几轮。
      */
-    private boolean hasEvidence(List<Document> vectorDocs) {
-        if (vectorDocs == null || vectorDocs.isEmpty()) return false;
-        Double top = vectorDocs.get(0).metadata().getDouble("score");
-        return top != null && top >= answerFloor;
+    private boolean hasEvidence(List<Document> vectorDocs, String entry) {
+        Double top = (vectorDocs == null || vectorDocs.isEmpty())
+                ? null : vectorDocs.get(0).metadata().getDouble("score");
+        boolean passed = top != null && top >= answerFloor;
+        if (meterRegistry != null) {
+            meterRegistry.counter(GATE_COUNTER, "entry", entry,
+                    "result", passed ? "passed" : "blocked").increment();
+            // 先注册这条分布再决定记不记：一次都没记过的序列在看板上是断线，
+            // 会把「库里压根没召回到」和「这个入口今天没人走」画成同一张图。
+            io.micrometer.core.instrument.DistributionSummary top1 =
+                    meterRegistry.summary(TOP1_SUMMARY, "entry", entry);
+            if (top != null) {
+                top1.record(top);
+            }
+        }
+        return passed;
     }
 
-    private List<Document> hybrid(String query, int topK, boolean expand, boolean rerank) {
+    private List<Document> hybrid(String query, int topK, boolean expand, boolean rerank, String entry) {
         int poolSize = rerank ? Math.max(topK, rerankWindow) : topK;
         int perChannel = rerank ? Math.max(probeSize, poolSize) : probeSize;
         String recallQuery = retrievalQuery(query);
@@ -310,7 +345,7 @@ public class HybridRetrievalService {
             return List.of();
         }
 
-        if (!hasEvidence(vectorDocs)) {
+        if (!hasEvidence(vectorDocs, entry)) {
             bm25Future.cancel(true);
             log.info("[检索闸门] 最像的一条也不够像（阈值 {}），本次不提供知识库上下文：{}", String.format("%.2f", answerFloor), query);
             return List.of();
