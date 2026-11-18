@@ -163,7 +163,8 @@ class EvaluationTaskServiceTest {
             release.await(5, TimeUnit.SECONDS);
             return oneReport();
         });
-        EvaluationTaskService svc = new EvaluationTaskService(svcMock, Executors.newSingleThreadExecutor(),
+        var executor = Executors.newSingleThreadExecutor();
+        EvaluationTaskService svc = new EvaluationTaskService(svcMock, executor,
                 reportDir.toString());
 
         EvaluationTaskService.EvalTask first = svc.submit(List.of("胆固醇"));
@@ -179,5 +180,8 @@ class EvaluationTaskServiceTest {
         // 跑完之后再来一次就该起新任务
         EvaluationTaskService.EvalTask third = svc.submit(List.of("血压"));
         assertTrue(third != first, "已结束的批次不该继续占着去重槽");
+        // 第三个任务还在往 @TempDir 写回执；不收工就退出，Windows 上 JUnit 删不掉被占用的临时目录
+        executor.shutdown();
+        assertTrue(executor.awaitTermination(10, TimeUnit.SECONDS), "后台任务 10s 没跑完");
     }
 }

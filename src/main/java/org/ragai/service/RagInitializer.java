@@ -10,7 +10,6 @@ import org.apache.pdfbox.rendering.ImageType;
 import org.apache.pdfbox.rendering.PDFRenderer;
 import org.apache.pdfbox.text.PDFTextStripper;
 import dev.langchain4j.data.document.Document;
-import dev.langchain4j.data.document.splitter.DocumentSplitters;
 import dev.langchain4j.data.document.DocumentSplitter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -93,11 +92,15 @@ public class RagInitializer {
      */
     private final org.springframework.jdbc.core.JdbcTemplate pgJdbc;
     /**
-     * 512 字/块、0 重叠。⚠️ 迁移前用的是 {@code TokenTextSplitter.withChunkSize(512)}，那是 512 <b>token</b>：
-     * 数字相同、单位不同。同一份正文从 501 块（均 936 字）变成 961 块（均约 370 字），
+     * 512 字/块、句子优先装桶（V4，2026-11-18 上生产）。块文本是原文逐字子串，刀口优先落句末。
+     * ⚠️ 历史：迁移前 {@code TokenTextSplitter.withChunkSize(512)} 是 512 <b>token</b>（501 块），
+     * 2026-11-10 换 {@code DocumentSplitters.recursive(512, 0)} 是 512 <b>字符</b>（961 块），
      * 逐文件对账见 {@code scratch/block_count_delta.out}（旧 501 块仍留在 {@code public.vector_store} 里）。
+     * V4 离线对照见 {@code scratch/splitter_fix_compare.out}：块尾中断 80.6%→6.9%，块数约 +15%。
+     * ⚠️ 换切法必须 bump {@link #EXTRACT_PIPELINE_VERSION} 才会真重切（sameFile 早退条件含版本号）；
+     * bump 与全库重灌放在同一次付费操作里做，避免新旧两代块混在一张表里。
      */
-    private final DocumentSplitter splitter = DocumentSplitters.recursive(512, 0);
+    private final DocumentSplitter splitter = new SentenceFirstSplitter(512);
 
     @Value("${app.pdf-path:D:/ai-docs}")
     private String pdfPath;
