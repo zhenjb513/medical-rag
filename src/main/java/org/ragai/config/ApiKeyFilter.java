@@ -66,6 +66,7 @@ public class ApiKeyFilter extends OncePerRequestFilter {
     private static final Set<String> PUBLIC_READ_ONLY_EXACT = Set.of(
             "/rag/chunk",
             "/rag/diag",
+            "/rag/retrieval-stats",
             "/bm25/locate",
             "/bm25/df",
             "/bm25/search",

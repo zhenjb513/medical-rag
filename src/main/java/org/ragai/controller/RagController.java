@@ -21,7 +21,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 引用溯源与运行时诊断两个只读口子：一次库查询 + 本地读 PDF，不调任何模型、不写任何东西。
+ * 引用溯源与运行时诊断三个只读口子：一次库查询 + 本地读 PDF，或只读内存指标，不调任何模型、不写任何东西。
  */
 @RestController
 public class RagController {
@@ -32,6 +32,7 @@ public class RagController {
     private final RagInitializer ragInitializer;
     private final PgVectorEmbeddingStore vectorStore;
     private final ApplicationContext applicationContext;
+    private final org.ragai.service.HybridRetrievalService hybridRetrievalService;
     private final ObjectMapper jsonMapper = new ObjectMapper().enable(SerializationFeature.INDENT_OUTPUT);
 
     public RagController(Bm25IndexService bm25IndexService,
@@ -39,13 +40,15 @@ public class RagController {
                          InventoryService inventoryService,
                          RagInitializer ragInitializer,
                          PgVectorEmbeddingStore vectorStore,
-                         ApplicationContext applicationContext) {
+                         ApplicationContext applicationContext,
+                         org.ragai.service.HybridRetrievalService hybridRetrievalService) {
         this.bm25IndexService = bm25IndexService;
         this.phiAuditService = phiAuditService;
         this.inventoryService = inventoryService;
         this.ragInitializer = ragInitializer;
         this.vectorStore = vectorStore;
         this.applicationContext = applicationContext;
+        this.hybridRetrievalService = hybridRetrievalService;
     }
 
     /**
@@ -80,6 +83,16 @@ public class RagController {
                     .append("---- 正文 ----\n").append(text).append("\n\n");
         }
         return sb.toString();
+    }
+
+    /**
+     * 三个检索指标的只读汇总（D1）：闸门放行/拦截次数、top1 相似度分布、实际交给模型的上下文块数。
+     * 只读内存 MeterRegistry，零模型调用零写库，进程重启归零；entry=online/eval 分开，评测跑分不混进线上数。
+     * 与 /actuator/prometheus 的区别：这是给人看的 JSON 汇总，不用 PromQL；原始序列仍走 Prometheus。
+     */
+    @GetMapping(value = "/rag/retrieval-stats", produces = "application/json; charset=utf-8")
+    public String retrievalStats() throws Exception {
+        return jsonMapper.writeValueAsString(hybridRetrievalService.retrievalStats());
     }
 
     /**

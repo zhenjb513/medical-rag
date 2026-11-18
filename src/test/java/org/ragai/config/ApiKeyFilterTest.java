@@ -66,7 +66,7 @@ class ApiKeyFilterTest {
     @DisplayName("只读免费的溯源口子公开：不配 key 也能核对引用")
     void readOnlyEndpointsArePublic() throws Exception {
         ApiKeyFilter f = filter("", true, 60);
-        for (String path : List.of("/rag/diag", "/rag/chunk", "/bm25/locate", "/bm25/df", "/bm25/search")) {
+        for (String path : List.of("/rag/diag", "/rag/chunk", "/rag/retrieval-stats", "/bm25/locate", "/bm25/df", "/bm25/search")) {
             assertTrue(passThrough(f, path, null), path + " 应当免凭据放行");
         }
     }

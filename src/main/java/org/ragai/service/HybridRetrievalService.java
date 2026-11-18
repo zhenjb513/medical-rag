@@ -301,6 +301,45 @@ public class HybridRetrievalService {
     }
 
     /**
+     * 三个检索指标的只读汇总，给 /rag/retrieval-stats 用：只读内存 MeterRegistry，
+     * 零模型调用零写库，进程重启归零。没出现过的 entry/指标＝启动以来该入口没有样本，不补假数。
+     */
+    public java.util.Map<String, Object> retrievalStats() {
+        java.util.Map<String, Object> out = new java.util.LinkedHashMap<>();
+        if (meterRegistry == null) {
+            out.put("enabled", false);
+            return out;
+        }
+        out.put("enabled", true);
+        out.put("note", "内存指标，进程重启归零；计的是检索次数（多跳开启时一次提问可能走几轮）；"
+                + "entry=online 是线上链路、eval 是评测链路，两者分开；没出现的 entry＝启动以来该入口没有样本");
+        java.util.Map<String, java.util.Map<String, Object>> gate = new java.util.LinkedHashMap<>();
+        for (io.micrometer.core.instrument.Counter c : meterRegistry.find(GATE_COUNTER).counters()) {
+            String entry = c.getId().getTag("entry");
+            String result = c.getId().getTag("result");
+            gate.computeIfAbsent(entry == null ? "?" : entry, k -> new java.util.LinkedHashMap<>())
+                    .put(result == null ? "?" : result, c.count());
+        }
+        out.put("gate", gate);
+        java.util.Map<String, java.util.Map<String, Object>> top1 = new java.util.LinkedHashMap<>();
+        for (io.micrometer.core.instrument.DistributionSummary s : meterRegistry.find(TOP1_SUMMARY).summaries()) {
+            String entry = s.getId().getTag("entry");
+            top1.put(entry == null ? "?" : entry, describeSummary(s));
+        }
+        out.put("top1_score", top1);
+        out.put("context_chunks", describeSummary(meterRegistry.find(CONTEXT_CHUNKS).summary()));
+        return out;
+    }
+
+    private static java.util.Map<String, Object> describeSummary(io.micrometer.core.instrument.DistributionSummary s) {
+        java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+        m.put("count", s == null ? 0L : s.count());
+        m.put("mean", s == null ? 0.0 : s.mean());
+        m.put("max", s == null ? 0.0 : s.max());
+        return m;
+    }
+
+    /**
      * 重排实际用哪个查询串（受 rerank-use-expanded-query 支配）。评测要对同一批候选单独调重排，得跟线上用同一个口径。
      */
     public String rerankQuery(String query) {
