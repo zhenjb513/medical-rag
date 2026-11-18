@@ -19,12 +19,9 @@
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-
-        <!--
-          LangChain4j 版本。本分支（langchain4j-exp）定位为纯 LangChain4j 框架演进，
-          与 spring-ai-dashscope 分支并行；master 负责两框架融合。
-        -->
-        <langchain4j.version>1.0.0-beta3</langchain4j.version>
+        <!-- 1.0.0 GA 起核心与集成模块版本号分轨：核心走稳定版，dashscope 等集成仍带 beta 后缀 -->
+        <langchain4j.version>1.23.0</langchain4j.version>
+        <langchain4j-community.version>1.23.0-beta33</langchain4j-community.version>
     </properties>
 
     <dependencyManagement>
@@ -40,7 +37,7 @@
             <dependency>
                 <groupId>dev.langchain4j</groupId>
                 <artifactId>langchain4j-community-bom</artifactId>
-                <version>${langchain4j.version}</version>
+                <version>${langchain4j-community.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>

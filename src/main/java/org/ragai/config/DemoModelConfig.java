@@ -6,7 +6,7 @@ import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.data.segment.TextSegment;
-import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.embedding.EmbeddingModel;
@@ -59,7 +59,7 @@ public class DemoModelConfig {
 
     @Bean
     @Primary
-    public ChatLanguageModel demoChatModel() {
+    public ChatModel demoChatModel() {
         return new ExtractiveChatModel();
     }
 
@@ -102,7 +102,7 @@ public class DemoModelConfig {
      * 这是这一档的已知粗糙处，不是链路坏了：它的用途是让人看到
      * 「上下文 → 答案 → 引用行」怎么对上，而不是给人读的答案质量。
      */
-    static final class ExtractiveChatModel implements ChatLanguageModel {
+    static final class ExtractiveChatModel implements ChatModel {
 
         private static final String CONTEXT_HEAD = "【知识库上下文】";
         private static final String RULES_HEAD = "【回答规则】";

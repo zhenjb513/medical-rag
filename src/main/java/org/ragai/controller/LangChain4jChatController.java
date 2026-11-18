@@ -1,7 +1,7 @@
 package org.ragai.controller;
 
 import dev.langchain4j.agent.tool.Tool;
-import dev.langchain4j.model.chat.ChatLanguageModel;
+import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.service.SystemMessage;
 import org.ragai.service.InventoryService;
@@ -13,11 +13,11 @@ import org.springframework.web.bind.annotation.RestController;
 @RestController
 public class LangChain4jChatController {
 
-    private final ChatLanguageModel chatModel;
+    private final ChatModel chatModel;
     private final InventoryService inventoryService;
     private final PhiDesensitizationService phiService;
 
-    public LangChain4jChatController(ChatLanguageModel chatModel,
+    public LangChain4jChatController(ChatModel chatModel,
                                      InventoryService inventoryService,
                                      PhiDesensitizationService phiService) {
         this.chatModel = chatModel;
@@ -184,28 +184,28 @@ public class LangChain4jChatController {
     @GetMapping("/lc/chat")
     public String chatConsumable(@RequestParam String message) {
         MedicalConsumableAssistant assistant = AiServices.builder(MedicalConsumableAssistant.class)
-                .chatLanguageModel(chatModel).build();
+                .chatModel(chatModel).build();
         return assistant.chat(message);
     }
 
     @GetMapping("/lc/chat/doctor")
     public String chatDoctor(@RequestParam String message) {
         DoctorAssistant assistant = AiServices.builder(DoctorAssistant.class)
-                .chatLanguageModel(chatModel).build();
+                .chatModel(chatModel).build();
         return assistant.chat(message);
     }
 
     @GetMapping("/lc/chat/safe")
     public String chatSafe(@RequestParam String message) {
         SafeAssistant assistant = AiServices.builder(SafeAssistant.class)
-                .chatLanguageModel(chatModel).build();
+                .chatModel(chatModel).build();
         return assistant.chat(message);
     }
 
     @GetMapping("/lc/chat/json")
     public String chatJson(@RequestParam String message) {
         StructuredAssistant assistant = AiServices.builder(StructuredAssistant.class)
-                .chatLanguageModel(chatModel).build();
+                .chatModel(chatModel).build();
         return assistant.chat(message);
     }
 
@@ -215,7 +215,7 @@ public class LangChain4jChatController {
     public String toolInventory(@RequestParam String message) {
         InventoryTool tool = new InventoryTool(inventoryService);
         InventoryQueryAssistant assistant = AiServices.builder(InventoryQueryAssistant.class)
-                .chatLanguageModel(chatModel).tools(tool).build();
+                .chatModel(chatModel).tools(tool).build();
         return assistant.chat(message);
     }
 
@@ -223,7 +223,7 @@ public class LangChain4jChatController {
     public String toolPhi(@RequestParam String message) {
         PhiMaskTool tool = new PhiMaskTool(phiService);
         PhiProtectAssistant assistant = AiServices.builder(PhiProtectAssistant.class)
-                .chatLanguageModel(chatModel).tools(tool).build();
+                .chatModel(chatModel).tools(tool).build();
         return assistant.chat(message);
     }
 
@@ -232,7 +232,7 @@ public class LangChain4jChatController {
         InventoryTool invTool = new InventoryTool(inventoryService);
         PhiMaskTool phiTool = new PhiMaskTool(phiService);
         FullAssistant assistant = AiServices.builder(FullAssistant.class)
-                .chatLanguageModel(chatModel).tools(invTool, phiTool).build();
+                .chatModel(chatModel).tools(invTool, phiTool).build();
         return assistant.chat(message);
     }
 }

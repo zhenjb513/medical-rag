@@ -13,8 +13,8 @@ import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
 import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.model.chat.ChatLanguageModel;
-import dev.langchain4j.model.chat.StreamingChatLanguageModel;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
 import org.springframework.beans.factory.annotation.Value;
@@ -83,8 +83,8 @@ public class ChatController {
             （引用来源由系统在答案末尾自动附上，不要自行罗列清单。）
             """;
 
-    private final ChatLanguageModel chatModel;
-    private final StreamingChatLanguageModel streamingChatModel;
+    private final ChatModel chatModel;
+    private final StreamingChatModel streamingChatModel;
     private final HybridRetrievalService hybridRetrievalService;
     private final MultiHopRetrievalService multiHopRetrievalService;
     private final RagReferenceService ragReferenceService;
@@ -101,8 +101,8 @@ public class ChatController {
     @Value("${app.retrieval.chat-top-k:8}")
     private int chatTopK;
 
-    public ChatController(ChatLanguageModel chatModel,
-                          StreamingChatLanguageModel streamingChatModel,
+    public ChatController(ChatModel chatModel,
+                          StreamingChatModel streamingChatModel,
                           HybridRetrievalService hybridRetrievalService,
                           MultiHopRetrievalService multiHopRetrievalService,
                           RagReferenceService ragReferenceService,

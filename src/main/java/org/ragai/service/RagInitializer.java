@@ -1,6 +1,7 @@
 package org.ragai.service;
 
 import jakarta.annotation.PostConstruct;
+import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.cos.*;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPageTree;
@@ -629,7 +630,7 @@ public class RagInitializer {
 
         long thisTimeoutMs = PER_PDF_MIN_TIMEOUT_MILLIS;
         int pageCount = 0;
-        try (PDDocument probe = PDDocument.load(pdf)) {
+        try (PDDocument probe = Loader.loadPDF(pdf)) {
             pageCount = probe.getNumberOfPages();
         } catch (Throwable ignore) {
         }
@@ -1336,7 +1337,7 @@ public class RagInitializer {
     }
 
     /**
-     * 打开 PDF（兼容 PDFBox 2.x）。仅用 PDDocument.load 系列稳定 API，
+     * 打开 PDF（PDFBox 3.x Loader API）。
      * 内存/磁盘缓存策略由 static{} 块统一配置。对加密文档尝试放开权限位，便于抽取可见文字。
      * <p>
      * 包级可见（不是 private）是给 {@link PdfPageLocator} 复用的：页码定位必须走同一个开文件的路子，
@@ -1344,8 +1345,8 @@ public class RagInitializer {
      */
     static PDDocument openPdfLenient(File pdf, String password) throws IOException {
         PDDocument doc = (password != null && !password.isEmpty())
-                ? PDDocument.load(pdf, password)
-                : PDDocument.load(pdf);
+                ? Loader.loadPDF(pdf, password)
+                : Loader.loadPDF(pdf);
         if (doc.isEncrypted()) {
             try {
                 Class<?> c = doc.getClass();

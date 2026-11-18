@@ -10,7 +10,7 @@ import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.AiMessage;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.UserMessage;
-import dev.langchain4j.model.chat.StreamingChatLanguageModel;
+import dev.langchain4j.model.chat.StreamingChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
@@ -26,21 +26,21 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
- * 基于 DashScope 流式接口的 {@link StreamingChatLanguageModel} 实现。
+ * 基于 DashScope 流式接口的 {@link StreamingChatModel} 实现。
  *
  * <p><b>为什么需要自己写</b>：LangChain4j 官方 DashScope 社区模块（1.0.0-beta3）
- * 只提供了同步的 {@code QwenChatModel}，没有实现 {@code StreamingChatLanguageModel}。
- * 但 LangChain4j 本身有完整的流式抽象（{@link StreamingChatLanguageModel} +
+ * 只提供了同步的 {@code QwenChatModel}，没有实现 {@code StreamingChatModel}。
+ * 但 LangChain4j 本身有完整的流式抽象（{@link StreamingChatModel} +
  * {@link StreamingChatResponseHandler}），DashScope SDK 也原生支持
  * {@code Generation.streamCall()} 返回 RxJava {@code Flowable}。
  * 这里就是把两者接起来，让本分支的 /chat/stream 端点保持真流式。
  *
  * 工具调用（tool calls）：DashScope 的流式响应里，工具调用信息在
  * {@code output.choices[0].message.toolCalls} 中增量下发。当前实现聚焦文本流，
- * 工具调用走同步的 {@code ChatLanguageModel} 路径，避免流式工具调用的复杂状态机。
+ * 工具调用走同步的 {@code ChatModel} 路径，避免流式工具调用的复杂状态机。
  */
 @Component
-public class DashScopeStreamingChatModel implements StreamingChatLanguageModel {
+public class DashScopeStreamingChatModel implements StreamingChatModel {
 
     private static final Logger log = LoggerFactory.getLogger(DashScopeStreamingChatModel.class);
 
