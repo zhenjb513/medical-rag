@@ -99,17 +99,26 @@ class MedicalTestSetStructureTest {
     void factAndOralShareGroundTruth() {
         Map<String, List<String>> blocksByCategory = new HashMap<>();
         for (TestCase c : CASES) {
-            String key = String.join("|", c.getAnswerChunks());
+            // 排序后再拼 key：判分器按集合成员判出处命中，数组顺序无语义。
+            // 不排序会把「同一集合、两种排列」当成两组，基线数字就随标注数组的书写顺序漂。
+            List<String> sorted = new ArrayList<>(c.getAnswerChunks());
+            java.util.Collections.sort(sorted);
+            String key = String.join("|", sorted);
             blocksByCategory.computeIfAbsent(key, k -> new ArrayList<>()).add(c.getCategory());
         }
         long paired = blocksByCategory.entrySet().stream()
                 .filter(e -> e.getValue().contains("事实查询") || e.getValue().contains("综合分析"))
                 .filter(e -> e.getValue().contains("口语查询"))
                 .count();
-        // 实测 28 组：29 道口语题里只有 #41（非HDL-C 口语版）的答案块集合与书面版不同，
-        // 它额外认 XZ#32 表3，见 eval/medical_test_set.json 里 G_NON_HDL_ORAL 的 note。数字再动就是有人在偷偷拆对照。
-        assertEquals(28, paired, () -> "同时被书面和口语问法问到的答案块组数变了（现测 " + paired
-                + " 组，基线 28 组）：书面/口语两套问法必须共用同一份 ground truth");
+        // 实测 27 组。29 道口语题里有两道不与书面版共用块集：
+        //   #41（非HDL-C 口语版）额外认 血脂#35 表3，见 G_NON_HDL_ORAL 的 note；
+        //   G_BP_TARGET 与 G_VERY_OLD 的答案块集合完全相同（一级预防#54、基层#11、基层#19 三块
+        //   都同时写着「<80岁 130/80 以下」与「≥80岁 150/90 以下、可耐受 140/90 以下」），
+        //   按集合比只算一组。这两组在 2026-11-18 重定位前后都是同一集合，旧基线 28 是
+        //   两个数组书写顺序不同造成的假区分（证据：scratch/pair_diag2.out）。
+        // 数字再动就是有人在偷偷拆对照，或又有一组答案块收敛/发散了。
+        assertEquals(27, paired, () -> "同时被书面和口语问法问到的答案块组数变了（现测 " + paired
+                + " 组，基线 27 组）：书面/口语两套问法必须共用同一份 ground truth");
     }
 
     private static Map<String, Integer> countsByCategory() {

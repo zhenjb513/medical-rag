@@ -91,7 +91,11 @@ public class RagInitializer {
      * PGVector JDBC：用于「PDF 已入库」去重（PGVector 未启用时为 null）
      */
     private final org.springframework.jdbc.core.JdbcTemplate pgJdbc;
-    /** LangChain4j 分块器：512 字/块，0 重叠（与迁移前 TokenTextSplitter 的默认参数对齐）。 */
+    /**
+     * 512 字/块、0 重叠。⚠️ 迁移前用的是 {@code TokenTextSplitter.withChunkSize(512)}，那是 512 <b>token</b>：
+     * 数字相同、单位不同。同一份正文从 501 块（均 936 字）变成 961 块（均约 370 字），
+     * 逐文件对账见 {@code scratch/block_count_delta.out}（旧 501 块仍留在 {@code public.vector_store} 里）。
+     */
     private final DocumentSplitter splitter = DocumentSplitters.recursive(512, 0);
 
     @Value("${app.pdf-path:D:/ai-docs}")

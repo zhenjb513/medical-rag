@@ -252,6 +252,10 @@ public class EvaluationService {
      * 只满足前两条会判挂并标 wrongBlock：实测 2026-10-13 的 #43 就是这样——答案写的 2.6 确实来自库里的
      * 表3（XZ#32），但真正回答家族性高胆固醇血症目标值的是 XZ#107/#108，那两块这次根本没进上下文。
      * 「没编造」不等于「答在对的段落上」，所以出处必须对得上答案块。
+     * <p>
+     * ⚠️ 上述块号属 501 块那一代（2026-11-10 换分块单位前）。现库 961 块里 FH 目标值表在 XZ#114，
+     * 考卷 52 条标注有 47 条已指不到原正文；重定位前「出处须命中答案块」这一条会双向误判
+     * （答对引 #114 判挂、答错引 #107 判过）。对账见 scratch/table_reflow_check.out 的 [1][1b]。
      */
     static AccuracyVerdict judgeAccuracy(String normAnswer, List<String> normDocs,
                                          List<Document> docs,
@@ -306,7 +310,8 @@ public class EvaluationService {
 
     /**
      * 出处块和某个答案块同名不同号且只差 1 时提示一下。
-     * 表格类原文常被切成相邻两块（FH 推荐表就是 #107/#108），这种很可能是考卷漏标而不是检索错，
+     * 表格类原文常被切成相邻两块（501 块那一代的 FH 推荐表是 #107/#108；现库 961 块里该表在 #114，
+     * 见 scratch/table_reflow_check.out 的 [1]），这种很可能是考卷漏标而不是检索错，
      * 判分仍按挂处理，只把线索写出来供人工核对。
      */
     private static String neighborHint(String other, List<String> answerChunks) {
