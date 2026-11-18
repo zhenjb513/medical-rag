@@ -37,7 +37,10 @@ public class SentenceFirstSplitter implements DocumentSplitter {
         String s = document.text();
         if (s == null || s.isEmpty()) return out;
         for (String piece : sentenceFirst(s, cap)) {
-            out.add(TextSegment.from(piece, document.metadata()));
+            // 必须每块一份独立拷贝：TextSegment.from 直接共享传入的 Metadata 实例（beta3 与 1.23 均实测如此），
+            // 共享会让入库闸门逐块写的 chunk_hash/block_type 互相覆盖，整份文件所有块都变成最后一块的值。
+            // 旧 recursive 切分器内部每块拷贝所以没暴露过（证据 scratch/meta_share_matrix.out，守门 metadataIsolatedPerSegment）
+            out.add(TextSegment.from(piece, document.metadata().copy()));
         }
         return out;
     }

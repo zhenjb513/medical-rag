@@ -11,6 +11,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -158,6 +159,21 @@ class SentenceFirstSplitterTest {
             assertEquals("abc123", s.metadata().getString("content_hash"));
             assertEquals("测试.pdf", s.metadata().getString("file_name"));
         }
+    }
+
+    @Test
+    @DisplayName("每块 Metadata 必须独立：TextSegment.from 共享传入实例（beta3/1.23 均如此），不拷贝会让 chunk_hash 互相覆盖")
+    void metadataIsolatedPerSegment() {
+        Metadata meta = new Metadata();
+        meta.put("content_hash", "abc123");
+        List<TextSegment> segs = new SentenceFirstSplitter(16).split(Document.from(MIXED, meta));
+        assertTrue(segs.size() > 1);
+        assertTrue(segs.get(0).metadata() != segs.get(1).metadata(),
+                "两块共享同一个 Metadata 实例：闸门逐块写 chunk_hash/block_type 会互相覆盖");
+        segs.get(0).metadata().put("chunk_hash", "h0");
+        assertNull(segs.get(1).metadata().getString("chunk_hash"),
+                "给第 0 块写 chunk_hash 不该出现在第 1 块上");
+        assertNull(meta.getString("chunk_hash"), "也不该写回文档级 metadata");
     }
 
     @Test

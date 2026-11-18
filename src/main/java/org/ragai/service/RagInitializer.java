@@ -1824,7 +1824,7 @@ public class RagInitializer {
     /**
      * 块级过滤与去重，写入 VectorStore 前的最后一道闸门：
      * <ol>
-     *   <li>为每个块计算 chunk_hash（SHA-256 of 块正文），写入 metadata</li>
+     *   <li>为每个块计算 chunk_hash（SHA-256 of 块正文）并打 block_type（text/table/figure），写入 metadata</li>
      *   <li>低信息量过滤：纯数字/纯标点/有效字符过少/页码模式</li>
      *   <li>文件内去重：同 chunk_hash 只保留首次出现</li>
      *   <li>跨文件去重：库内<b>其它 source</b> 已存在同 chunk_hash 的块不再写入</li>
@@ -1845,6 +1845,7 @@ public class RagInitializer {
         for (dev.langchain4j.data.segment.TextSegment c : chunks) {
             String hash = sha256Hex(segmentText(c));
             c.metadata().put("chunk_hash", nullToEmpty(hash));
+            c.metadata().put("block_type", BlockTypeClassifier.classify(segmentText(c)));
             hashes.add(hash);
         }
 
