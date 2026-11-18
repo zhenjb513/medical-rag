@@ -87,7 +87,7 @@ class EvaluationVersionParamTest {
     void versionsParamReachesTheRetrieval() {
         HybridRetrievalService svc = stub(List.of(doc("a", "2023")));
 
-        String body = controller(svc).retrieve("血脂目标", 5, "2023,2021");
+        String body = controller(svc).retrieve("血脂目标", 5, "2023,2021", "");
 
         Mockito.verify(svc).search("血脂目标", 5, null, Set.of("2023", "2021"));
         assertTrue(body.contains("版本过滤=2023|2021"), body);
@@ -102,7 +102,7 @@ class EvaluationVersionParamTest {
     void absentVersionsMeansNoFiltering() {
         HybridRetrievalService svc = stub(List.of(doc("a", "2023"), doc("b", "2021")));
 
-        String body = controller(svc).retrieve("血脂目标", 8, "");
+        String body = controller(svc).retrieve("血脂目标", 8, "", "");
 
         Mockito.verify(svc).search("血脂目标", 8, null, Set.of());
         assertFalse(body.contains("版本过滤"), "没过滤就别写这一行：" + body);

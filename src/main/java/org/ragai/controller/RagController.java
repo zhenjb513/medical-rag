@@ -69,13 +69,14 @@ public class RagController {
             // 页码和章节号都是现算的：库里从来没存过，靠按页重抽一遍再对文字（见 PdfPageLocator / SectionIndex）
             PdfPageLocator.PageSpan span = PdfPageLocator.locate(pdf, text);
             SectionIndex.SectionSpan section = PdfPageLocator.locateSection(pdf, text);
-            // 块类型入库时已写 metadata（block_type），这里现算是为了让重灌前的旧块也能看到；
-            // 分类器是正文的纯函数，同一块正文两边算出来必然一致
+            // 块类型/文档类型入库时已写 metadata（block_type/doc_type），这里现算是为了让重灌前的旧块也能看到；
+            // 两者都是纯函数（正文/文件名），同一块两边算出来必然一致
             sb.append("文件=").append(row.fileName()).append("  块号=").append(row.chunkIndex())
                     .append("  source=").append(row.source()).append("  正文字符=").append(text.length()).append('\n')
                     .append("页码=").append(PdfPageLocator.describe(span)).append('\n')
                     .append("章节=").append(SectionIndex.describe(section)).append('\n')
                     .append("块类型=").append(org.ragai.service.BlockTypeClassifier.classify(text)).append('\n')
+                    .append("文档类型=").append(RagInitializer.parseDocTypeFromFileName(row.fileName())).append('\n')
                     .append("---- 正文 ----\n").append(text).append("\n\n");
         }
         return sb.toString();

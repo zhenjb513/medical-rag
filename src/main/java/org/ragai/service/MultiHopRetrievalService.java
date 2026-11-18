@@ -49,14 +49,24 @@ public class MultiHopRetrievalService {
     }
 
     public List<Document> search(String query, int topK, Double threshold) {
+        return search(query, topK, threshold, null, null);
+    }
+
+    /**
+     * 带版本/文档类型白名单的口子：过滤挂在每一跳的召回之后（与单跳同一套后过滤语义），
+     * 主检索和子查询都过同一份白名单，所以合并去重后的结果天然都在白名单内。
+     * 两个白名单都留空时走的调用链与加参数前完全一致。
+     */
+    public List<Document> search(String query, int topK, Double threshold,
+                                 Set<String> versionFilter, Set<String> docTypeFilter) {
         if (!multiHopEnabled) {
-            return hybridRetrievalService.search(query, topK, threshold);
+            return searchHybrid(query, topK, threshold, versionFilter, docTypeFilter);
         }
 
         log.info("[多跳检索] 原始 query: {}", query);
 
         int poolK = Math.max(topK * 3, 12);
-        List<Document> primary = hybridRetrievalService.search(query, poolK, threshold);
+        List<Document> primary = searchHybrid(query, poolK, threshold, versionFilter, docTypeFilter);
 
         if (primary.isEmpty()) {
             log.info("[多跳检索] 主检索为空，直接返回");
@@ -94,7 +104,7 @@ public class MultiHopRetrievalService {
             if (hopCount >= maxHops) break;
             if (sub.equals(query)) continue;
 
-            List<Document> hopResult = hybridRetrievalService.search(sub, topK, threshold);
+            List<Document> hopResult = searchHybrid(sub, topK, threshold, versionFilter, docTypeFilter);
             log.info("[多跳检索] 第 {} 跳 query=[{}] 命中 {} 条", hopCount + 1, sub, hopResult.size());
 
             double decay = Math.pow(hopDecay, hopCount + 1);
@@ -117,6 +127,16 @@ public class MultiHopRetrievalService {
 
         log.info("[多跳检索] 合并去重后 {} 条，取 top {}", finalDocs.size(), topK);
         return take(finalDocs, topK);
+    }
+
+    /** 白名单全空时保持原来的三参调用，老调用点与既有守门测试的替身桩不受影响。 */
+    private List<Document> searchHybrid(String query, int topK, Double threshold,
+                                        Set<String> versionFilter, Set<String> docTypeFilter) {
+        boolean noFilter = (versionFilter == null || versionFilter.isEmpty())
+                && (docTypeFilter == null || docTypeFilter.isEmpty());
+        return noFilter
+                ? hybridRetrievalService.search(query, topK, threshold)
+                : hybridRetrievalService.search(query, topK, threshold, versionFilter, docTypeFilter);
     }
 
     private List<String> generateSubQueries(String originalQuery, List<Document> primary, boolean userHasAnd) {

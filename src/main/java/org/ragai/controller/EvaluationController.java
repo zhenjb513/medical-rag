@@ -55,19 +55,31 @@ public class EvaluationController {
      * metadata {@code version}（认不出年份的文档落的是 {@code unknown}）。它是**召回之后的后过滤**，
      * 不是库侧条件：先按 topK 召回再剔掉不在白名单里的块，所以过滤后条数通常少于请求的 topK，
      * 想要满额就把 topK 调大。留空 = 不过滤，行为与本参数加入前完全一致。
+     * <p>
+     * {@code docTypes=} 是文档类型白名单（如 {@code 指南,共识}），取自入库 metadata {@code doc_type}
+     * （按文件名关键词分类，闭集 指南/共识/手册/报告/其他），同样是后过滤，与 versions= 同时给就是交集。
+     * ⚠️ doc_type 是 2026-11-18 才加的键，重灌前的旧块没有它，docTypes= 会把旧块全剔掉。
      */
     @GetMapping(value = "/retrieve", produces = "text/plain; charset=utf-8")
     public String retrieve(@RequestParam @NotBlank(message = "查询词不能为空") String q,
                            @RequestParam(defaultValue = "8") @Min(1) @Max(100) int topK,
-                           @RequestParam(defaultValue = "") String versions) {
+                           @RequestParam(defaultValue = "") String versions,
+                           @RequestParam(defaultValue = "") String docTypes) {
         long start = System.currentTimeMillis();
         java.util.Set<String> versionFilter = parseVersions(versions);
-        var docs = hybridRetrievalService.search(q, topK, null, versionFilter);
+        java.util.Set<String> docTypeFilter = parseVersions(docTypes);
+        var docs = docTypeFilter.isEmpty()
+                ? hybridRetrievalService.search(q, topK, null, versionFilter)
+                : hybridRetrievalService.search(q, topK, null, versionFilter, docTypeFilter);
         StringBuilder sb = new StringBuilder();
         sb.append("mode=").append(hybridRetrievalService.describeMode())
                 .append("  请求topK=").append(topK).append("  实际返回=").append(docs.size());
         if (!versionFilter.isEmpty()) {
             sb.append("  版本过滤=").append(String.join("|", versionFilter))
+                    .append("（后过滤，条数少于 topK 属正常）");
+        }
+        if (!docTypeFilter.isEmpty()) {
+            sb.append("  类型过滤=").append(String.join("|", docTypeFilter))
                     .append("（后过滤，条数少于 topK 属正常）");
         }
         sb.append("  重排查询串=").append(hybridRetrievalService.isRerankUseExpandedQuery() ? "扩展后" : "原话")
@@ -82,7 +94,7 @@ public class EvaluationController {
         return sb.toString();
     }
 
-    /** versions= 的解析：逗号/顿号分隔、去空白、去重，最多认 8 个值。留空返回空集＝不过滤。 */
+    /** versions=/docTypes= 共用的白名单解析：逗号/顿号分隔、去空白、去重，最多认 8 个值。留空返回空集＝不过滤。 */
     static java.util.Set<String> parseVersions(String versions) {
         java.util.Set<String> out = new java.util.LinkedHashSet<>();
         if (versions == null || versions.isBlank()) return out;

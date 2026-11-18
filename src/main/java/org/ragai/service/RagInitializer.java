@@ -476,6 +476,7 @@ public class RagInitializer {
         String[] verInfo = parseVersionFromFileName(file.getName());
         meta.put("version", verInfo[0]);
         meta.put("version_raw", verInfo[1]);
+        meta.put("doc_type", parseDocTypeFromFileName(file.getName()));
 
         Document doc = Document.from(cleaned, meta);
         List<dev.langchain4j.data.segment.TextSegment> chunks = splitter.split(doc);
@@ -944,6 +945,7 @@ public class RagInitializer {
                 String[] verInfo = parseVersionFromFileName(pdf.getName());
                 meta.put("version", verInfo[0]);
                 meta.put("version_raw", verInfo[1]);
+                meta.put("doc_type", parseDocTypeFromFileName(pdf.getName()));
                 Document doc = Document.from(cleaned == null ? "" : cleaned, meta);
                 List<dev.langchain4j.data.segment.TextSegment> c = splitter.split(doc);
                 if (c != null) chunks = c;
@@ -981,6 +983,20 @@ public class RagInitializer {
             return new String[]{vNum.group(1), vNum.group()};
         }
         return new String[]{"unknown", ""};
+    }
+
+    /**
+     * 按文件名关键词分文档类型，闭集 {指南, 共识, 手册, 报告, 其他}，优先级按声明顺序。
+     * 与章节号同纪律：认不准就落「其他」，不猜。doc_year 不另建字段——version 就是按文件名解析的年份。
+     */
+    public static String parseDocTypeFromFileName(String fileName) {
+        if (fileName == null || fileName.isBlank()) return "其他";
+        String name = fileName.replaceAll("\\.[^.]+$", "");
+        if (name.contains("指南")) return "指南";
+        if (name.contains("共识")) return "共识";
+        if (name.contains("手册")) return "手册";
+        if (name.contains("报告")) return "报告";
+        return "其他";
     }
 
     private static String nullToEmpty(String s) {

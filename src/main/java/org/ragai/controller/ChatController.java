@@ -215,16 +215,25 @@ public class ChatController {
         return new ChatTrace(answer.trim(), docs, refs);
     }
 
+    /**
+     * {@code versions=} / {@code docTypes=} 是可选白名单（逗号/全角逗号/顿号分隔，最多 8 个值），
+     * 与 /evaluation/retrieve 同一套解析与后过滤语义：先按 chatTopK 召回再剔掉不在白名单里的块，
+     * 过滤后上下文条数可能少于 chatTopK。留空 = 不过滤，行为与加参数前完全一致。
+     * ⚠️ doc_type 是 2026-11-18 才加的入库 metadata，重灌前的旧块没有这个键，docTypes= 会把它们全剔掉。
+     */
     @GetMapping(value = "/chat/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @RateLimiter(name = "chatRateLimiter", fallbackMethod = "chatStreamRateLimitFallback")
     @CircuitBreaker(name = "llmCircuitBreaker", fallbackMethod = "chatStreamCircuitFallback")
     public Flux<ServerSentEvent<String>> chatStream(
             @RequestParam("message") @NotBlank(message = "问题不能为空") String message,
-            @RequestParam(value = "sessionId", required = false) @Size(max = 64) String sessionId) {
+            @RequestParam(value = "sessionId", required = false) @Size(max = 64) String sessionId,
+            @RequestParam(value = "versions", required = false) String versions,
+            @RequestParam(value = "docTypes", required = false) String docTypes) {
 
         try {
             String currentQuery = QueryExpander.expand(message);
-            List<Document> docs = multiHopRetrievalService.search(currentQuery, chatTopK, null);
+            List<Document> docs = multiHopRetrievalService.search(currentQuery, chatTopK, null,
+                    EvaluationController.parseVersions(versions), EvaluationController.parseVersions(docTypes));
             String ragContext = ragReferenceService.buildContext(docs);
             List<String> refs = ragReferenceService.extractReferences(docs);
             String fullPrompt = SYSTEM_PROMPT + "\n\n【知识库上下文】\n" + ragContext + "\n\n【用户问题】\n" + message;
@@ -472,7 +481,7 @@ public class ChatController {
     // 规则：参数和原方法一致，最后多一个 Throwable；返回值和原方法一致
 
     public Flux<ServerSentEvent<String>> chatStreamRateLimitFallback(
-            String message, String sessionId, Throwable t) {
+            String message, String sessionId, String versions, String docTypes, Throwable t) {
         log.warn("[RateLimit] 拒绝流式请求 message={}", message);
         return Flux.just(
                 ServerSentEvent.<String>builder().data("请求过于频繁（限流 20 QPS），请稍后再试。").build(),
@@ -481,11 +490,12 @@ public class ChatController {
     }
 
     public Flux<ServerSentEvent<String>> chatStreamCircuitFallback(
-            String message, String sessionId, Throwable t) {
+            String message, String sessionId, String versions, String docTypes, Throwable t) {
         log.warn("[CircuitBreaker] LLM 熔断降级（流式），返回纯检索结果", t);
         String currentQuery = QueryExpander.expand(message);
         try {
-            List<Document> docs = multiHopRetrievalService.search(currentQuery, chatTopK, null);
+            List<Document> docs = multiHopRetrievalService.search(currentQuery, chatTopK, null,
+                    EvaluationController.parseVersions(versions), EvaluationController.parseVersions(docTypes));
             String ragContext = ragReferenceService.buildContext(docs);
             List<String> refs = ragReferenceService.extractReferences(docs);
             String fallbackText = "【服务降级】LLM 暂时不可用，以下为检索到的相关内容：\n\n" + ragContext;

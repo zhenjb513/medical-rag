@@ -233,6 +233,16 @@ public class HybridRetrievalService {
      */
     @Retry(name = "retrievalRetry")
     public List<Document> search(String query, int topK, Double threshold, java.util.Set<String> versionFilter) {
+        return search(query, topK, threshold, versionFilter, null);
+    }
+
+    /**
+     * @param docTypeFilter 文档类型白名单（null/空集=不过滤，"指南"/"共识" 这种，取自 metadata doc_type）。
+     *                      与 versionFilter 一样是召回后的后过滤，两个同时给就是交集。
+     */
+    @Retry(name = "retrievalRetry")
+    public List<Document> search(String query, int topK, Double threshold,
+                                 java.util.Set<String> versionFilter, java.util.Set<String> docTypeFilter) {
         String m = enforceGateCapable(getMode(), bm25IndexService.isAvailable());
         List<Document> raw;
         switch (m) {
@@ -243,7 +253,7 @@ public class HybridRetrievalService {
                 raw = hasEvidence(v, ENTRY_ONLINE) ? v : List.of();
             }
         }
-        List<Document> out = applyVersionFilter(raw, versionFilter);
+        List<Document> out = applyDocTypeFilter(applyVersionFilter(raw, versionFilter), docTypeFilter);
         if (meterRegistry != null) {
             meterRegistry.summary(CONTEXT_CHUNKS).record(out.size());
         }
@@ -251,13 +261,21 @@ public class HybridRetrievalService {
     }
 
     static List<Document> applyVersionFilter(List<Document> docs, java.util.Set<String> versionFilter) {
-        if (docs == null || docs.isEmpty() || versionFilter == null || versionFilter.isEmpty()) {
+        return applyMetadataFilter(docs, "version", versionFilter);
+    }
+
+    static List<Document> applyDocTypeFilter(List<Document> docs, java.util.Set<String> docTypeFilter) {
+        return applyMetadataFilter(docs, "doc_type", docTypeFilter);
+    }
+
+    private static List<Document> applyMetadataFilter(List<Document> docs, String key, java.util.Set<String> whitelist) {
+        if (docs == null || docs.isEmpty() || whitelist == null || whitelist.isEmpty()) {
             return docs;
         }
         java.util.List<Document> filtered = new java.util.ArrayList<>();
         for (Document d : docs) {
-            String v = d.metadata() == null ? null : d.metadata().getString("version");
-            if (v != null && versionFilter.contains(String.valueOf(v))) {
+            String v = d.metadata() == null ? null : d.metadata().getString(key);
+            if (v != null && whitelist.contains(String.valueOf(v))) {
                 filtered.add(d);
             }
         }
