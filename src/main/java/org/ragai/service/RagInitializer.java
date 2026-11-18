@@ -726,23 +726,10 @@ public class RagInitializer {
 
             long totalChars = 0;
             int minChunk = Integer.MAX_VALUE, maxChunk = 0, emptyChunks = 0;
-            java.lang.reflect.Method docTextGetter = null;
-            for (java.lang.reflect.Method m : Document.class.getMethods()) {
-                String n = m.getName();
-                if ((n.equals("getText") || n.equals("getContent")) && m.getParameterCount() == 0 && m.getReturnType() == String.class) {
-                    docTextGetter = m;
-                    break;
-                }
-            }
             for (dev.langchain4j.data.segment.TextSegment d : chunks) {
-                String s = null;
-                if (docTextGetter != null) {
-                    try {
-                        s = (String) docTextGetter.invoke(d);
-                    } catch (Throwable ignore) {
-                    }
-                }
-                int l = (s == null) ? 0 : s.length();
+                // TextSegment 的访问器是 text()，不是 getText/getContent——旧反射找错名字，
+                // 把每块长度都算成 0，日志误报「空块=全部」（2026-11-18 单文件重灌实测抓到）
+                int l = segmentText(d).length();
                 totalChars += l;
                 if (l == 0) emptyChunks++;
                 if (l < minChunk) minChunk = l;
@@ -805,6 +792,10 @@ public class RagInitializer {
         int totalChunks = 0, totalBatches = 0, okCount = 0, failCount = 0, skippedCount = 0;
         for (File file : files) {
             IngestResult r = ingestOneFile(file, "  ");
+            // 启动期重灌会换掉全部 embedding_id 与块内容，而启动对账只比 source 集合差集，
+            // 文件名没变就零写入——不在这里按份刷，BM25 会留着指向已删旧块的死行（词面通道整条瞎掉）。
+            // 热监听路径同款判据；非 PDF 路径内部已刷过一次，这里重复刷只是幂等重写，无副作用。
+            if (r.ok && !r.skipped && r.chunks > 0) refreshKeywordIndexForSource(file, "启动入库 " + file.getName());
             totalChunks += r.chunks;
             totalBatches += r.batches;
             if (r.skipped) skippedCount++;
@@ -1170,7 +1161,7 @@ public class RagInitializer {
     // 抽取流水线版本：改动抽取/清洗逻辑时必须 bump（如换分词前的文本规范化、修 PDF 选路）。
     // 它不参与 content_hash，只用来决定"文件字节没变能不能跳过抽取"——版本一变就强制重新抽取，
     // 否则修好选路 + 判重之后，旧库会因为 file_hash 相同而永远不重灌。
-    private static final String EXTRACT_PIPELINE_VERSION = "2026-10-12a";
+    private static final String EXTRACT_PIPELINE_VERSION = "2026-11-18a";
 
     // 增量入库：该 PDF 在库里的当前版本（块数 + 两级指纹 + 抽取版本）
     private static final class StoredVersion {
@@ -1985,8 +1976,13 @@ public class RagInitializer {
     private static final Set<String> SUPPORTED_EXTENSIONS = Set.of("pdf", "md", "markdown", "docx", "xlsx", "xls");
 
     private static boolean isSupportedFile(File f) {
-        if (f == null || !f.isFile()) return false;
-        String name = f.getName().toLowerCase();
+        return f != null && f.isFile() && isSupportedFileName(f.getName());
+    }
+
+    /** 只认后缀、不看文件在不在盘上：ENTRY_DELETE 事件到达时文件已不存在，删档分发必须走这条。 */
+    static boolean isSupportedFileName(String fileName) {
+        if (fileName == null) return false;
+        String name = fileName.toLowerCase();
         int dot = name.lastIndexOf('.');
         if (dot < 0) return false;
         return SUPPORTED_EXTENSIONS.contains(name.substring(dot + 1));
@@ -2061,12 +2057,15 @@ public class RagInitializer {
                     if (child == null) continue;
 
                     Path fullPath = dirPath.resolve(child);
-                    if (!isSupportedFile(fullPath.toFile())) continue;
-
                     try {
                         if (kind == StandardWatchEventKinds.ENTRY_DELETE) {
+                            // 删档事件到达时文件已不存在，isFile() 恒 false——只能按文件名后缀认。
+                            // 原来和 CREATE/MODIFY 共用 isSupportedFile，把所有 DELETE 静默丢掉，
+                            // 删档清理从来没真跑过（2026-11-18 小验证实测抓到，守门 SourceFileWatchTest）。
+                            if (!isSupportedFileName(child.toString())) continue;
                             handleSourceFileDelete(fullPath.toFile());
                         } else {
+                            if (!isSupportedFile(fullPath.toFile())) continue;
                             handleFileEvent(fullPath);
                         }
                     } catch (Throwable t) {

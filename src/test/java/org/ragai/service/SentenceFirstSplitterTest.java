@@ -177,6 +177,37 @@ class SentenceFirstSplitterTest {
     }
 
     @Test
+    @DisplayName("块号键 index 必须盖：字符串、从 0 起按切分顺序——BM25 行构造与 /rag/chunk 都读 metadata->>'index'")
+    void indexKeyIsStampedLikeTheOldRecursiveSplitter() {
+        Metadata meta = new Metadata();
+        meta.put("content_hash", "abc123");
+        List<TextSegment> segs = new SentenceFirstSplitter(16).split(Document.from(MIXED, meta));
+        assertTrue(segs.size() > 1);
+        for (int i = 0; i < segs.size(); i++) {
+            assertEquals(String.valueOf(i), segs.get(i).metadata().getString("index"),
+                    "第 " + i + " 块的 index 不对——旧 recursive 切分器盖的就是这个键这个口径，"
+                            + "V4 不盖会让重灌后的块全部失去块号（2026-11-18 小验证实测抓到过）");
+        }
+        assertInstanceOf(String.class, segs.get(0).metadata().toMap().get("index"),
+                "旧代 index 是字符串（HierarchicalDocumentSplitter javap 实证），类型也要对齐");
+        assertNull(meta.getString("index"), "index 不该写回文档级 metadata");
+    }
+
+    @Test
+    @DisplayName("index 是闸门前的序号：闸门丢块后 surviving 块保留原号（允许空洞），与旧代口径一致")
+    void gateKeepsPreSplitIndexNumbers() {
+        String text = "第一句正常正文内容啊。123。第二句正常正文内容啊。";
+        List<TextSegment> segs = new SentenceFirstSplitter(11).split(Document.from(text));
+        assertEquals(3, segs.size(), "构造前提：应切出 3 块，中间一块是低信息量");
+        RagInitializer ri = new RagInitializer(null, null, null, null);
+        List<TextSegment> kept = ri.filterAndDeduplicateChunks(segs, new String[]{"__probe__"}, "");
+        assertEquals(2, kept.size(), "「123。」应被低信息量闸门丢掉");
+        assertEquals("0", kept.get(0).metadata().getString("index"));
+        assertEquals("2", kept.get(1).metadata().getString("index"),
+                "闸门丢块后不该重新编号——块号是考卷标注与引用的主键，口径必须和旧代一样是切分序号");
+    }
+
+    @Test
     @DisplayName("生产接线守门：RagInitializer 用的就是 SentenceFirstSplitter(512)，别被悄悄换回去")
     void productionWiring() throws Exception {
         RagInitializer init = new RagInitializer(null, null, null, null);

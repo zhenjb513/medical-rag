@@ -2,6 +2,7 @@ package org.ragai.service;
 
 import dev.langchain4j.data.document.Document;
 import dev.langchain4j.data.document.DocumentSplitter;
+import dev.langchain4j.data.document.Metadata;
 import dev.langchain4j.data.segment.TextSegment;
 
 import java.util.ArrayList;
@@ -40,7 +41,12 @@ public class SentenceFirstSplitter implements DocumentSplitter {
             // 必须每块一份独立拷贝：TextSegment.from 直接共享传入的 Metadata 实例（beta3 与 1.23 均实测如此），
             // 共享会让入库闸门逐块写的 chunk_hash/block_type 互相覆盖，整份文件所有块都变成最后一块的值。
             // 旧 recursive 切分器内部每块拷贝所以没暴露过（证据 scratch/meta_share_matrix.out，守门 metadataIsolatedPerSegment）
-            out.add(TextSegment.from(piece, document.metadata().copy()));
+            Metadata meta = document.metadata().copy();
+            // 块号键必须是 "index"（字符串、切分顺序从 0 起）：BM25 行构造与 /rag/chunk 都读 metadata->>'index'。
+            // 旧 recursive 切分器在 HierarchicalDocumentSplitter 里盖这个键（javap 实证），V4 不盖就会让
+            // 重灌后的块全部失去块号——闸门在切分之后丢块，所以这里盖的是闸门前的序号，与旧代口径一致。
+            meta.put("index", String.valueOf(out.size()));
+            out.add(TextSegment.from(piece, meta));
         }
         return out;
     }
