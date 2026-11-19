@@ -1,5 +1,7 @@
 package org.ragai.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.data.segment.TextSegment;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.model.output.TokenUsage;
@@ -17,8 +19,6 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * 基于 DashScope gte-rerank-v2 的 {@link ScoringModel} 实现。
@@ -28,8 +28,10 @@ import java.util.regex.Pattern;
  * {@link ScoringModel} 抽象，供 {@code ReRankingContentAggregator} 使用。
  *
  * <p>接口：POST https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank
- * 请求体：{"model":"gte-rerank-v2","input":{"query":..., "documents":[...]},"parameters":{"return_documents":true}}
+ * 请求体：{"model":"gte-rerank-v2","input":{"query":..., "documents":[...]},"parameters":{"return_documents":false}}
  * 响应体：{"output":{"results":[{"index":0,"relevance_score":0.97}, ...]}}
+ * <p>用 Jackson 正经解析 JSON：块原文里的引用标记 [1] 含 ']'，早期用非贪婪正则抠 results 数组
+ * 会在第一个 ']' 截断，导致大部分分数读不到、吃默认值，假满分把真答案埋掉（#35 实测）。
  */
 @Component
 public class DashScopeScoringModel implements ScoringModel {
@@ -39,10 +41,7 @@ public class DashScopeScoringModel implements ScoringModel {
     private static final String ENDPOINT =
             "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank";
 
-    private static final Pattern RESULTS_PATTERN =
-            Pattern.compile("\"results\"\\s*:\\s*\\[(.*?)\\]", Pattern.DOTALL);
-    private static final Pattern INDEX_PATTERN = Pattern.compile("\"index\"\\s*:\\s*(\\d+)");
-    private static final Pattern SCORE_PATTERN = Pattern.compile("\"relevance_score\"\\s*:\\s*([0-9.]+)");
+    private static final ObjectMapper MAPPER = new ObjectMapper();
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
@@ -77,7 +76,7 @@ public class DashScopeScoringModel implements ScoringModel {
 
         String body = "{\"model\":\"" + model + "\","
                 + "\"input\":{\"query\":\"" + escapeJson(query) + "\",\"documents\":[" + docs + "]},"
-                + "\"parameters\":{\"return_documents\":true,\"top_n\":" + segments.size() + "}}";
+                + "\"parameters\":{\"return_documents\":false,\"top_n\":" + segments.size() + "}}";
 
         try {
             HttpRequest request = HttpRequest.newBuilder()
@@ -105,24 +104,24 @@ public class DashScopeScoringModel implements ScoringModel {
     }
 
     private Response<List<Double>> parseScores(String json, int size) {
-        double[] scores = equalScoresArray(size);
-
-        Matcher resultsMatcher = RESULTS_PATTERN.matcher(json);
-        if (!resultsMatcher.find()) {
-            log.warn("[重排] 响应里找不到 results 字段，返回等分");
-            return equalScores(size);
-        }
-        String resultsBlock = resultsMatcher.group(1);
-
-        // results 是对象数组，逐个匹配 index 和 relevance_score
-        Matcher indexMatcher = INDEX_PATTERN.matcher(resultsBlock);
-        Matcher scoreMatcher = SCORE_PATTERN.matcher(resultsBlock);
-        while (indexMatcher.find() && scoreMatcher.find()) {
-            int index = Integer.parseInt(indexMatcher.group(1));
-            double score = Double.parseDouble(scoreMatcher.group(1));
-            if (index >= 0 && index < size) {
-                scores[index] = score;
+        // 默认 0.0：万一某序号没返回，让它沉底而不是顶着假满分把真答案埋掉
+        double[] scores = new double[size];
+        try {
+            JsonNode results = MAPPER.readTree(json).path("output").path("results");
+            if (!results.isArray() || results.isEmpty()) {
+                log.warn("[重排] 响应里没有 results 数组，返回等分");
+                return equalScores(size);
             }
+            for (JsonNode r : results) {
+                int index = r.path("index").asInt(-1);
+                double score = r.path("relevance_score").asDouble(0.0);
+                if (index >= 0 && index < size) {
+                    scores[index] = score;
+                }
+            }
+        } catch (IOException e) {
+            log.warn("[重排] 响应 JSON 解析失败，返回等分：{}", e.getMessage());
+            return equalScores(size);
         }
 
         List<Double> list = new ArrayList<>();
@@ -138,14 +137,6 @@ public class DashScopeScoringModel implements ScoringModel {
             list.add(1.0);
         }
         return Response.from(list, new TokenUsage(0, 0));
-    }
-
-    private double[] equalScoresArray(int size) {
-        double[] arr = new double[size];
-        for (int i = 0; i < size; i++) {
-            arr[i] = 1.0;
-        }
-        return arr;
     }
 
     private String escapeJson(String s) {

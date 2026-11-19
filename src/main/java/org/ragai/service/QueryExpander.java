@@ -222,6 +222,23 @@ public final class QueryExpander {
         r.add(new Rule("压力", List.of("心理压力", "精神压力", "情绪管理")));
         r.add(new Rule("心理", List.of("心理健康", "心理干预", "焦虑抑郁")));
 
+        // 口语问法补术语（2026-11-19）：冒烟实测「我爸八十多了，血压降到多少比较合适？」无任何触发词，
+        // 答案块（基层#21 ≥80岁150/90）被重排压到 top16 外（hybrid 第46），模型只看到个体化讨论块。
+        // 这些触发词在书面问法里基本不出现，补的是通用同义词（目标值/高龄/身体活动），不含答案数值。
+        r.add(new Rule("血压降到", List.of("降压目标", "血压控制目标", "目标血压")));
+        r.add(new Rule("降到多少", List.of("控制目标", "目标值", "达标")));
+        r.add(new Rule("控制到多少", List.of("控制目标", "目标值", "达标")));
+        r.add(new Rule("控制好了", List.of("控制目标", "达标")));
+        r.add(new Rule("八十", List.of("高龄", "老年", "老年人", "≥80岁")));
+        r.add(new Rule("老人", List.of("高龄", "老年", "老年人")));
+        r.add(new Rule("年纪大", List.of("高龄", "老年", "老年人")));
+        r.add(new Rule("锻炼", List.of("身体活动", "体力活动", "运动干预", "中等强度", "有氧运动")));
+        r.add(new Rule("吃法", List.of("饮食管理", "膳食", "DASH饮食")));
+        r.add(new Rule("怎么吃", List.of("饮食管理", "膳食", "饮食控制")));
+        r.add(new Rule("呛烟", List.of("二手烟", "被动吸烟", "吸烟", "烟草")));
+        r.add(new Rule("多少人得", List.of("患病率", "流行病学")));
+        r.add(new Rule("多不多", List.of("患病率", "流行病学")));
+
         return List.copyOf(r);
     }
 
