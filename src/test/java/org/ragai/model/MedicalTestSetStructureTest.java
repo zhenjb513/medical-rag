@@ -110,15 +110,17 @@ class MedicalTestSetStructureTest {
                 .filter(e -> e.getValue().contains("事实查询") || e.getValue().contains("综合分析"))
                 .filter(e -> e.getValue().contains("口语查询"))
                 .count();
-        // 实测 27 组。29 道口语题里有两道不与书面版共用块集：
-        //   #41（非HDL-C 口语版）额外认 血脂#35 表3，见 G_NON_HDL_ORAL 的 note；
-        //   G_BP_TARGET 与 G_VERY_OLD 的答案块集合完全相同（一级预防#54、基层#11、基层#19 三块
-        //   都同时写着「<80岁 130/80 以下」与「≥80岁 150/90 以下、可耐受 140/90 以下」），
-        //   按集合比只算一组。这两组在 2026-11-18 重定位前后都是同一集合，旧基线 28 是
-        //   两个数组书写顺序不同造成的假区分（证据：scratch/pair_diag2.out）。
+        // 实测 28 组。29 道口语题里有一道不与书面版共用块集：
+        //   非HDL-C 口语版（G_NON_HDL_ORAL）额外认 血脂#35/#37/#52 表3 参考水平，与事实版
+        //   G_NON_HDL 集合不同，按集合比不配对。
+        // G_BP_TARGET 与 G_VERY_OLD 在 961 块代曾是同一集合（基线 27）：那时 基层#11/#19 整块
+        //   同时含 <80岁 130/80 与 ≥80岁 150/90 两档。V4 句子优先分块把两档拆进不同块——
+        //   <80岁 130/80 落在 基层#11，≥80岁 150/90、可耐受 140/90 落在 基层#21——于是
+        //   G_BP_TARGET 认 基层#11、G_VERY_OLD 不认，两组答案集真实发散，基线回到 28。
+        //   这是切分变细带来的真区分，不是放宽断言（证据：scratch/phase3_relocate.out [3]）。
         // 数字再动就是有人在偷偷拆对照，或又有一组答案块收敛/发散了。
-        assertEquals(27, paired, () -> "同时被书面和口语问法问到的答案块组数变了（现测 " + paired
-                + " 组，基线 27 组）：书面/口语两套问法必须共用同一份 ground truth");
+        assertEquals(28, paired, () -> "同时被书面和口语问法问到的答案块组数变了（现测 " + paired
+                + " 组，基线 28 组）：书面/口语两套问法必须共用同一份 ground truth");
     }
 
     private static Map<String, Integer> countsByCategory() {
